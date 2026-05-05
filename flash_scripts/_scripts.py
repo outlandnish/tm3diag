@@ -111,7 +111,11 @@ SCRIPT_VCLEFT = FlashScript(
 )
 
 # 0x00651070 — pcs/pcscpu2/di/dis/pm/pms (prog 0: extended erase timeout)
-# module_byte is set per-entry from ECU_SCRIPT_MAP; erase_timeout=5s per doc
+# module_byte is set per-entry from ECU_SCRIPT_MAP.
+# erase_timeout=10s: a successful PM flash showed erase taking
+# ~4.65s with no responsePending in between (silence on the bus until the
+# 71 01 FF 00 00 lands). 5s was barely enough; 10s matches the binary's
+# netSetTimeout(5)→P2*=10s for the PCS family.
 SCRIPT_PCS = FlashScript(
     steps=[
         step_soft_reset,
@@ -128,7 +132,7 @@ SCRIPT_PCS = FlashScript(
         step_soft_reset,
         step_sleep_300ms,
     ],
-    erase_timeout=5.0,
+    erase_timeout=10.0,
 )
 
 # 0x006510d0 — park (prog 0: extended erase timeout, 5 s post-reset sleep)

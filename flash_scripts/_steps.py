@@ -180,8 +180,12 @@ def step_verify_comp_fw(sess: "UdsSession", ctx: FlashContext) -> None:
         f" {' '.join(f'{b:02X}' for b in comp_fw)}"
     )
     if len(comp_fw) < 3:
-        from uds_local.client import UdsError
-        raise UdsError(0x22, 0x00)
+        from uds_local.client import MalformedResponseError
+        raise MalformedResponseError(
+            0x22,
+            f"DID 0x0101 response too short ({len(comp_fw)} bytes, expected 3 "
+            "for [component_key, fw_type, protocol_ver])",
+        )
     component_key = comp_fw[0]
     fw_type = comp_fw[1]
     protocol_ver = comp_fw[2]
@@ -229,11 +233,24 @@ def step_module_to_program(sess: "UdsSession", ctx: FlashContext) -> None:
 
 
 def step_erase(sess: "UdsSession", ctx: FlashContext) -> None:
-    """RC 0xFF00 initializeEraseModule (timeout already set by step_module_to_program)."""
+    """RC 0xFF00 initializeEraseModule.
+
+    Wire frame is exactly `31 01 FF 00` — 4 bytes, no data after the routine
+    ID. Verified against `uds_initialize_erase_module` (`0x00409a7f`) which
+    calls the RC sender with `data_len=0, data_buf=0`, and the sender's
+    header struct (`local_10 = 4` header length, no data appended) at
+    `FUN_00430af9`. (Cross-checked against WDBI's sender `FUN_004309a5`
+    which uses `local_10 = 3` header + N bytes of data — same convention.)
+
+    Earlier versions of this tool sent a trailing `0x01` byte; that came
+    from a doc misread, not the binary. The protocol_ver=5 PCS bootloader
+    rejects the 5-byte form with NRC 0x31; older bootloaders may have been
+    lenient.
+    """
     print(f"  Step: RC 0xFF00 initializeEraseModule (P2={ctx.erase_timeout}s)")
     sess.start_tester_present()
     try:
-        sess.routine_control(_RC_ERASE, b"\x01")
+        sess.routine_control(_RC_ERASE)
     finally:
         sess.set_timeout(3.0)
         sess.stop_tester_present()

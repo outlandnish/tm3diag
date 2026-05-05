@@ -6,6 +6,85 @@ See [UDS_VM_OPCODES.md](UDS_VM_OPCODES.md) for the VM layer and
 
 ---
 
+## Known errata (2026-05-04)
+
+Several earlier claims in this document have been falsified or qualified by
+direct reading of the binary in `hashpicker_sim_2` and by two CAN-bus
+captures from a third-party flash tool — one successful DI
+flash, one successful PM flash. Headline corrections, with details inline at
+the affected sections:
+
+1. **PCS prog 1's module bytes are `0x04` then `0x00` on the wire — not the
+   `EcuNodeEntry+0x20` overrides.** The simulator's `vm_op_module_to_program`
+   has a `context+0x29` override mechanism that rewrites the bytecode literal
+   `0x04` to `0x0C` (the value at +0x20 for di/dis/pcscpu2). On real hardware
+   this override does NOT happen — both third-party captures send the
+   bytecode literals as-is. The doc previously implied node-table values
+   were the wire bytes; that was wrong for the secondary side. See section
+   on script `0x00651070`.
+
+2. **Prog 1's "single auth, both CPUs" pattern can only work on CAN-topology
+   revisions where both CPUs share one UDS endpoint.** In the binary's vintage,
+   "pm" and "di" both have `EcuNodeEntry+0x1C = 20` — they were aliases for
+   one UDS endpoint at `0x604/0x614`. In current production (per
+   `Model3_ETH.compact.json` and observed wire traffic), the DI is split out
+   onto `0x606/0x616` while PM stays at `0x604/0x614`. Prog 1's structure
+   cannot span two UDS endpoints; flashing each CPU as its own prog-0 session
+   is the right pattern in the split era. The 0x05F4 broadcast (payload
+   `"PMS12-13"`) is shared because the underlying physical PMS module is the
+   same, but the flash sessions are separate.
+
+3. **The "PCS BHX has a single SHDR" claim is not generalizable.** DI's BHX
+   has at least 2 SHDRs (observed at addresses `0x00009000` and `0x000091F0`,
+   each 992 bytes). PM's BHX likewise has multiple SHDRs (e.g. `0x00003E80`,
+   `0x00003E81F0`). The binary's BHX state machine (`bhx_transfer_state_machine`
+   at `0x00407b46`) loops back to read more SHDRs after each section
+   completes; the doc's previous "PCS = one section" was an artifact of
+   whichever PCS sample was inspected, not a structural rule.
+
+4. **DID `0xF180` does not match the structured layout this doc previously
+   claimed (MODULES, COMPONENT_ID big-endian, PCBA_ID, ASSEMBLY_ID, USAGE_ID,
+   FIRMWARE_TYPE, GIT_HASH, BUILD_CONFIG_ID).** Observed on PM:
+   `01 50 4D 53 31 32 2D 31 33 00 01 11 EC 5E 94 B1 E2 00 4F`. Bytes 1-8 are
+   the ASCII part name `"PMS12-13"` (printable, null-terminated), not packed
+   integer fields. The 19-byte length and the leading `0x01` (likely "modules")
+   are right; the middle is part-name ASCII; bytes 9-16 plausibly are a
+   git-hash; bytes 17-18 plausibly are a build-config integer. Past byte 0,
+   trust the bytes you observe over this doc.
+
+5. **DID `0x0101` bootloader response varies per ECU and may or may not match
+   the application ODJ layout.** PM's bootloader returns `05 01 04` (key,
+   fw_type, protocol_ver — matches the documented layout). DI's returns
+   `05 01 04` likewise. PCS variant 411 (per earlier note further down) was
+   reported as `1B 00 05` which doesn't fit the layout. Don't abort on
+   `fw_type != 1`; warn and continue.
+
+6. **Phase 1 of `enterBootloader(0)` watches an arrival counter, not a
+   payload pattern.** The binary's `FUN_00402764` returns the u16 at +0x04
+   of the per-node broadcast entry, which is incremented by the CAN-receive
+   layer (`FUN_00402d21`) on every matching frame. So Phase 1's exit
+   condition is "any frame on this ECU's broadcast CAN ID arrives," not
+   "this CAN ID's content changes." The 3.34 s ceiling exists because some
+   ECUs broadcast at very low cadence (DI: ~50-75 s observed); for those
+   the counter never bumps and Phase 1 falls through to Phase 2 (`3E 00` →
+   `7E 00`) on its own. PM does emit a broadcast within ~28 ms of each
+   `11 81` reset, so for PM the mechanic actually fires.
+
+7. **Several "scripts" listed below have zero xrefs in the binary and are
+   never executed.** Specifically: PCS prog 1 (the dual-CPU path at
+   `0x006510a0`), all bootloader-update scripts (`0x00651300`, `0x00651320`,
+   `0x00651340`), and various other prog-N entries beyond the first prog of
+   each script slot. These exist as bytecode but no caller hands them to
+   `uds_vm_run`. Treat them as design intent / specification, not as
+   "what the simulator actually runs."
+
+The doc below has not been edited section-by-section to reflect every
+correction above — it remains useful as a UDS-layer spec but should be
+cross-checked against `hashpicker_sim_2` and live captures before acting on
+specifics. Items marked with **[ERRATA]** point back to this preamble.
+
+---
+
 ## BHX File Format
 
 BHX is a big-endian container. Headers are parsed locally — **never sent over UDS**.
@@ -189,6 +268,19 @@ reset(soft)  sleep(500ms)
 ### `0x00651070` — pcs / pcscpu2 / di / dis / pm / pms (multi-CPU)
 
 The `module` byte selects which CPU the bootloader programs (`2E 01 02 <module>`).
+
+> **[ERRATA #1, #2, #7]** The `module` byte values listed for di/dis/pcscpu2
+> elsewhere in this doc (`0x0C`) are the `EcuNodeEntry+0x20` values that the
+> simulator's `vm_op_module_to_program` would override into. Two third-party
+> captures show the **real bootloader expects the prog-1 bytecode literals**:
+> `0x04` for the secondary side (di/dis/pcscpu2), `0x00` for the primary
+> (pcs/pm/pms). The simulator's override mechanism is sim-only behavior.
+>
+> Prog 1 below is **dead code in the binary** (zero xrefs to `0x006510a0`).
+> It also can't run on CAN-topology revisions where the two CPUs are at
+> separate UDS endpoints (`0x604/0x614` for PM, `0x606/0x616` for DI in the
+> current production revision); a single auth window can't span two CAN
+> ID pairs. In the split era, flash each CPU as its own prog-0 session.
 
 ```
 [prog 0]  — standard flash with extended erase timeout
@@ -716,11 +808,13 @@ CP MCU app may fail or write to the wrong region.
 ### What's at node-table offset `+0x24`?
 
 The CP, cpPlcFw, and cpPlcPib node-table entries differ at offset `+0x24`
-(values `0`, `8`, `6` respectively) — likely an internal subcomponent
-identifier used by the binary's flash-orchestration display logic, not by
-the wire protocol. The values don't appear in any UDS frame the tool sends.
-Treat as informational; the per-file destination is encoded entirely by the
-HEX record addresses.
+(values `0`, `8`, `6` respectively). **Meaning unknown** — I have not traced
+any binary code that reads this offset. It is *not* the module byte (which
+is at `+0x20` per `FUN_0040fb0a`) and it does not appear in any UDS frame
+we observed. The values don't match obvious candidates (DID offsets, sub-
+function bytes, security indices) cleanly. Earlier versions of this doc
+called this "an internal subcomponent identifier" — that was speculation
+without backing evidence and has been retracted.
 
 ### Implementation note
 
@@ -745,6 +839,16 @@ sends only the reset frame and skips the handover wait will silently end up talk
 to the application instead of the bootloader** — DSC, RDBI 0x0101, and SecurityAccess
 will all succeed (apps support those), but `WDBI 0x0102` (`moduleToProgram`) will be
 rejected because that DID exists only in the bootloader.
+
+> **[ERRATA #6]** Phase 1 watches the **arrival counter** (`+0x04` in the
+> per-node entry of `DAT_00651440`/`DAT_00651500`), not the boot-broadcast
+> payload. The CAN-receive layer (`FUN_00402d21`) increments that counter on
+> every matching frame. Phase 1's exit condition is "any frame on the watched
+> CAN ID arrived since the loop started," not a content-change check. The
+> 3.34 s ceiling matters because some ECUs broadcast at very low cadence
+> (DI ~50-75 s observed); for those, Phase 1 always falls through to Phase 2
+> on its own. PM broadcasts within ~28 ms of each `11 81`, so the mechanic
+> actually fires for PM but rarely for DI.
 
 **0a. Reset frame** (`reset(0)` in the script, mnemonic "reset(soft)"):
 
@@ -859,14 +963,20 @@ Three data bytes after the DID echo, in this order:
 - byte[2] = `protocol_ver` — stored at `context+0x02` and consumed by the next
   `securityAccess` step to choose the seed level (see section 5).
 
-> **Bootloader-mode caveat (observed on PCS, protocol_ver=5):** the bootloader's
-> response to DID `0x0101` does not match the application ODJ layout. Observed
-> bytes `1B 00 05` correspond to `[COMPONENT_ID_LO, COMPONENT_ID_HI, PROTOCOL_VER]`
-> (`COMPONENT_ID = 0x001B = PCS CPU1`, no `fw_type` field at all). The VM's
-> strict `byte[1] == operand` check would also fail here (it'd see `0x00 != 0x01`),
-> so a real flash tool likely either skips the check, branches on `protocol_ver`,
-> or tolerates the mismatch on the bootloader path. tm3diag downgrades the
-> `fw_type` mismatch to a warning rather than aborting.
+> **Bootloader-mode caveat (observed on PCS, protocol_ver=5):** PCS variant
+> 411 in bootloader mode returns `1B 00 05` for DID `0x0101`. Per the
+> application ODJ that decodes as `COMPONENT_KEY=0x1B, FIRMWARE_TYPE=0x00,
+> PROTOCOL_VER=0x05`. The `0x00` would fail `varifyCompAndFirmwareType(1)`'s
+> equality check against operand `1` per the binary's
+> `uds_varify_comp_and_firmware` (`0x0040973d`).
+>
+> **Inferred (not directly verified):** the values are also consistent with
+> a layout of `[COMPONENT_ID_LO, COMPONENT_ID_HI, PROTOCOL_VER]` since
+> `0x001B` matches the documented PCS CPU1 `COMPONENT_ID`. This is
+> pattern-matching on the values; we have not seen the bootloader's actual
+> DID 0x0101 decoder. Real Tesla flash behavior on this mismatch is
+> unknown — tm3diag pragmatically downgrades the check to a warning so
+> the rest of the flow can be observed.
 
 ---
 
@@ -1115,6 +1225,18 @@ to the ECU (via `RequestDownload`).
 > running prog 0 twice for the same ECU update wastes one full
 > reset / handover / auth round-trip.
 
+> **[ERRATA #2, #7]** This recommendation is wrong for current production
+> revisions. Prog 1 has zero xrefs in the binary (it's design intent, not
+> an executed path), and on revisions where the PMS module's two CPUs are
+> at separate UDS endpoints (`0x604/0x614` for PM, `0x606/0x616` for DI per
+> `Model3_ETH.compact.json`), a single auth window cannot span both — they
+> are physically different CAN ID pairs. The "prog 0 ×2" path (run the full
+> sequence once per file) is correct for the split topology, and is what
+> the third-party tool actually does on real hardware. Auto-switching to
+> prog 1 on detecting a primary/secondary pair would break in this era.
+> The "wasteful round-trip" critique is true but minor; the topology
+> constraint dominates.
+
 ---
 
 ## Security Detail
@@ -1164,6 +1286,16 @@ Byte   Field
 9–16   GIT_HASH  (8 bytes)
 17–18  BUILD_CONFIG_ID
 ```
+
+> **[ERRATA #4]** This packed-integer-field layout does not match observed
+> bootloader responses. PM returns
+> `01 50 4D 53 31 32 2D 31 33 00 01 11 EC 5E 94 B1 E2 00 4F` and DI returns
+> a similar shape with `"DIS12-13"` in the same slot. Bytes 1-8 are the
+> ASCII part name (printable, null-terminated), not COMPONENT_ID/PCBA_ID/
+> ASSEMBLY_ID/USAGE_ID/(unused)/FIRMWARE_TYPE as integer fields.
+> Confirmed structurally: byte 0 = `0x01` (modules), bytes 1-8 = ASCII
+> identifier, bytes 9-16 = plausibly git-hash, bytes 17-18 = plausibly a
+> build-config integer. Don't trust the doc layout for byte indices 1-8.
 
 ---
 

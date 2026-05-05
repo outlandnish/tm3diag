@@ -28,15 +28,17 @@ _PCS_SECONDARY_TYPES = frozenset({"pcscpu2", "di", "dis"})
 
 # Module bytes for prog 1's two moduleToProgram calls.
 #
-# The VM's bytecode operands (0x04, 0x00) get overridden on the first call by
-# context+0x29 (loaded from the node table entry's +0x20). When the VM runs
-# prog 1 from the pcscpu2 entry (whose +0x20 is 0x0C), the actual frames are
-# 0x0C then 0x00 — matching the prog-0 node-table values.
+# These are the **bytecode literals** from prog 1 at 0x006510a0
+# (`05 04` then `05 00`). Two successful third-party flash captures —
+# DI sending `2E 01 02 04` and PM sending `2E 01 02 00` against the same
+# physical PMS12-13 module on different UDS endpoints — confirm the real
+# bootloader expects exactly these values for secondary/primary respectively.
 #
-# We previously sent 0x04 / 0x00 thinking those were the wire bytes; observed
-# NRC 0x31 (requestOutOfRange) on the real PCS bootloader for 0x04 confirms
-# that's the inactive operand path. Use the node-table values instead.
-_PROG1_MODULE_SECONDARY = 0x0C
+# An earlier revision tried 0x0C / 0x00 (the sim's EcuNodeEntry+0x20 override
+# values for di/dis/pcscpu2), thinking the sim's context+0x29 override was
+# the production behavior. That produced the wrong wire byte on the secondary
+# side. The override is sim-only.
+_PROG1_MODULE_SECONDARY = 0x04
 _PROG1_MODULE_PRIMARY   = 0x00
 
 
@@ -110,8 +112,12 @@ def run_pcs_dual_cpu(
         f" {' '.join(f'{b:02X}' for b in comp_fw)}"
     )
     if len(comp_fw) < 3:
-        from uds_local.client import UdsError
-        raise UdsError(0x22, 0x00)
+        from uds_local.client import MalformedResponseError
+        raise MalformedResponseError(
+            0x22,
+            f"DID 0x0101 response too short ({len(comp_fw)} bytes, expected 3 "
+            "for [component_key, fw_type, protocol_ver])",
+        )
     # ODJ-documented layout (application response):
     #   byte[0] = COMPONENT_KEY, byte[1] = FIRMWARE_TYPE, byte[2] = PROTOCOL_VER
     # PCS bootloader observed 1B 00 05 — looks like COMPONENT_ID=0x001B (LE)

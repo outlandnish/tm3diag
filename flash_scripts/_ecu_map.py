@@ -77,12 +77,19 @@ ECU_SCRIPT_MAP: dict[str, _Entry] = {
     "vcleft": (SCRIPT_VCLEFT, 0x00),
 
     # pcs/pcscpu2/di/dis/pm/pms (0x00651070)
-    "pcs":     (SCRIPT_PCS, 0x00),
-    "pcscpu2": (SCRIPT_PCS, 0x0C),
-    "pm":      (SCRIPT_PCS, 0x00),
-    "pms":     (SCRIPT_PCS, 0x00),
-    "di":      (SCRIPT_PCS, 0x0C),
-    "dis":     (SCRIPT_PCS, 0x0C),
+    # Module byte values are taken from prog 1's bytecode literals at
+    # 0x006510a0 (`05 04` then `05 00`), NOT from EcuNodeEntry+0x20. The sim
+    # has +0x20=0x0C for di/dis/pcscpu2, but two successful third-party flash
+    # captures (DI: `2E 01 02 04`, PM: `2E 01 02 00`) show the real
+    # bootloader expects 0x04 / 0x00 — the prog 1 literals — not the entry
+    # override values. The sim's context+0x29 override mechanism produces
+    # the wrong wire byte for the secondary side; we bypass it here.
+    "pcs":     (SCRIPT_PCS, 0x00),  # primary / CPU1 — verified via PM log
+    "pm":      (SCRIPT_PCS, 0x00),  # primary / CPU1 — verified via PM log
+    "pms":     (SCRIPT_PCS, 0x00),  # primary / CPU1
+    "pcscpu2": (SCRIPT_PCS, 0x04),  # secondary / CPU2 — was 0x0C, see note above
+    "di":      (SCRIPT_PCS, 0x04),  # secondary / CPU2 — verified via DI log
+    "dis":     (SCRIPT_PCS, 0x04),  # secondary / CPU2 — was 0x0C, see note above
 
     # park (0x006510d0)
     "park": (SCRIPT_PARK, 0x00),

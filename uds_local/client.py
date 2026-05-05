@@ -50,15 +50,74 @@ _RC_VENDOR_PREFLIGHT = 0x0601
 _RC_OTA_MODE = 0x0540
 
 
+# ISO 14229-1 NRC names — the only NRCs hashpicker_sim's UDS stack recognizes
+# (table at 0x0043e200; 22 entries; no Tesla-custom NRCs). Any NRC outside
+# this set is shown as "unknown" but still printed numerically.
+_NRC_NAMES: dict[int, str] = {
+    0x10: "generalReject",
+    0x11: "serviceNotSupported",
+    0x12: "subFunctionNotSupported",
+    0x13: "incorrectMessageLengthOrInvalidFormat",
+    0x14: "responseTooLong",
+    0x21: "busyRepeatRequest",
+    0x22: "conditionsNotCorrect",
+    0x23: "ISOSAEReserved",
+    0x24: "requestSequenceError",
+    0x25: "noResponseFromSubnetComponent",
+    0x26: "failurePreventsExecutionOfRequestedAction",
+    0x31: "requestOutOfRange",
+    0x33: "securityAccessDenied",
+    0x35: "invalidKey",
+    0x36: "exceededNumberOfAttempts",
+    0x37: "requiredTimeDelayNotExpired",
+    0x70: "uploadDownloadNotAccepted",
+    0x72: "generalProgrammingFailure",
+    0x73: "wrongBlockSequenceCounter",
+    0x78: "requestCorrectlyReceived-ResponsePending",
+    0x7E: "subFunctionNotSupportedInActiveSession",
+    0x7F: "serviceNotSupportedInActiveSession",
+}
+
+
+def nrc_name(nrc: int) -> str:
+    """Return the ISO 14229 name for an NRC byte, or 'unknown' if unrecognized."""
+    return _NRC_NAMES.get(nrc, "unknown")
+
+
 class UdsError(Exception):
-    """Raised on negative UDS responses."""
+    """Raised on negative UDS responses (`7F <SID> <NRC>` from the ECU)."""
 
     def __init__(self, sid: int, nrc: int):
         self.sid = sid
         self.nrc = nrc
+        self.nrc_name = nrc_name(nrc)
         super().__init__(
-            f"Negative response for SID 0x{sid:02X}: NRC 0x{nrc:02X}"
+            f"Negative response for SID 0x{sid:02X}: NRC 0x{nrc:02X} ({self.nrc_name})"
         )
+
+
+class MalformedResponseError(UdsError):
+    """Raised when the response is locally rejectable — not a wire NRC.
+
+    Three distinct conditions roll up here:
+      * no response received within the timeout (transport layer empty result)
+      * response received but truncated below the expected length
+      * response received and well-formed at the SID level, but a payload field
+        doesn't carry the expected value (e.g. RC status byte, OTA-mode poll)
+
+    Inherits from UdsError so callers that `except UdsError` keep catching it.
+    `nrc` is None on this subclass to make clear there is no wire NRC byte.
+    """
+
+    def __init__(self, sid: int, detail: str):
+        # Skip UdsError.__init__ so we don't fabricate an NRC.
+        Exception.__init__(
+            self, f"Malformed response for SID 0x{sid:02X}: {detail}"
+        )
+        self.sid = sid
+        self.nrc = None
+        self.nrc_name = None
+        self.detail = detail
 
 
 class FlashCountError(Exception):
@@ -246,7 +305,10 @@ class UdsSession:
             self._check_positive(resp, _SID_RC)
             if len(resp) >= 5 and resp[4] == 0x01:
                 return
-        raise UdsError(_SID_RC, 0x00)
+        raise MalformedResponseError(
+            _SID_RC,
+            "vendor pre-flash routine never reported completion (resp[4] != 0x01) after 50 polls",
+        )
 
     def wait_for_ota_mode(self, attempts: int = 5) -> None:
         """VCWaitForOTAMode — RC 0x0540 start, then poll until response byte == 2.
@@ -281,7 +343,10 @@ class UdsSession:
             if len(resp) >= 5 and resp[4] == 0x02:
                 print(f"    OTA mode active (response[0]=0x02)")
                 return
-        raise UdsError(_SID_RC, 0x00)
+        raise MalformedResponseError(
+            _SID_RC,
+            f"OTA mode never reported active (resp[4] != 0x02) after {attempts} attempts",
+        )
 
     def io_control_short_term_adjustment(self, did: int, control_byte: int) -> None:
         """IOCBI (0x2F) with controlParameter=3 (shortTermAdjustment) and 1-byte data.
@@ -483,10 +548,15 @@ class UdsSession:
     @staticmethod
     def _check_positive(resp: list[int], expected_sid: int) -> None:
         if not resp:
-            raise UdsError(expected_sid, 0x00)
+            raise MalformedResponseError(expected_sid, "no response received")
         if resp[0] == 0x7F:
-            nrc = resp[2] if len(resp) >= 3 else 0x00
-            raise UdsError(expected_sid, nrc)
+            if len(resp) < 3:
+                raise MalformedResponseError(
+                    expected_sid,
+                    f"truncated negative response (got {len(resp)} bytes, "
+                    "expected at least 3 for `7F <SID> <NRC>`)",
+                )
+            raise UdsError(expected_sid, resp[2])
 
     # ------------------------------------------------------------------
     # Context manager

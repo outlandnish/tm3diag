@@ -174,7 +174,8 @@ SCRIPT_APS = FlashScript(
 )
 
 # 0x00651110 — RAM app scripts: vcleftramapp, vcrightramapp, vcfrontramapp,
-#              vcsecrumapp, sccmksub (prog 0: no boardPartSerialGet)
+#              vcsecramapp, sccmksub, pmramapp, pmsramapp
+#              (prog 0: no boardPartSerialGet)
 SCRIPT_RAMAPP = FlashScript(
     steps=[
         step_soft_reset,

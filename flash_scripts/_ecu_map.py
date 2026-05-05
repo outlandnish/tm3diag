@@ -98,11 +98,31 @@ ECU_SCRIPT_MAP: dict[str, _Entry] = {
     "aps": (SCRIPT_APS, 0x00),
 
     # RAM app scripts (0x00651110)
+    #
+    # Module bytes for *ramapp entries are drawn from EcuNodeEntry+0x20 in
+    # the binary. Same caveat as the di/dis/pcscpu2 case applies — this is
+    # the sim's context+0x29 override value, not a wire byte we've
+    # empirically confirmed against real hardware. The first time we see a
+    # successful flash log of any of these we should re-check.
     "vcleftramapp":  (SCRIPT_RAMAPP, 0x06),
     "vcrightramapp": (SCRIPT_RAMAPP, 0x0F),
     "vcfrontramapp": (SCRIPT_RAMAPP, 0x0F),
-    "vcsecrumapp":   (SCRIPT_RAMAPP, 0x0F),
+    "vcsecramapp":   (SCRIPT_RAMAPP, 0x0F),  # was vcsecrumapp (typo); seed metadata uses vcsecramapp
     "sccmksub":      (SCRIPT_RAMAPP, 0x06),
+
+    # OPC RAMAPPs delivered to the PMS module's primary side. Seed metadata
+    # references these as separate ecu_types alongside the parent pm/pms
+    # flash; without entries here, get_script() would KeyError on a normal
+    # 3-file PMS update (pms.bhx + dis.bhx + pmsramapp.bhx).
+    #
+    # Module byte = 0x00 is a CONSERVATIVE GUESS:
+    #   - matches the prog 1 bytecode literal at script_ramapp
+    #     (sub1 = `05 00` = moduleToProgram(0))
+    #   - matches the parent PM/PMS wire byte (verified via a third-party PM log)
+    # If the bootloader rejects 0x00, try the existing ramapp values 0x06
+    # / 0x0F next. Untested on hardware.
+    "pmramapp":  (SCRIPT_RAMAPP, 0x00),
+    "pmsramapp": (SCRIPT_RAMAPP, 0x00),
 
     # ibst (0x00651140)
     "ibst": (SCRIPT_IBST, 0x00),

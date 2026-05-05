@@ -155,7 +155,7 @@ CPU2 nodes (`pcscpu2`, `di`, `dis`) which carry `0x0C`.
 | `0x00651070` | pcs (mod=0x00), pcscpu2 (mod=0x0c), pm (mod=0x00), pms (mod=0x00), di (mod=0x0c), dis (mod=0x0c) |
 | `0x006510d0` | park                                                                                  |
 | `0x006510f0` | park, aps                                                                             |
-| `0x00651110` | vcleftramapp (mod=0x06), vcrightramapp (mod=0x0f), vcfrontramapp (mod=0x0f), vcsecrumapp (mod=0x0f), sccmksub (mod=0x06) |
+| `0x00651110` | vcleftramapp (mod=0x06), vcrightramapp (mod=0x0f), vcfrontramapp (mod=0x0f), vcsecramapp (mod=0x0f), sccmksub (mod=0x06) |
 | `0x00651140` | ibst                                                                                  |
 | `0x00651170` | espcal (mod=0x07), rcmcal (mod=0x07)                                                  |
 | `0x00651190` | esp                                                                                   |
@@ -164,7 +164,7 @@ CPU2 nodes (`pcscpu2`, `di`, `dis`) which carry `0x0C`.
 | `0x006511f0` | tpms                                                                                  |
 | `0x00651230` | cmp                                                                                   |
 | `0x00651270` | ptc                                                                                   |
-| `0x00651290` | vcrightramapp, vcfrontramapp, vcsecrumapp, bleepcenter (mod=0x0f)                     |
+| `0x00651290` | vcrightramapp, vcfrontramapp, vcsecramapp, bleepcenter (mod=0x0f)                     |
 | `0x006512b0` | vcleftramapp (mod=0x0f)                                                               |
 | `0x006512d0` | opc (mod=0x0c), opcs (mod=0x0c)                                                       |
 | `0x006512e0` | ths (mod=0x0c), swc (mod=0x0c), lumbarl/lumbar/lumbarr (mod=0x0b), bleep* (various)  |

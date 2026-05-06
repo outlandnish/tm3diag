@@ -719,6 +719,8 @@ class UdsSession:
             addressing_type=AddressingType.PHYSICAL,
         )
         self._transport.send_message(msg)
+        expected_sid = payload[0]
+        positive_sid = expected_sid + 0x40
         deadline_ms = timeout_ms
         while True:
             try:
@@ -728,9 +730,29 @@ class UdsSession:
             except Exception:
                 return []
             resp = list(record.payload)
+            if not resp:
+                return resp
             # 0x78 = requestCorrectlyReceivedResponsePending — ECU still working
             if len(resp) >= 3 and resp[0] == 0x7F and resp[2] == 0x78:
                 deadline_ms = timeout_ms
+                continue
+            # Skip stale frames left over from a previous request (e.g. an aborted
+            # multi-frame read). A well-formed response is either a positive response
+            # (SID + 0x40) or a negative response (7F <our-SID> <NRC>).
+            if resp[0] == 0x7F:
+                if len(resp) < 2 or resp[1] != expected_sid:
+                    print(
+                        f"    [stale] discarding NRC frame for SID"
+                        f" 0x{resp[1]:02X} while waiting for 0x{expected_sid:02X}",
+                        file=sys.stderr,
+                    )
+                    continue
+            elif resp[0] != positive_sid:
+                print(
+                    f"    [stale] discarding positive response 0x{resp[0]:02X}"
+                    f" while waiting for 0x{positive_sid:02X}",
+                    file=sys.stderr,
+                )
                 continue
             return resp
 

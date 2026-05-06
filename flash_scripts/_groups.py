@@ -26,6 +26,8 @@ _BL_PARENT_NODE: dict[str, str] = {
     "hvpbl":     "hvp",
     "vcfrontbu": "vcfront",
     "vcfrontbl": "vcfront",
+    "pcsbu":     "pcs",
+    "pcsbl":     "pcs",
 }
 
 

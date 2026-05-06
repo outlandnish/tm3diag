@@ -181,6 +181,8 @@ ECU_SCRIPT_MAP: dict[str, _Entry] = {
     "hvpbl":     (SCRIPT_BL,                 0x00),
     "vcfrontbu": (SCRIPT_BL_UPDATER_VCFRONT, 0x00),
     "vcfrontbl": (SCRIPT_BL,                 0x00),
+    "pcsbu":     (SCRIPT_BL_UPDATER,         0x00),
+    "pcsbl":     (SCRIPT_BL,                 0x00),
 }
 
 

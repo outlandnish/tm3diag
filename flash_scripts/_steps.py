@@ -165,16 +165,10 @@ def step_programming_session(sess: "UdsSession", ctx: FlashContext) -> None:
 def step_verify_comp_fw(sess: "UdsSession", ctx: FlashContext) -> None:
     """RDBI 0x0101 — log raw bytes, parse, stash protocol_ver on the context.
 
-    ODJ-documented (application response) layout:
+    Layout:
       byte[0] = COMPONENT_KEY
-      byte[1] = FIRMWARE_TYPE        ← expected to equal ctx.expected_fw_type
+      byte[1] = FIRMWARE_TYPE        ← must equal ctx.expected_fw_type
       byte[2] = BOOTLOADER_PROTOCOL_VERSION
-
-    Bootloader-mode response is observed to differ on at least PCS — the
-    response there looks like [COMPONENT_ID_LO, COMPONENT_ID_HI, PROTOCOL_VER]
-    with no FIRMWARE_TYPE field at all. We log the raw bytes and downgrade
-    the fw_type mismatch to a warning so the flash can proceed; the wire
-    byte order may not match the application ODJ in bootloader mode.
     """
     print("  Step: ReadDataByIdentifier COMP_AND_FW_TYPE (0x0101)")
     comp_fw = sess.read_did(0x0101)
@@ -201,9 +195,8 @@ def step_verify_comp_fw(sess: "UdsSession", ctx: FlashContext) -> None:
         from uds_local.client import MalformedResponseError
         raise MalformedResponseError(
             0x22,
-            f"DID 0x0101 FIRMWARE_TYPE byte 0x{fw_type:02X} != expected"
-            f" 0x{ctx.expected_fw_type:02X}. Bootloader handover"
-            " did not complete).",
+            f"DID 0x0101 FIRMWARE_TYPE 0x{fw_type:02X} != expected"
+            f" 0x{ctx.expected_fw_type:02X}",
         )
     ctx.protocol_ver = protocol_ver
 

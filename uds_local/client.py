@@ -737,17 +737,7 @@ class UdsSession:
             payload=bytearray(payload),
             addressing_type=AddressingType.PHYSICAL,
         )
-        try:
-            self._transport.send_message(msg)
-        except Exception as exc:
-            err_str = str(exc)
-            if "105" in err_str or "buffer" in err_str.lower():
-                raise RuntimeError(
-                    "TX queue full (ENOBUFS) — run: "
-                    f"sudo ip link set {getattr(self._bus, 'channel', '?')} "
-                    "txqueuelen 1000"
-                ) from exc
-            raise
+        self._transport.send_message(msg)
         expected_sid = payload[0]
         positive_sid = expected_sid + 0x40
         deadline_ms = timeout_ms

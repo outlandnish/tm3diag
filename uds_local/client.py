@@ -512,29 +512,33 @@ class UdsSession:
         max_block_len = int.from_bytes(resp[2:2 + max_block_len_size], "big")
         return min(max_block_len, 512)
 
-    def transfer_data(
-        self,
-        payload: bytes,
-        max_block_len: int,
-        send_timeout: float | None = None,
-    ) -> None:
+    def transfer_data(self, payload: bytes, max_block_len: int) -> None:
         """Transfer payload in chunks.
 
         max_block_len includes the 1-byte sequence counter.
 
-        send_timeout: passed to bus.send() for each CAN frame while this
-        transfer is active. py-uds defaults to no timeout (fail immediately
-        on ENOBUFS). A 258-byte block needs ~37 frames at STmin=0; on a
-        500kbps bus each frame is ~0.26ms, so 0.05s gives ~190 frame-widths
-        of headroom without meaningfully slowing the transfer.
+        bus.send() is patched for the duration to retry on ENOBUFS (errno 105).
+        select()-based timeouts don't help here — select checks the socket send
+        buffer, not the kernel CAN TX ring (txqueuelen). On a 500kbps bus each
+        frame is ~0.26ms, so a 1ms sleep drains ~4 slots from a depth-10 queue.
         """
         chunk_size = max_block_len - 2  # subtract SID + seq bytes
         seq = 0x01
         offset = 0
 
         orig_send = self._bus.send
-        if send_timeout is not None:
-            self._bus.send = lambda msg, **_: orig_send(msg, timeout=send_timeout)
+
+        def _send_with_retry(msg, **_):
+            for _ in range(50):
+                try:
+                    return orig_send(msg)
+                except can.CanOperationError as exc:
+                    if getattr(exc, "error_code", None) != 105:
+                        raise
+                    time.sleep(0.001)
+            raise can.CanOperationError("TX queue persistently full after retries", 105)
+
+        self._bus.send = _send_with_retry
         try:
             while offset < len(payload):
                 chunk = payload[offset:offset + chunk_size]
@@ -543,8 +547,7 @@ class UdsSession:
                 offset += len(chunk)
                 seq = 0x00 if seq == 0xFF else seq + 1  # wrap 0xFF → 0x00
         finally:
-            if send_timeout is not None:
-                self._bus.send = orig_send
+            self._bus.send = orig_send
 
     def request_transfer_exit(self) -> None:
         resp = self._send_raw([_SID_RTE])

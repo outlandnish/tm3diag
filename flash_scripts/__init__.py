@@ -77,7 +77,7 @@ from ._steps import (
     step_sleep_500ms,
     step_sleep_1000ms,
     step_sleep_5000ms,
-    step_soft_reset,
+    step_ecu_reset,
     step_start_tester_present,
     step_stop_tester_present,
     step_transfer_loop,

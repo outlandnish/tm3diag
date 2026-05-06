@@ -28,7 +28,7 @@ if TYPE_CHECKING:
 # Reset / bootloader handover
 # ---------------------------------------------------------------------------
 
-def step_soft_reset(sess: "UdsSession", ctx: FlashContext) -> None:
+def step_ecu_reset(sess: "UdsSession", _ctx: FlashContext) -> None:
     """ECUReset `11 81` (subfunction 0x01 with SPR set) — fire-and-forget.
 
     Matches VM `reset(0)`. When used as the opening reset, `step_wait_for_bootloader`

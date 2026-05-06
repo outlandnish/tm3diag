@@ -22,7 +22,7 @@ from ._steps import (
     step_sleep_500ms,
     step_sleep_1000ms,
     step_sleep_5000ms,
-    step_soft_reset,
+    step_ecu_reset,
     step_transfer_loop,
     step_vcright_ota_prep,
     step_vendor_preflight,
@@ -39,7 +39,7 @@ SCRIPT_GTW3 = FlashScript(steps=[])
 # 0x00650fb0 — Standard: hvbms, cp, epas3p/s, epbl/r, hvp, ocs1p, sccmk, vcsec, tas
 SCRIPT_STANDARD = FlashScript(
     steps=[
-        step_soft_reset,
+        step_ecu_reset,
         step_wait_for_bootloader,
         step_board_info,
         step_programming_session,
@@ -50,7 +50,7 @@ SCRIPT_STANDARD = FlashScript(
         step_transfer_loop,
         step_verify_crc,
         step_check_rev,
-        step_soft_reset,
+        step_ecu_reset,
         step_sleep_300ms,
     ],
 )
@@ -58,7 +58,7 @@ SCRIPT_STANDARD = FlashScript(
 # 0x00651000 — vcfront / ibstcal (prog 1: standard flash only)
 SCRIPT_VCFRONT = FlashScript(
     steps=[
-        step_soft_reset,
+        step_ecu_reset,
         step_wait_for_bootloader,
         step_programming_session,
         step_verify_comp_fw,
@@ -68,7 +68,7 @@ SCRIPT_VCFRONT = FlashScript(
         step_transfer_loop,
         step_verify_crc,
         step_check_rev,
-        step_soft_reset,
+        step_ecu_reset,
         step_sleep_500ms,
     ],
 )
@@ -76,7 +76,7 @@ SCRIPT_VCFRONT = FlashScript(
 # 0x00651030 — vcright (prog 0: standard flash)
 SCRIPT_VCRIGHT = FlashScript(
     steps=[
-        step_soft_reset,
+        step_ecu_reset,
         step_wait_for_bootloader,
         step_programming_session,
         step_verify_comp_fw,
@@ -86,7 +86,7 @@ SCRIPT_VCRIGHT = FlashScript(
         step_transfer_loop,
         step_verify_crc,
         step_check_rev,
-        step_soft_reset,
+        step_ecu_reset,
         step_sleep_500ms,
     ],
 )
@@ -95,7 +95,7 @@ SCRIPT_VCRIGHT = FlashScript(
 SCRIPT_VCLEFT = FlashScript(
     steps=[
         step_vendor_preflight,
-        step_soft_reset,
+        step_ecu_reset,
         step_wait_for_bootloader,
         step_programming_session,
         step_verify_comp_fw,
@@ -105,7 +105,7 @@ SCRIPT_VCLEFT = FlashScript(
         step_transfer_loop,
         step_verify_crc,
         step_check_rev,
-        step_soft_reset,
+        step_ecu_reset,
         step_sleep_500ms,
     ],
 )
@@ -118,7 +118,7 @@ SCRIPT_VCLEFT = FlashScript(
 # netSetTimeout(5)→P2*=10s for the PCS family.
 SCRIPT_PCS = FlashScript(
     steps=[
-        step_soft_reset,
+        step_ecu_reset,
         step_wait_for_bootloader,
         step_board_info,
         step_programming_session,
@@ -129,7 +129,7 @@ SCRIPT_PCS = FlashScript(
         step_transfer_loop,
         step_verify_crc,
         step_check_rev,
-        step_soft_reset,
+        step_ecu_reset,
         step_sleep_300ms,
     ],
     erase_timeout=10.0,
@@ -138,7 +138,7 @@ SCRIPT_PCS = FlashScript(
 # 0x006510d0 — park (prog 0: extended erase timeout, 5 s post-reset sleep)
 SCRIPT_PARK = FlashScript(
     steps=[
-        step_soft_reset,
+        step_ecu_reset,
         step_wait_for_bootloader,
         step_programming_session,
         step_verify_comp_fw,
@@ -148,7 +148,7 @@ SCRIPT_PARK = FlashScript(
         step_transfer_loop,
         step_verify_crc,
         step_check_rev,
-        step_soft_reset,
+        step_ecu_reset,
         step_sleep_5000ms,
     ],
     erase_timeout=1.0,
@@ -157,7 +157,7 @@ SCRIPT_PARK = FlashScript(
 # 0x006510f0 — park / aps (prog 0)
 SCRIPT_APS = FlashScript(
     steps=[
-        step_soft_reset,
+        step_ecu_reset,
         step_wait_for_bootloader,
         step_board_info,
         step_programming_session,
@@ -168,7 +168,7 @@ SCRIPT_APS = FlashScript(
         step_transfer_loop,
         step_verify_crc,
         step_check_rev,
-        step_soft_reset,
+        step_ecu_reset,
     ],
     erase_timeout=1.0,
 )
@@ -178,7 +178,7 @@ SCRIPT_APS = FlashScript(
 #              (prog 0: no boardPartSerialGet)
 SCRIPT_RAMAPP = FlashScript(
     steps=[
-        step_soft_reset,
+        step_ecu_reset,
         step_wait_for_bootloader,
         step_programming_session,
         step_verify_comp_fw,
@@ -188,7 +188,7 @@ SCRIPT_RAMAPP = FlashScript(
         step_transfer_loop,
         step_verify_crc,
         step_check_rev,
-        step_soft_reset,
+        step_ecu_reset,
     ],
 )
 
@@ -197,7 +197,7 @@ SCRIPT_IBST = FlashScript(
     steps=[
         step_check_flash_count_2,
         step_clear_dtc,
-        step_soft_reset,
+        step_ecu_reset,
         step_wait_for_bootloader,
         step_board_info,
         step_programming_session,
@@ -208,7 +208,7 @@ SCRIPT_IBST = FlashScript(
         step_transfer_loop,
         step_verify_crc,
         step_check_rev,
-        step_soft_reset,
+        step_ecu_reset,
     ],
     security_level=3,
     erase_timeout=4.0,
@@ -217,7 +217,7 @@ SCRIPT_IBST = FlashScript(
 # 0x00651170 — espcal / rcmcal (calibration flash, security level 3)
 SCRIPT_ESPCAL = FlashScript(
     steps=[
-        step_soft_reset,
+        step_ecu_reset,
         step_wait_for_bootloader,
         step_programming_session,
         step_verify_comp_fw,
@@ -227,7 +227,7 @@ SCRIPT_ESPCAL = FlashScript(
         step_transfer_loop,
         step_verify_crc,
         step_check_rev,
-        step_soft_reset,
+        step_ecu_reset,
     ],
     security_level=3,
     erase_timeout=4.0,
@@ -237,7 +237,7 @@ SCRIPT_ESPCAL = FlashScript(
 SCRIPT_ESP = FlashScript(
     steps=[
         step_check_flash_count_1,
-        step_soft_reset,
+        step_ecu_reset,
         step_wait_for_bootloader,
         step_programming_session,
         step_verify_comp_fw,
@@ -246,7 +246,7 @@ SCRIPT_ESP = FlashScript(
         step_erase,
         step_transfer_loop,
         step_verify_crc,
-        step_soft_reset,
+        step_ecu_reset,
     ],
     security_level=3,
 )
@@ -295,7 +295,7 @@ SCRIPT_RCM = FlashScript(
 # 0x006511f0 — tpms (security level 4 — baolong_hash)
 SCRIPT_TPMS = FlashScript(
     steps=[
-        step_soft_reset,
+        step_ecu_reset,
         step_wait_for_bootloader,
         step_programming_session,
         step_verify_comp_fw,
@@ -305,7 +305,7 @@ SCRIPT_TPMS = FlashScript(
         step_transfer_loop,
         step_verify_crc,
         step_check_rev,
-        step_soft_reset,
+        step_ecu_reset,
     ],
     security_level=4,
     erase_timeout=3.0,
@@ -314,7 +314,7 @@ SCRIPT_TPMS = FlashScript(
 # 0x00651230 — cmp (security level 7 — pektron-style)
 SCRIPT_CMP = FlashScript(
     steps=[
-        step_soft_reset,
+        step_ecu_reset,
         step_wait_for_bootloader,
         step_board_info,
         step_programming_session,
@@ -325,7 +325,7 @@ SCRIPT_CMP = FlashScript(
         step_transfer_loop,
         step_verify_crc,
         step_check_rev,
-        step_soft_reset,
+        step_ecu_reset,
     ],
     security_level=7,
 )
@@ -333,7 +333,7 @@ SCRIPT_CMP = FlashScript(
 # 0x00651270 — ptc (non-standard erase, 10 s timeout)
 SCRIPT_PTC = FlashScript(
     steps=[
-        step_soft_reset,
+        step_ecu_reset,
         step_wait_for_bootloader,
         step_programming_session,
         step_verify_comp_fw,
@@ -343,7 +343,7 @@ SCRIPT_PTC = FlashScript(
         step_transfer_loop,
         step_verify_crc,
         step_check_rev,
-        step_soft_reset,
+        step_ecu_reset,
     ],
     erase_timeout=10.0,
 )
@@ -351,7 +351,7 @@ SCRIPT_PTC = FlashScript(
 # 0x00651290 — vcright/vcfront/vcsec ramapp, bleepcenter (prog 0)
 SCRIPT_RAMAPP_ALT = FlashScript(
     steps=[
-        step_soft_reset,
+        step_ecu_reset,
         step_wait_for_bootloader,
         step_programming_session,
         step_verify_comp_fw,
@@ -368,7 +368,7 @@ SCRIPT_RAMAPP_ALT = FlashScript(
 SCRIPT_VCLEFTRAMAPP = FlashScript(
     steps=[
         step_vendor_preflight,
-        step_soft_reset,
+        step_ecu_reset,
         step_wait_for_bootloader,
         step_programming_session,
         step_verify_comp_fw,
@@ -385,7 +385,7 @@ SCRIPT_VCLEFTRAMAPP = FlashScript(
 # 0x006512d0 — opc / opcs (prog 1: standard flash, 3 s timeout)
 SCRIPT_OPC = FlashScript(
     steps=[
-        step_soft_reset,
+        step_ecu_reset,
         step_wait_for_bootloader,
         step_programming_session,
         step_verify_comp_fw,
@@ -395,7 +395,7 @@ SCRIPT_OPC = FlashScript(
         step_transfer_loop,
         step_verify_crc,
         step_check_rev,
-        step_soft_reset,
+        step_ecu_reset,
     ],
     erase_timeout=3.0,
 )
@@ -412,7 +412,7 @@ SCRIPT_THS = FlashScript(
         step_transfer_loop,
         step_verify_crc,
         step_check_rev,
-        step_soft_reset,
+        step_ecu_reset,
     ],
     erase_timeout=3.0,
 )
@@ -428,7 +428,7 @@ SCRIPT_THS = FlashScript(
 #   reset(0)  halt
 SCRIPT_BL_UPDATER = FlashScript(
     steps=[
-        step_soft_reset,
+        step_ecu_reset,
         step_wait_for_bootloader,
         step_programming_session,
         step_verify_comp_fw,           # expected_fw_type=1 (default)
@@ -438,7 +438,7 @@ SCRIPT_BL_UPDATER = FlashScript(
         step_transfer_loop,
         step_verify_crc,
         step_check_rev,
-        step_soft_reset,
+        step_ecu_reset,
     ],
     erase_timeout=3.0,
 )
@@ -466,7 +466,7 @@ SCRIPT_BL = FlashScript(
         step_transfer_loop,
         step_verify_crc,
         step_check_rev,
-        step_soft_reset,
+        step_ecu_reset,
     ],
     erase_timeout=3.0,
     expected_fw_type=0x02,
@@ -483,7 +483,7 @@ SCRIPT_BL = FlashScript(
 SCRIPT_BL_UPDATER_VCFRONT = FlashScript(
     steps=[
         step_vcright_ota_prep,         # ← sub4 (VCRIGHT detour)
-        step_soft_reset,
+        step_ecu_reset,
         step_wait_for_bootloader,
         step_programming_session,
         step_verify_comp_fw,           # expected_fw_type=1 (default)
@@ -493,7 +493,7 @@ SCRIPT_BL_UPDATER_VCFRONT = FlashScript(
         step_transfer_loop,
         step_verify_crc,
         step_check_rev,
-        step_soft_reset,
+        step_ecu_reset,
     ],
     erase_timeout=3.0,
 )

@@ -218,24 +218,6 @@ class _BroadcastWatcher(can.Listener):
         pass
 
 
-def _bump_txqueuelen(channel: str, qlen: int = 1000) -> None:
-    """Best-effort: raise the socketcan TX queue length to avoid ENOBUFS.
-
-    With STmin=0, py-uds sends all Consecutive Frames back-to-back. A 258-byte
-    TransferData block needs ~37 CAN frames; the default txqueuelen of 10 fills
-    up after a few blocks. Requires CAP_NET_ADMIN — silently ignored if the
-    caller lacks permission.
-    """
-    import subprocess
-    try:
-        subprocess.run(
-            ["ip", "link", "set", channel, "txqueuelen", str(qlen)],
-            check=True, capture_output=True,
-        )
-    except Exception:
-        pass
-
-
 class FlashCountError(Exception):
     """Raised when the ECU's flash count is at or over its per-ECU limit."""
 
@@ -255,8 +237,6 @@ class UdsSession:
         interface: str = "socketcan",
         log_frames: bool = True,
     ):
-        if interface == "socketcan" and channel:
-            _bump_txqueuelen(channel)
         self._bus = can.Bus(interface=interface, channel=channel)
         # Pre-create one shared Notifier and hand it to the transport so there
         # is never more than one active Notifier on the bus. The transport's

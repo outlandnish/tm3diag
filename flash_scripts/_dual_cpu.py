@@ -95,7 +95,6 @@ def run_pcs_dual_cpu(
 
     print("  Step: DiagnosticSessionControl(PROGRAMMING)")
     sess.diagnostic_session(0x02)
-    sess.sleep(0.5)
 
     print("  Step: ReadDataByIdentifier COMP_AND_FW_TYPE (0x0101)")
     comp_fw = sess.read_did(0x0101)

@@ -90,7 +90,6 @@ def run_pcs_dual_cpu(
 
     print("  Step: ECUReset 11 81 (SPR, no wait)")
     sess.ecu_reset_no_wait(0x01)
-    sess.sleep(0.5)
     print("  Step: Wait for bootloader handover")
     sess.wait_for_bootloader()
 

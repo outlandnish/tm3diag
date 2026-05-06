@@ -54,10 +54,7 @@ the affected sections:
 
 5. **DID `0x0101` bootloader response varies per ECU and may or may not match
    the application ODJ layout.** PM's bootloader returns `05 01 04` (key,
-   fw_type, protocol_ver — matches the documented layout). DI's returns
-   `05 01 04` likewise. PCS variant 411 (per earlier note further down) was
-   reported as `1B 00 05` which doesn't fit the layout. Don't abort on
-   `fw_type != 1`; warn and continue.
+   fw_type, protocol_ver — matches the documented layout).
 
 6. **Phase 1 of `enterBootloader(0)` watches an arrival counter, not a
    payload pattern.** The binary's `FUN_00402764` returns the u16 at +0x04
@@ -982,21 +979,6 @@ Three data bytes after the DID echo, in this order:
   (always `1` for prog-0 flash flows). Mismatch → abort with error `0x10000 | fw_type`.
 - byte[2] = `protocol_ver` — stored at `context+0x02` and consumed by the next
   `securityAccess` step to choose the seed level (see section 5).
-
-> **Bootloader-mode caveat (observed on PCS, protocol_ver=5):** PCS variant
-> 411 in bootloader mode returns `1B 00 05` for DID `0x0101`. Per the
-> application ODJ that decodes as `COMPONENT_KEY=0x1B, FIRMWARE_TYPE=0x00,
-PROTOCOL_VER=0x05`. The `0x00` would fail `varifyCompAndFirmwareType(1)`'s
-> equality check against operand `1` per the binary's
-> `uds_varify_comp_and_firmware` (`0x0040973d`).
->
-> **Inferred (not directly verified):** the values are also consistent with
-> a layout of `[COMPONENT_ID_LO, COMPONENT_ID_HI, PROTOCOL_VER]` since
-> `0x001B` matches the documented PCS CPU1 `COMPONENT_ID`. This is
-> pattern-matching on the values; we have not seen the bootloader's actual
-> DID 0x0101 decoder. Real Tesla flash behavior on this mismatch is
-> unknown — tm3diag pragmatically downgrades the check to a warning so
-> the rest of the flow can be observed.
 
 ---
 

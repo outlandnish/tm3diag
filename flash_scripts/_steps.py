@@ -284,7 +284,7 @@ def step_transfer_loop(sess: "UdsSession", ctx: FlashContext) -> None:
         print(
             f"    TransferData ({seg.length} bytes, {chunk_size}-byte chunks)"
         )
-        sess.transfer_data(seg.data, max_block_len)
+        sess.transfer_data(seg.data, max_block_len, send_timeout=0.05)
         print("    RequestTransferExit")
         sess.request_transfer_exit()
 
@@ -299,7 +299,7 @@ def step_transfer_loop_inter_shdr(sess: "UdsSession", ctx: FlashContext) -> None
         )
         max_block_len = sess.request_download(seg.start_address, seg.length)
         print(f"    RequestDownload → maxBlockLen={max_block_len}")
-        sess.transfer_data(seg.data, max_block_len)
+        sess.transfer_data(seg.data, max_block_len, send_timeout=0.05)
         print("    RequestTransferExit")
         sess.request_transfer_exit()
 

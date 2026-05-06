@@ -532,20 +532,39 @@ class UdsSession:
         max_block_len = int.from_bytes(resp[2:2 + max_block_len_size], "big")
         return min(max_block_len, 512)
 
-    def transfer_data(self, payload: bytes, max_block_len: int) -> None:
+    def transfer_data(
+        self,
+        payload: bytes,
+        max_block_len: int,
+        send_timeout: float | None = None,
+    ) -> None:
         """Transfer payload in chunks.
 
         max_block_len includes the 1-byte sequence counter.
+
+        send_timeout: passed to bus.send() for each CAN frame while this
+        transfer is active. py-uds defaults to no timeout (fail immediately
+        on ENOBUFS). A 258-byte block needs ~37 frames at STmin=0; on a
+        500kbps bus each frame is ~0.26ms, so 0.05s gives ~190 frame-widths
+        of headroom without meaningfully slowing the transfer.
         """
         chunk_size = max_block_len - 2  # subtract SID + seq bytes
         seq = 0x01
         offset = 0
-        while offset < len(payload):
-            chunk = payload[offset:offset + chunk_size]
-            resp = self._send_raw([_SID_TD, seq] + list(chunk))
-            self._check_positive(resp, _SID_TD)
-            offset += len(chunk)
-            seq = 0x00 if seq == 0xFF else seq + 1  # wrap 0xFF → 0x00
+
+        orig_send = self._bus.send
+        if send_timeout is not None:
+            self._bus.send = lambda msg, **_: orig_send(msg, timeout=send_timeout)
+        try:
+            while offset < len(payload):
+                chunk = payload[offset:offset + chunk_size]
+                resp = self._send_raw([_SID_TD, seq] + list(chunk))
+                self._check_positive(resp, _SID_TD)
+                offset += len(chunk)
+                seq = 0x00 if seq == 0xFF else seq + 1  # wrap 0xFF → 0x00
+        finally:
+            if send_timeout is not None:
+                self._bus.send = orig_send
 
     def request_transfer_exit(self) -> None:
         resp = self._send_raw([_SID_RTE])

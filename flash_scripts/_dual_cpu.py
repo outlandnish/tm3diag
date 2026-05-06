@@ -185,7 +185,7 @@ def _flash_one_cpu_in_session(
             f" addr=0x{seg.start_address:08X} size={seg.length} bytes"
         )
         max_block_len = sess.request_download(seg.start_address, seg.length)
-        sess.transfer_data(seg.data, max_block_len)
+        sess.transfer_data(seg.data, max_block_len, send_timeout=0.05)
         sess.request_transfer_exit()
 
     if verify_rev_at_end:

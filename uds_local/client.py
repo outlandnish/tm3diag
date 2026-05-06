@@ -237,6 +237,13 @@ class UdsSession:
         log_frames: bool = True,
     ):
         self._bus = can.Bus(interface=interface, channel=channel)
+        # Pre-create one shared Notifier and hand it to the transport so there
+        # is never more than one active Notifier on the bus. The transport's
+        # notifier starts as None and gets set lazily on first send/receive —
+        # if we let that happen a second Notifier would be created and python-can
+        # would raise "A bus can not be added to multiple active Notifier
+        # instances".
+        self._frame_notifier = can.Notifier(self._bus, [])
         addressing = NormalCanAddressingInformation(
             rx_physical_params={"can_id": node.response_can_id},
             tx_physical_params={"can_id": node.request_can_id},
@@ -246,13 +253,11 @@ class UdsSession:
         self._transport: PyCanTransportInterface = PyCanTransportInterface(
             network_manager=self._bus,
             addressing_information=addressing,
+            notifier=self._frame_notifier,
         )
         self._node = node
         self._tp_stop = threading.Event()
         self._tp_thread: threading.Thread | None = None
-        # Lazily-created fallback notifier — only set when the transport
-        # doesn't expose `notifier` and we attach listeners directly to the bus.
-        self._frame_notifier: can.Notifier | None = None
 
         # Attach passive frame logger so we can correlate stray RX frames
         # (the ones that trigger UnexpectedPacketReceptionWarning) with the
@@ -275,20 +280,7 @@ class UdsSession:
             self._install_listener(self._broadcast_watcher)
 
     def _install_listener(self, listener: can.Listener) -> None:
-        """Attach a passive listener to whichever notifier already exists.
-
-        Tries the transport's notifier first (shared with the UDS receive
-        path so we don't double-consume frames). If the transport hasn't
-        exposed one yet, lazily creates a dedicated Notifier on the bus and
-        reuses it for any subsequent listeners.
-        """
-        try:
-            self._transport.notifier.add_listener(listener)
-        except AttributeError:
-            if self._frame_notifier is None:
-                self._frame_notifier = can.Notifier(self._bus, [listener])
-            else:
-                self._frame_notifier.add_listener(listener)
+        self._frame_notifier.add_listener(listener)
 
     # ------------------------------------------------------------------
     # TesterPresent keep-alive
@@ -746,19 +738,9 @@ class UdsSession:
     def __exit__(self, *_: Any) -> None:
         self.stop_tester_present()
         try:
-            if self._transport.notifier is not None:
-                self._transport.notifier.stop()
+            self._frame_notifier.stop()
         except Exception:
             pass
-        # Stop the standalone frame-logger Notifier if we used the fallback path
-        # (transport had no `notifier` attribute). The shared-notifier path is
-        # already torn down by the transport.notifier.stop() above.
-        frame_notifier = getattr(self, "_frame_notifier", None)
-        if frame_notifier is not None:
-            try:
-                frame_notifier.stop()
-            except Exception:
-                pass
         try:
             self._bus.shutdown()
         except Exception:

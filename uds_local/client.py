@@ -124,46 +124,47 @@ class MalformedResponseError(UdsError):
 
 
 class _BusFrameLogger(can.Listener):
-    """Passive logger for every CAN frame arriving on the bus during a session.
+    """Passive logger for CAN frames during a session.
 
-    Tags each frame as TX (matches the node's request_can_id), RX (matches the
-    node's response_can_id), or OTH (anything else). The OTH frames are the
-    interesting ones — they're what triggers
-    `uds.UnexpectedPacketReceptionWarning` from the py-uds transport, and they
-    can be:
-      * stale fragments from an earlier transaction (rare, indicates timing slip)
-      * broadcasts from another node sharing this CAN bus
-      * a re-issued response from the ECU after a watchdog reset
-      * an entirely different ECU answering on the same bus
+    By default only logs TX (request_can_id) and RX (response_can_id) frames.
+    Set env var TM3DIAG_LOG_ALL_FRAMES=1 to also log OTH frames (every other
+    ID on the bus — useful for diagnosing UnexpectedPacketReceptionWarning but
+    very noisy on a live vehicle bus).
 
-    Output goes to stderr by default so it doesn't pollute the success path
-    on stdout. Disable with `log_frames=False` on UdsSession or by setting
-    env var `TM3DIAG_NO_FRAME_LOG=1`.
+    Disable entirely with log_frames=False on UdsSession or TM3DIAG_NO_FRAME_LOG=1.
     """
 
     def __init__(
         self,
         request_id: int,
         response_id: int,
+        broadcast_id: int | None = None,
         stream: TextIO | None = None,
+        log_other: bool = False,
     ) -> None:
         super().__init__()
         self._request_id = request_id
         self._response_id = response_id
+        self._broadcast_id = broadcast_id
         self._stream = stream if stream is not None else sys.stderr
+        self._log_other = log_other
         self._t0 = time.monotonic()
         self._stopped = False
 
     def on_message_received(self, msg: can.Message) -> None:
         if self._stopped or msg.is_error_frame or msg.is_remote_frame:
             return
-        rel = time.monotonic() - self._t0
         if msg.arbitration_id == self._request_id:
             tag = "TX "
         elif msg.arbitration_id == self._response_id:
             tag = "RX "
+        elif msg.arbitration_id == self._broadcast_id:
+            tag = "BCT"
         else:
+            if not self._log_other:
+                return
             tag = "OTH"
+        rel = time.monotonic() - self._t0
         data_hex = " ".join(f"{b:02X}" for b in msg.data)
         # 11-bit IDs print as 3 hex chars; 29-bit fits in 8.
         id_width = 8 if msg.is_extended_id else 3
@@ -259,14 +260,18 @@ class UdsSession:
         self._tp_stop = threading.Event()
         self._tp_thread: threading.Thread | None = None
 
-        # Attach passive frame logger so we can correlate stray RX frames
-        # (the ones that trigger UnexpectedPacketReceptionWarning) with the
-        # surrounding UDS step. Env var TM3DIAG_NO_FRAME_LOG=1 forces it off.
+        # Attach passive frame logger. TX, RX, and (if known) the node's
+        # broadcast heartbeat ID are always shown. Set TM3DIAG_LOG_ALL_FRAMES=1
+        # to also see every other ID on the bus. Disable entirely with
+        # TM3DIAG_NO_FRAME_LOG=1.
+        bcast = broadcast_for(node.name)
         self._frame_logger: _BusFrameLogger | None = None
         if log_frames and not os.environ.get("TM3DIAG_NO_FRAME_LOG"):
             self._frame_logger = _BusFrameLogger(
                 request_id=node.request_can_id,
                 response_id=node.response_can_id,
+                broadcast_id=bcast.can_id if bcast is not None else None,
+                log_other=bool(os.environ.get("TM3DIAG_LOG_ALL_FRAMES")),
             )
             self._install_listener(self._frame_logger)
 
@@ -274,7 +279,6 @@ class UdsSession:
         # short-circuit Phase 1 the moment the ECU resumes broadcasting
         # (mirrors update.img's enter_bootloader_v0 counter watch).
         self._broadcast_watcher: _BroadcastWatcher | None = None
-        bcast = broadcast_for(node.name)
         if bcast is not None:
             self._broadcast_watcher = _BroadcastWatcher(bcast.can_id)
             self._install_listener(self._broadcast_watcher)

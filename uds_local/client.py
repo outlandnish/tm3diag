@@ -688,6 +688,21 @@ class UdsSession:
     def sleep(self, seconds: float) -> None:
         time.sleep(seconds)
 
+    def drain_rx(self, timeout_ms: float = 20) -> None:
+        """Discard any frames queued in the transport receive buffer.
+
+        Call after non-fatal read steps that may leave stale NRC or partial
+        ISO-TP frames in the buffer (e.g. step_board_info on ECUs that return
+        NRC 0x13 for multi-frame DIDs instead of sending Consecutive Frames).
+        """
+        while True:
+            try:
+                self._transport.receive_message(
+                    start_timeout=timeout_ms, end_timeout=timeout_ms
+                )
+            except Exception:
+                break
+
     def clear_dtc(self, group: int = 0xFFFFFF) -> None:
         """ClearDiagnosticInformation (0x14) — group 0xFFFFFF clears all."""
         b = group.to_bytes(3, "big")

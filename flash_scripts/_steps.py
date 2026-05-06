@@ -140,6 +140,10 @@ def step_board_info(sess: "UdsSession", ctx: FlashContext) -> None:
             )
         except Exception:
             pass
+    # Some ECUs (e.g. HVP) return NRC 0x13 for multi-frame DIDs rather than
+    # sending Consecutive Frames, leaving stale frames in the receive buffer.
+    # Drain them now so subsequent steps don't pick them up as responses.
+    sess.drain_rx()
 
 
 def step_start_tester_present(sess: "UdsSession", ctx: FlashContext) -> None:

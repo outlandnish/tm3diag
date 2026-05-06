@@ -92,12 +92,12 @@ Only the raw SHDR payload bytes are transmitted.
 
 ### GHDR — Global Header
 
-| Offset | Size | Field              | Notes                                                       |
-| ------ | ---- | ------------------ | ----------------------------------------------------------- |
-| `0x00` | 4    | Magic `"GHDR"`     |                                                             |
-| `0x04` | 4    | Version            | `1` or `2`, big-endian                                      |
-| `0x08` | 4    | Total payload size | Sum of all SHDR payload sizes, not headers                  |
-| `0x0C` | 4    | Total size         | **v2 only** — alternate total (redundant with `0x08`)       |
+| Offset | Size | Field              | Notes                                                 |
+| ------ | ---- | ------------------ | ----------------------------------------------------- |
+| `0x00` | 4    | Magic `"GHDR"`     |                                                       |
+| `0x04` | 4    | Version            | `1` or `2`, big-endian                                |
+| `0x08` | 4    | Total payload size | Sum of all SHDR payload sizes, not headers            |
+| `0x0C` | 4    | Total size         | **v2 only** — alternate total (redundant with `0x08`) |
 
 ### SHDR — Section Header (20 bytes) + payload
 
@@ -145,32 +145,32 @@ CPU2 nodes (`pcscpu2`, `di`, `dis`) which carry `0x0C`.
 
 ### ECU → Script Map
 
-| Script       | ECUs                                                                                  |
-| ------------ | ------------------------------------------------------------------------------------- |
-| `0x00650fa0` | gtw3                                                                                  |
-| `0x00650fb0` | hvbms, cp, epas3p, epas3s, epbl, epbr, hvp, ocs1p, sccmk, vcsec, tas                |
-| `0x00651000` | vcfront, ibstcal                                                                      |
-| `0x00651030` | vcright                                                                               |
-| `0x00651050` | vcleft                                                                                |
-| `0x00651070` | pcs (mod=0x00), pcscpu2 (mod=0x0c), pm (mod=0x00), pms (mod=0x00), di (mod=0x0c), dis (mod=0x0c) |
-| `0x006510d0` | park                                                                                  |
-| `0x006510f0` | park, aps                                                                             |
+| Script       | ECUs                                                                                                                     |
+| ------------ | ------------------------------------------------------------------------------------------------------------------------ |
+| `0x00650fa0` | gtw3                                                                                                                     |
+| `0x00650fb0` | hvbms, cp, epas3p, epas3s, epbl, epbr, hvp, ocs1p, sccmk, vcsec, tas                                                     |
+| `0x00651000` | vcfront, ibstcal                                                                                                         |
+| `0x00651030` | vcright                                                                                                                  |
+| `0x00651050` | vcleft                                                                                                                   |
+| `0x00651070` | pcs (mod=0x00), pcscpu2 (mod=0x0c), pm (mod=0x00), pms (mod=0x00), di (mod=0x0c), dis (mod=0x0c)                         |
+| `0x006510d0` | park                                                                                                                     |
+| `0x006510f0` | park, aps                                                                                                                |
 | `0x00651110` | vcleftramapp (mod=0x06), vcrightramapp (mod=0x0f), vcfrontramapp (mod=0x0f), vcsecramapp (mod=0x0f), sccmksub (mod=0x06) |
-| `0x00651140` | ibst                                                                                  |
-| `0x00651170` | espcal (mod=0x07), rcmcal (mod=0x07)                                                  |
-| `0x00651190` | esp                                                                                   |
-| `0x006511b0` | ibstcal (bootloader path)                                                             |
-| `0x006511d0` | rcm                                                                                   |
-| `0x006511f0` | tpms                                                                                  |
-| `0x00651230` | cmp                                                                                   |
-| `0x00651270` | ptc                                                                                   |
-| `0x00651290` | vcrightramapp, vcfrontramapp, vcsecramapp, bleepcenter (mod=0x0f)                     |
-| `0x006512b0` | vcleftramapp (mod=0x0f)                                                               |
-| `0x006512d0` | opc (mod=0x0c), opcs (mod=0x0c)                                                       |
-| `0x006512e0` | ths (mod=0x0c), swc (mod=0x0c), lumbarl/lumbar/lumbarr (mod=0x0b), bleep* (various)  |
-| `0x00651300` | parkbu (mod=0x12), hvbmsbu (mod=0x02), hvpbu (mod=0x0e) — bootloader updater (`*bu`) |
-| `0x00651320` | vcfrontbu (mod=0x0d) — vcfront-specific bootloader updater (OTA preamble)            |
-| `0x00651340` | parkbl (mod=0x12), hvbmsbl (mod=0x02), hvpbl (mod=0x0e), vcfrontbl (mod=0x0d) — bootloader image (`*bl`) |
+| `0x00651140` | ibst                                                                                                                     |
+| `0x00651170` | espcal (mod=0x07), rcmcal (mod=0x07)                                                                                     |
+| `0x00651190` | esp                                                                                                                      |
+| `0x006511b0` | ibstcal (bootloader path)                                                                                                |
+| `0x006511d0` | rcm                                                                                                                      |
+| `0x006511f0` | tpms                                                                                                                     |
+| `0x00651230` | cmp                                                                                                                      |
+| `0x00651270` | ptc                                                                                                                      |
+| `0x00651290` | vcrightramapp, vcfrontramapp, vcsecramapp, bleepcenter (mod=0x0f)                                                        |
+| `0x006512b0` | vcleftramapp (mod=0x0f)                                                                                                  |
+| `0x006512d0` | opc (mod=0x0c), opcs (mod=0x0c)                                                                                          |
+| `0x006512e0` | ths (mod=0x0c), swc (mod=0x0c), lumbarl/lumbar/lumbarr (mod=0x0b), bleep\* (various)                                     |
+| `0x00651300` | parkbu (mod=0x12), hvbmsbu (mod=0x02), hvpbu (mod=0x0e) — bootloader updater (`*bu`)                                     |
+| `0x00651320` | vcfrontbu (mod=0x0d) — vcfront-specific bootloader updater (OTA preamble)                                                |
+| `0x00651340` | parkbl (mod=0x12), hvbmsbl (mod=0x02), hvpbl (mod=0x0e), vcfrontbl (mod=0x0d) — bootloader image (`*bl`)                 |
 
 ---
 
@@ -756,7 +756,7 @@ needed for the bootloader endpoints.
 
 ## Subcomponent flashes (CP PLC modem)
 
-Some ECUs include a secondary chip that's flashed *through* the main MCU's UDS
+Some ECUs include a secondary chip that's flashed _through_ the main MCU's UDS
 endpoint. The CP (charge port) MCU has a PLC modem (Powerline Communication
 chip) on board, used for high-bandwidth communication during charging. The PLC
 modem doesn't have its own CAN connection — its firmware is delivered to the
@@ -777,11 +777,11 @@ ship only `cp.bhx`; the PLC modem firmware was added at variant 14.
 
 ### Flash properties
 
-| ecu_type    | Script | Module byte | File format | Target              |
-| ----------- | ------ | ----------- | ----------- | ------------------- |
-| `cp`        | `0x00650fb0` (Standard) | `0x00` | BHX | CP MCU app slot |
-| `cpPlcFw`   | `0x00650fb0` (Standard) | `0x00` | Intel HEX | PLC modem firmware |
-| `cpPlcPib`  | `0x00650fb0` (Standard) | `0x00` | Intel HEX | PLC modem PIB (config) |
+| ecu_type   | Script                  | Module byte | File format | Target                 |
+| ---------- | ----------------------- | ----------- | ----------- | ---------------------- |
+| `cp`       | `0x00650fb0` (Standard) | `0x00`      | BHX         | CP MCU app slot        |
+| `cpPlcFw`  | `0x00650fb0` (Standard) | `0x00`      | Intel HEX   | PLC modem firmware     |
+| `cpPlcPib` | `0x00650fb0` (Standard) | `0x00`      | Intel HEX   | PLC modem PIB (config) |
 
 All three use the **same script**, the same wire frame for `moduleToProgram`
 (`2E 01 02 00`), and the **same UDS CAN IDs** (`UDS_cpRequest` /
@@ -809,7 +809,7 @@ CP MCU app may fail or write to the wrong region.
 
 The CP, cpPlcFw, and cpPlcPib node-table entries differ at offset `+0x24`
 (values `0`, `8`, `6` respectively). **Meaning unknown** — I have not traced
-any binary code that reads this offset. It is *not* the module byte (which
+any binary code that reads this offset. It is _not_ the module byte (which
 is at `+0x20` per `FUN_0040fb0a`) and it does not appear in any UDS frame
 we observed. The values don't match obvious candidates (DID offsets, sub-
 function bytes, security indices) cleanly. Earlier versions of this doc
@@ -862,17 +862,19 @@ additionally retries up to 3 times with 10 s between attempts.
 
 **0b. Bootloader handover wait** (`enterBootloader(0)` — always emitted after `reset`):
 
-The VM's two-phase implementation (`FUN_00402120` + `FUN_00401f8c`):
+The GTW3's `enter_bootloader_v0` @ `0x40000732` in update.img implements a two-phase
+handover. Source: `FUN_00402120` + `FUN_00401f8c` in hashpicker_sim_2.
 
-1. **Phase 1 — keep-alive while watching for boot-ID change** (up to 3.34 s):
+1. **Phase 1 — keep-alive while watching for boot-ID change** (up to 334 × 10 ms = 3.34 s):
    sleep 10 ms, send `3E 80` (TesterPresent fire-and-forget, no response
    expected), check the boot-broadcast CAN ID for this node — break when its
-   value changes (bootloader is announcing itself on a different ID/payload).
+   arrival counter increments (bootloader is announcing on the broadcast ID).
 2. **Phase 2 — TP-with-response confirmation** (up to 14 retries × 40 ms):
    reduce P2 to 40 ms, send `3E 00` (TesterPresent zeroSubFunction, response
    required) and break on the first `7E 00` reply. Restore prior P2.
 
 Note the two distinct TesterPresent variants:
+
 - **`3E 80`** — sub-function `0x00` with `suppressPositiveResponse` bit set; no
   reply expected. Used in phase 1 (bus keep-alive).
 - **`3E 00`** — sub-function `0x00`, response required; replies `7E 00`. Used
@@ -880,6 +882,21 @@ Note the two distinct TesterPresent variants:
 
 `3E 01` is **not** valid TesterPresent — only `0x00` is defined as a sub-function.
 Strict bootloaders return NRC `0x12 subFunctionNotSupported` for `3E 01`.
+
+**HVP bootloader side (TMS570LS, confirmed from binary):** The bootloader's main
+loop (`FUN_000038b4`) checks `if (4999 < current_tick - last_tick)` where ticks
+are driven by the RTI peripheral at 10 MHz → 1 ms/tick. That gives a **4999 ms
+S3server timeout**. The session timer is reset by any `3E xx` frame
+(`FUN_00006374`). Phase 1's `3E 80` frames arrive every 10 ms — well within the
+window — so the bootloader stays in programming session throughout phase 1.
+
+**`boot_state` prerequisite:** The HVP bootloader reads `boot_state` @ `0x0800160C`
+at startup. If it finds `0x0F` (app-launch mode) it immediately jumps to the
+application — the TesterPresent window never opens. For the bootloader to remain
+in programming mode, the application must write `0x00` to `boot_state` before
+asserting the `11 81` reset (this is done by the app's own shutdown path, not
+by the GTW3). The condition for staying in the bootloader is: `boot_state == 0x00`
+**and** `stay_in_bootloader == 1` (flag at `0x080015C6`, set by boot config init).
 
 Implementations without DBC-level boot-ID decoding can substitute phase 1
 with a fixed-time keep-alive loop (e.g. spam `3E 80` for ~1.5 s while the
@@ -890,7 +907,7 @@ required to confirm bootloader mode before sending DSC.
 
 ---
 
-### 1. Read Part / Serial Info *(logged only — failure does not abort)*
+### 1. Read Part / Serial Info _(logged only — failure does not abort)_
 
 ```
 → 22 F0 12    ReadDataByIdentifier — board part number
@@ -920,7 +937,9 @@ Results written to `modinfo.log`.
 Response bytes 1–2: P2 timeout (ms). Bytes 3–4: P2\* enhanced timeout (×10 ms).
 Applied to the CAN handle immediately.
 
-**Start TesterPresent keepalive here: send `3E 80` every ~2 s for the duration.**
+**Start TesterPresent keepalive here: send `3E 80` every 2 s for the duration.**
+The HVP bootloader's S3server timeout is 4999 ms (4999 RTI ticks at 10 MHz = 1 ms/tick);
+2 s provides comfortable margin. Any `3E xx` frame resets the timer.
 
 ---
 
@@ -942,10 +961,10 @@ single-CPU ECUs the module byte is `0x00`.
 
 Module byte values for script `0x00651070` (PCS/DI/PM family):
 
-| ECU | Module byte | Meaning |
-| --- | ----------- | ------- |
-| `pcs`, `pm`, `pms` | `0x00` | CPU1 / primary flash region |
-| `di`, `dis`, `pcscpu2` | `0x0c` | CPU2 / secondary flash region |
+| ECU                    | Module byte | Meaning                       |
+| ---------------------- | ----------- | ----------------------------- |
+| `pcs`, `pm`, `pms`     | `0x00`      | CPU1 / primary flash region   |
+| `di`, `dis`, `pcscpu2` | `0x0c`      | CPU2 / secondary flash region |
 
 ---
 
@@ -957,6 +976,7 @@ Module byte values for script `0x00651070` (PCS/DI/PM family):
 ```
 
 Three data bytes after the DID echo, in this order:
+
 - byte[0] = `component_key` — logged only
 - byte[1] = `fw_type` — must match the operand passed to `varifyCompAndFirmwareType`
   (always `1` for prog-0 flash flows). Mismatch → abort with error `0x10000 | fw_type`.
@@ -966,7 +986,7 @@ Three data bytes after the DID echo, in this order:
 > **Bootloader-mode caveat (observed on PCS, protocol_ver=5):** PCS variant
 > 411 in bootloader mode returns `1B 00 05` for DID `0x0101`. Per the
 > application ODJ that decodes as `COMPONENT_KEY=0x1B, FIRMWARE_TYPE=0x00,
-> PROTOCOL_VER=0x05`. The `0x00` would fail `varifyCompAndFirmwareType(1)`'s
+PROTOCOL_VER=0x05`. The `0x00` would fail `varifyCompAndFirmwareType(1)`'s
 > equality check against operand `1` per the binary's
 > `uds_varify_comp_and_firmware` (`0x0040973d`).
 >
@@ -992,13 +1012,13 @@ Three data bytes after the DID echo, in this order:
 
 The seed level and key algorithm vary by ECU:
 
-| Security idx | Algorithm          | Level             | ECUs                              |
-| ------------ | ------------------ | ----------------- | --------------------------------- |
-| 0            | `tesla_hash`       | 0x05 (see below)  | most ECUs                         |
-| 3            | `tesla_hash`       | varies            | ibst, esp, espcal, rcmcal, rcm    |
-| 4            | `baolong_hash`     | varies            | tpms                              |
-| 7            | `FUN_0040be8e`     | varies            | cmp                               |
-| 13           | OTA session key    | varies            | opc, opcs, ths, swc, lumbar, bleep|
+| Security idx | Algorithm       | Level            | ECUs                               |
+| ------------ | --------------- | ---------------- | ---------------------------------- |
+| 0            | `tesla_hash`    | 0x05 (see below) | most ECUs                          |
+| 3            | `tesla_hash`    | varies           | ibst, esp, espcal, rcmcal, rcm     |
+| 4            | `baolong_hash`  | varies           | tpms                               |
+| 7            | `FUN_0040be8e`  | varies           | cmp                                |
+| 13           | OTA session key | varies           | opc, opcs, ths, swc, lumbar, bleep |
 
 > **Protocol-version branch for idx 0** (`uds_security_access` at `0x0040c090`):
 > the default seed level from the table (`DAT_00650e08[0]`) is `0x05`, but if
@@ -1033,15 +1053,15 @@ If ECU responds with NRC `0x35` (already unlocked), silently accepted.
 
 Timeout during erase — set before sending, restore after:
 
-| Script               | Erase timeout       |
-| -------------------- | ------------------- |
-| Standard             | P2=3s / P2\*=6s     |
-| `0x00651070` (PCS)   | P2=5s / P2\*=10s    |
-| `0x006510d0` (park)  | P2=1s / P2\*=2s     |
-| `0x00651140` (ibst)  | P2=4s / P2\*=8s     |
-| `0x006511d0` (rcm)   | P2=4s / P2\*=8s     |
-| `0x006511f0` (tpms)  | P2=3s / P2\*=6s     |
-| `0x00651270` (ptc)   | P2=10s / P2\*=20s   |
+| Script              | Erase timeout     |
+| ------------------- | ----------------- |
+| Standard            | P2=3s / P2\*=6s   |
+| `0x00651070` (PCS)  | P2=5s / P2\*=10s  |
+| `0x006510d0` (park) | P2=1s / P2\*=2s   |
+| `0x00651140` (ibst) | P2=4s / P2\*=8s   |
+| `0x006511d0` (rcm)  | P2=4s / P2\*=8s   |
+| `0x006511f0` (tpms) | P2=3s / P2\*=6s   |
+| `0x00651270` (ptc)  | P2=10s / P2\*=20s |
 
 ---
 
@@ -1128,9 +1148,9 @@ file(s) using the lookup tables in `seed_artifacts_v2/`.
 
 Two files provide the same mapping; use `signed_metadata_map.tsv` in production:
 
-| File | Description |
-| ---- | ----------- |
-| `version_map2.tsv` | Unsigned lookup table — 6 tab-separated columns |
+| File                      | Description                                                                                                                                               |
+| ------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `version_map2.tsv`        | Unsigned lookup table — 6 tab-separated columns                                                                                                           |
 | `signed_metadata_map.tsv` | Signed version — same 6 columns plus a 7th base64 per-entry signature. First line is a manifest header (`<sha1>\t<entry_count>`) — skip it during lookup. |
 
 ### Column format

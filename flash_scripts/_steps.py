@@ -31,14 +31,13 @@ if TYPE_CHECKING:
 def step_soft_reset(sess: "UdsSession", ctx: FlashContext) -> None:
     """ECUReset `11 81` (subfunction 0x01 with SPR set) — fire-and-forget.
 
-    Matches VM `reset(0)`. Used both as the opening reset that hands control to
-    the bootloader (must be followed by `step_wait_for_bootloader`) and as the
-    trailing reset that returns control to the application (no handover wait
-    needed).
+    Matches VM `reset(0)`. When used as the opening reset, `step_wait_for_bootloader`
+    must follow immediately so Phase 1 keep-alives start right after the reset frame,
+    matching `enter_bootloader_v0` in update.img. For trailing resets, callers append
+    an explicit `step_sleep_*` step if needed.
     """
     print("  Step: ECUReset 11 81 (SPR, no wait)")
     sess.ecu_reset_no_wait(0x01)
-    sess.sleep(0.5)
 
 
 def step_wait_for_bootloader(sess: "UdsSession", ctx: FlashContext) -> None:
@@ -97,7 +96,6 @@ def step_probe_bootloader_state(sess: "UdsSession", ctx: FlashContext) -> None:
         f181 = sess.read_did(0xF181)
         hex_str = " ".join(f"{b:02X}" for b in f181)
         print(f"    DID 0xF181 ({len(f181)} bytes): {hex_str}")
-        print("      → 0xF181 succeeded; APP is loaded (bootloader usually rejects this DID)")
     except Exception as e:
         print(
             f"    DID 0xF181: ERROR ({type(e).__name__}: {e})"
@@ -120,7 +118,8 @@ def step_hard_reset_with_retries(sess: "UdsSession", ctx: FlashContext) -> None:
             return
         except Exception:
             if attempt < 2:
-                print(f"    Reset attempt {attempt + 1} failed, retrying in 10 s")
+                print(
+                    f"    Reset attempt {attempt + 1} failed, retrying in 10 s")
                 time.sleep(10)
     sess.ecu_reset(0x01)
 
@@ -195,10 +194,12 @@ def step_verify_comp_fw(sess: "UdsSession", ctx: FlashContext) -> None:
         f"  protocol_ver=0x{protocol_ver:02X}"
     )
     if fw_type != ctx.expected_fw_type:
-        print(
-            f"    Warning: FIRMWARE_TYPE byte != 0x{ctx.expected_fw_type:02X}"
-            " (PCS bootloader is known to return 0x00; bootloader DID layout"
-            " may differ from application). Proceeding."
+        from uds_local.client import MalformedResponseError
+        raise MalformedResponseError(
+            0x22,
+            f"DID 0x0101 FIRMWARE_TYPE byte 0x{fw_type:02X} != expected"
+            f" 0x{ctx.expected_fw_type:02X}. Bootloader handover"
+            " did not complete).",
         )
     ctx.protocol_ver = protocol_ver
 
@@ -226,10 +227,20 @@ def step_module_to_program(sess: "UdsSession", ctx: FlashContext) -> None:
     """Set extended timeout then select CPU/flash region (WDBI 0x0102).
 
     netSetTimeout must precede moduleToProgram per the flash protocol.
+    DID 0x0102 is bootloader-only and not present in every ECU's bootloader;
+    a NRC here is logged as a warning and the flash continues so the erase
+    step can surface the real failure if one exists.
     """
+    from uds_local.client import UdsError
     print(f"  Step: moduleToProgram (module=0x{ctx.module_byte:02X})")
     sess.set_timeout(ctx.erase_timeout)
-    sess.module_to_program(ctx.module_byte)
+    try:
+        sess.module_to_program(ctx.module_byte)
+    except UdsError as e:
+        print(
+            f"    WARNING: moduleToProgram NRC 0x{e.nrc:02X} ({e.nrc_name})"
+            " — DID 0x0102 not supported by this ECU, continuing"
+        )
 
 
 def step_erase(sess: "UdsSession", ctx: FlashContext) -> None:

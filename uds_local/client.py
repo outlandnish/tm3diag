@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import os
+import sys
 import threading
 import time
-from typing import Any
+from typing import Any, TextIO
 
 import can
 from uds.addressing import AddressingType
@@ -13,6 +15,7 @@ from uds.can.packet import CanPacket, CanPacketType
 from uds.can.transport_interface import PyCanTransportInterface
 from uds.message import UdsMessage
 
+from .broadcast_config import broadcast_for
 from .node_config import NodeConfig
 from .security import compute_key
 
@@ -120,6 +123,100 @@ class MalformedResponseError(UdsError):
         self.detail = detail
 
 
+class _BusFrameLogger(can.Listener):
+    """Passive logger for every CAN frame arriving on the bus during a session.
+
+    Tags each frame as TX (matches the node's request_can_id), RX (matches the
+    node's response_can_id), or OTH (anything else). The OTH frames are the
+    interesting ones — they're what triggers
+    `uds.UnexpectedPacketReceptionWarning` from the py-uds transport, and they
+    can be:
+      * stale fragments from an earlier transaction (rare, indicates timing slip)
+      * broadcasts from another node sharing this CAN bus
+      * a re-issued response from the ECU after a watchdog reset
+      * an entirely different ECU answering on the same bus
+
+    Output goes to stderr by default so it doesn't pollute the success path
+    on stdout. Disable with `log_frames=False` on UdsSession or by setting
+    env var `TM3DIAG_NO_FRAME_LOG=1`.
+    """
+
+    def __init__(
+        self,
+        request_id: int,
+        response_id: int,
+        stream: TextIO | None = None,
+    ) -> None:
+        super().__init__()
+        self._request_id = request_id
+        self._response_id = response_id
+        self._stream = stream if stream is not None else sys.stderr
+        self._t0 = time.monotonic()
+        self._stopped = False
+
+    def on_message_received(self, msg: can.Message) -> None:
+        if self._stopped or msg.is_error_frame or msg.is_remote_frame:
+            return
+        rel = time.monotonic() - self._t0
+        if msg.arbitration_id == self._request_id:
+            tag = "TX "
+        elif msg.arbitration_id == self._response_id:
+            tag = "RX "
+        else:
+            tag = "OTH"
+        data_hex = " ".join(f"{b:02X}" for b in msg.data)
+        # 11-bit IDs print as 3 hex chars; 29-bit fits in 8.
+        id_width = 8 if msg.is_extended_id else 3
+        print(
+            f"  CAN [+{rel:7.3f}s] {tag} id=0x{msg.arbitration_id:0{id_width}X}"
+            f" dlc={msg.dlc} {data_hex}",
+            file=self._stream,
+            flush=True,
+        )
+
+    def stop(self) -> None:
+        self._stopped = True
+
+
+class _BroadcastWatcher(can.Listener):
+    """Counts inbound frames matching a single broadcast (heartbeat) CAN ID.
+
+    Mirrors update.img's `enter_bootloader_v0` (@ `0x40000732`), which
+    snapshots a per-node counter at `0x400331a8`/`0x4003325c` and exits its
+    keep-alive loop the instant the counter advances — i.e. the moment the
+    target ECU resumes broadcasting after the reset, signalling that it has
+    booted into the bootloader.
+
+    For nodes whose firmware doesn't track a broadcast (HVBMS, ESP, all
+    high-numbered nodes), `broadcast_config.broadcast_for(...)` returns
+    `None` and we don't install one of these — `wait_for_bootloader` falls
+    back to a fixed-budget wait, which is exactly what the firmware does
+    for those same nodes.
+    """
+
+    def __init__(self, can_id: int) -> None:
+        super().__init__()
+        self._can_id = can_id
+        self._count = 0
+
+    def on_message_received(self, msg: can.Message) -> None:
+        if msg.is_error_frame or msg.is_remote_frame:
+            return
+        if msg.arbitration_id == self._can_id:
+            self._count += 1
+
+    @property
+    def count(self) -> int:
+        return self._count
+
+    @property
+    def can_id(self) -> int:
+        return self._can_id
+
+    def stop(self) -> None:
+        pass
+
+
 class FlashCountError(Exception):
     """Raised when the ECU's flash count is at or over its per-ECU limit."""
 
@@ -137,6 +234,7 @@ class UdsSession:
         node: NodeConfig,
         channel: str,
         interface: str = "socketcan",
+        log_frames: bool = True,
     ):
         self._bus = can.Bus(interface=interface, channel=channel)
         addressing = NormalCanAddressingInformation(
@@ -152,6 +250,45 @@ class UdsSession:
         self._node = node
         self._tp_stop = threading.Event()
         self._tp_thread: threading.Thread | None = None
+        # Lazily-created fallback notifier — only set when the transport
+        # doesn't expose `notifier` and we attach listeners directly to the bus.
+        self._frame_notifier: can.Notifier | None = None
+
+        # Attach passive frame logger so we can correlate stray RX frames
+        # (the ones that trigger UnexpectedPacketReceptionWarning) with the
+        # surrounding UDS step. Env var TM3DIAG_NO_FRAME_LOG=1 forces it off.
+        self._frame_logger: _BusFrameLogger | None = None
+        if log_frames and not os.environ.get("TM3DIAG_NO_FRAME_LOG"):
+            self._frame_logger = _BusFrameLogger(
+                request_id=node.request_can_id,
+                response_id=node.response_can_id,
+            )
+            self._install_listener(self._frame_logger)
+
+        # Install per-node broadcast watcher so wait_for_bootloader can
+        # short-circuit Phase 1 the moment the ECU resumes broadcasting
+        # (mirrors update.img's enter_bootloader_v0 counter watch).
+        self._broadcast_watcher: _BroadcastWatcher | None = None
+        bcast = broadcast_for(node.name)
+        if bcast is not None:
+            self._broadcast_watcher = _BroadcastWatcher(bcast.can_id)
+            self._install_listener(self._broadcast_watcher)
+
+    def _install_listener(self, listener: can.Listener) -> None:
+        """Attach a passive listener to whichever notifier already exists.
+
+        Tries the transport's notifier first (shared with the UDS receive
+        path so we don't double-consume frames). If the transport hasn't
+        exposed one yet, lazily creates a dedicated Notifier on the bus and
+        reuses it for any subsequent listeners.
+        """
+        try:
+            self._transport.notifier.add_listener(listener)
+        except AttributeError:
+            if self._frame_notifier is None:
+                self._frame_notifier = can.Notifier(self._bus, [listener])
+            else:
+                self._frame_notifier.add_listener(listener)
 
     # ------------------------------------------------------------------
     # TesterPresent keep-alive
@@ -337,7 +474,8 @@ class UdsSession:
                     time.sleep(1.0)
                 continue
             time.sleep(0.1)
-            resp = self._send_raw([_SID_RC, _RC_REQUEST_RESULTS, rid_hi, rid_lo])
+            resp = self._send_raw(
+                [_SID_RC, _RC_REQUEST_RESULTS, rid_hi, rid_lo])
             self._check_positive(resp, _SID_RC)
             # response: 71 03 05 40 <result_count?> <result>
             if len(resp) >= 5 and resp[4] == 0x02:
@@ -431,75 +569,117 @@ class UdsSession:
 
     def wait_for_bootloader(
         self,
-        timeout_s: float = 10.0,
-        keepalive_phase_s: float = 1.5,
-        keepalive_interval_s: float = 0.04,
-        confirm_interval_s: float = 0.1,
+        keepalive_phase_s: float = 3.34,
+        keepalive_interval_s: float = 0.01,
+        confirm_p2_ms: int = 40,
+        confirm_max_attempts: int = 14,
     ) -> None:
-        """Two-phase bootloader handover wait, mimicking VM `enterBootloader(0)`.
+        """Two-phase bootloader handover wait, mirroring update.img's
+        `enter_bootloader_v0` @ 0x40000732.
 
-        **Phase 1 — keep-alive** (`keepalive_phase_s` seconds): send `3E 80`
-        (TesterPresent fire-and-forget, no response expected) at
-        `keepalive_interval_s` cadence. Matches the VM's
-        `FUN_00402120` loop, which spams TP-no-wait while watching for the
-        boot-broadcast ID to change. We don't have boot-broadcast decoding
-        yet, so we just spend a fixed budget here. ECUs that take their
-        time coming up (PCS C28x DSP ~4–6 s) get the headroom they need.
+        **Phase 1 — keep-alive** (`keepalive_phase_s` s): send `3E 80`
+        (TesterPresent fire-and-forget) at `keepalive_interval_s` cadence
+        (10 ms by default — 334 × 10 ms = 3.34 s, matching the binary's loop).
+        Exits early as soon as the per-node boot-broadcast counter advances. If a
+        `_BroadcastWatcher` was installed for this node (see
+        `broadcast_config.NODE_BROADCAST_CONFIG`), we replicate that early-exit
+        by snapshotting its count and breaking the loop on advance. For nodes
+        without a broadcast tracker (HVBMS, ESP, TPMS, etc.), Phase 1 burns
+        the full budget — same as the firmware does for those.
 
-        **Phase 2 — TP-with-response confirmation**: send `3E 00` (ISO
-        14229's only valid TP sub-function) at `confirm_interval_s` cadence,
-        retry on no-response/NRC, succeed on the first `7E 00`. Matches
-        `FUN_00401f8c`. NRC 0x12 (subFunctionNotSupported) means the
-        bootloader is up but rejecting our frame — which is the bug that
-        landed us here in the first place when we had `3E 01`.
+        **Phase 2 — TP-with-response confirmation**: send `3E 00` and wait
+        for `7E 00`, with **P2 timeout = `confirm_p2_ms` (40 ms by default,
+        matching the binary's `FUN_4002024c(handle, 0x28)`)** and back-to-back
+        retries up to `confirm_max_attempts` (14 by default).
 
-        Total budget = `timeout_s` (default 10 s); phase 1 takes
-        `keepalive_phase_s` of that, phase 2 gets the rest.
+        On success, returns silently. On total failure, raises `TimeoutError`
+        with a diagnostic that includes phase 1 frame count and phase 2 NRCs.
         """
-        if keepalive_phase_s >= timeout_s:
-            raise ValueError("keepalive_phase_s must be < timeout_s")
-
         # Phase 1: fire-and-forget keep-alive
-        end_phase1 = time.monotonic() + keepalive_phase_s
+        phase1_start = time.monotonic()
+        end_phase1 = phase1_start + keepalive_phase_s
         keepalive_count = 0
+        bus_errors = 0
+        # Snapshot the broadcast counter (if a watcher is installed) so we
+        # can short-circuit Phase 1 the moment a new heartbeat arrives.
+        watcher = self._broadcast_watcher
+        baseline = watcher.count if watcher is not None else None
+        early_exit_ms: float | None = None
         while time.monotonic() < end_phase1:
             try:
                 self._send_tp_no_wait()
                 keepalive_count += 1
             except Exception:
-                # Bus may be transiently down right after reset; keep trying.
-                pass
+                bus_errors += 1
+                if bus_errors >= 5:
+                    # The binary aborts on the first send error; we tolerate
+                    # a few transients (bus may glitch right after reset)
+                    # but bail if it's persistent — that signals the bus is
+                    # down, not the ECU rebooting.
+                    raise RuntimeError(
+                        f"Phase 1: {bus_errors} consecutive bus send errors — "
+                        "bus is probably down; abandoning bootloader handover"
+                    )
+            # Early exit on broadcast counter advance (mirrors the binary)
+            if watcher is not None and watcher.count != baseline:
+                early_exit_ms = (time.monotonic() - phase1_start) * 1000
+                break
             time.sleep(keepalive_interval_s)
-        print(
-            f"    Phase 1: {keepalive_count} keep-alive 3E 80 frames sent"
-            f" over {keepalive_phase_s:.1f}s"
-        )
+        if early_exit_ms is not None:
+            phase1_summary = (
+                f"    Phase 1: broadcast 0x{watcher.can_id:03X} advanced after"
+                f" {early_exit_ms:.0f} ms ({keepalive_count} keep-alive 3E 80"
+                " frames sent before exit)"
+            )
+        elif baseline is not None:
+            phase1_summary = (
+                f"    Phase 1: {keepalive_count} keep-alive 3E 80 frames sent"
+                f" over {keepalive_phase_s:.2f}s — broadcast 0x{watcher.can_id:03X}"
+                " never advanced (target may not have rebooted)"
+            )
+        else:
+            phase1_summary = (
+                f"    Phase 1: {keepalive_count} keep-alive 3E 80 frames sent"
+                f" over {keepalive_phase_s:.2f}s"
+                " — no broadcast tracker for this node, fixed wait"
+            )
+        if bus_errors:
+            phase1_summary += f" ({bus_errors} send errors)"
+        print(phase1_summary)
 
-        # Phase 2: TP-with-response confirmation
-        deadline = time.monotonic() + (timeout_s - keepalive_phase_s)
-        attempts = 0
+        # Inter-phase sleep — matches the binary's FUN_40007482(10) between
+        # the Phase 1 loop exit and tpHandleMultipleRequestRecv.
+        time.sleep(0.010)
+
+        # Phase 2: 14 fast 3E 00 probes (P2 = 40 ms) back-to-back.
         nrc_count = 0
         first_nrc: int | None = None
-        confirm_start = time.monotonic()
-        confirm_timeout_ms = max(int(confirm_interval_s * 1000), 50)
-        while time.monotonic() < deadline:
-            attempts += 1
-            resp = self._send_raw([_SID_TP, 0x00], timeout_ms=confirm_timeout_ms)
+        phase2_start = time.monotonic()
+        for attempt in range(1, confirm_max_attempts + 1):
+            resp = self._send_raw([_SID_TP, 0x00], timeout_ms=confirm_p2_ms)
             if resp and resp[0] == 0x7E:
-                elapsed = time.monotonic() - confirm_start
-                print(
-                    f"    Phase 2: bootloader replied to 3E 00 after"
-                    f" {attempts} attempt(s) ({elapsed:.2f}s)"
-                )
+                elapsed = time.monotonic() - phase2_start
+                # Match the binary: only log if it took more than one attempt
+                if attempt > 1:
+                    print(
+                        f"    Phase 2: bootloader replied to 3E 00 after"
+                        f" {attempt} attempts ({elapsed:.3f}s)"
+                    )
+                else:
+                    print(
+                        f"    Phase 2: bootloader replied to 3E 00 immediately"
+                        f" ({elapsed*1000:.1f} ms)"
+                    )
                 return
             if resp and resp[0] == 0x7F:
                 nrc_count += 1
                 if first_nrc is None and len(resp) >= 3:
                     first_nrc = resp[2]
-            time.sleep(confirm_interval_s)
+            # No inter-attempt sleep — back-to-back like the binary
         diag = (
             f"phase 1 sent {keepalive_count} keep-alive frames; phase 2 sent"
-            f" {attempts} TesterPresent probes, no positive response"
+            f" {confirm_max_attempts} TesterPresent probes (P2={confirm_p2_ms} ms),"
+            " no positive response"
         )
         if nrc_count:
             diag += (
@@ -507,9 +687,7 @@ class UdsSession:
                 + (f", first NRC 0x{first_nrc:02X}" if first_nrc is not None else "")
                 + ")"
             )
-        raise TimeoutError(
-            f"Bootloader handover did not complete in {timeout_s}s — {diag}"
-        )
+        raise TimeoutError(f"Bootloader handover did not complete — {diag}")
 
     def sleep(self, seconds: float) -> None:
         time.sleep(seconds)
@@ -572,6 +750,15 @@ class UdsSession:
                 self._transport.notifier.stop()
         except Exception:
             pass
+        # Stop the standalone frame-logger Notifier if we used the fallback path
+        # (transport had no `notifier` attribute). The shared-notifier path is
+        # already torn down by the transport.notifier.stop() above.
+        frame_notifier = getattr(self, "_frame_notifier", None)
+        if frame_notifier is not None:
+            try:
+                frame_notifier.stop()
+            except Exception:
+                pass
         try:
             self._bus.shutdown()
         except Exception:

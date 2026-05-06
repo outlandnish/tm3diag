@@ -23,23 +23,16 @@ if TYPE_CHECKING:
 
 
 # ecu_type → role in PCS-family dual-CPU pairings
-_PCS_PRIMARY_TYPES   = frozenset({"pcs", "pm", "pms"})
+_PCS_PRIMARY_TYPES = frozenset({"pcs", "pm", "pms"})
 _PCS_SECONDARY_TYPES = frozenset({"pcscpu2", "di", "dis"})
 
 # Module bytes for prog 1's two moduleToProgram calls.
 #
 # These are the **bytecode literals** from prog 1 at 0x006510a0
-# (`05 04` then `05 00`). Two successful third-party flash captures —
-# DI sending `2E 01 02 04` and PM sending `2E 01 02 00` against the same
-# physical PMS12-13 module on different UDS endpoints — confirm the real
-# bootloader expects exactly these values for secondary/primary respectively.
-#
-# An earlier revision tried 0x0C / 0x00 (the sim's EcuNodeEntry+0x20 override
-# values for di/dis/pcscpu2), thinking the sim's context+0x29 override was
-# the production behavior. That produced the wrong wire byte on the secondary
-# side. The override is sim-only.
+# (`05 04` then `05 00`).
+
 _PROG1_MODULE_SECONDARY = 0x04
-_PROG1_MODULE_PRIMARY   = 0x00
+_PROG1_MODULE_PRIMARY = 0x00
 
 
 def find_dual_cpu_pair(selected: list) -> tuple[object, object] | None:
@@ -120,10 +113,6 @@ def run_pcs_dual_cpu(
         )
     # ODJ-documented layout (application response):
     #   byte[0] = COMPONENT_KEY, byte[1] = FIRMWARE_TYPE, byte[2] = PROTOCOL_VER
-    # PCS bootloader observed 1B 00 05 — looks like COMPONENT_ID=0x001B (LE)
-    # + PROTOCOL_VER=5 with no FIRMWARE_TYPE field at all. Don't abort on a
-    # non-0x01 fw_type byte yet — print it and let the rest of the flow run
-    # so we learn whether subsequent steps care about this value.
     component_key, fw_type, protocol_ver = comp_fw[0], comp_fw[1], comp_fw[2]
     print(
         f"    parsed (per app ODJ): component_key=0x{component_key:02X}"
@@ -131,10 +120,10 @@ def run_pcs_dual_cpu(
         f"  protocol_ver=0x{protocol_ver:02X}"
     )
     if fw_type != 0x01:
-        print(
-            f"    Warning: FIRMWARE_TYPE byte != 0x01"
-            " (PCS bootloader is known to return 0x00; bootloader DID layout"
-            " may differ from application). Proceeding."
+        from uds_local.client import MalformedResponseError
+        raise MalformedResponseError(
+            0x22,
+            f"DID 0x0101 FIRMWARE_TYPE byte 0x{fw_type:02X} != expected 0x01"
         )
 
     seed_level = 0x01 if protocol_ver < 3 else 0x05

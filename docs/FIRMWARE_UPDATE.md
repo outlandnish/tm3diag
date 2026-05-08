@@ -51,19 +51,6 @@ bootloader. For single-CPU ECUs this is `0x00`. **Almost every ECU has
 `0x00` here**; the only non-zero values in the binary are for PCS-family
 CPU2 nodes (`pcscpu2`, `di`, `dis`) which carry `0x0C`.
 
-> **Don't confuse `+0x20` with `+0x1C`.** The byte at `+0x1C` (u16) is the
-> ECU's `node_id`, used as the operand to the `udsContextSwitch` opcode and
-> printed as `node=%d` by the binary's flash logger (`FUN_0040fb0a`).
-> Many ECUs have small non-zero values there (cp=5, hvbms=2, vcsec=27,
-> vcfront=13, vcright=25) — those are NOT module bytes.
-
-> **Implementation note — every script flow below shows `reset(soft)` as a single
-> step, but the VM emits two opcodes: `reset` followed by `enterBootloader(0)`.**
-> Skipping the `enterBootloader(0)` wait is the most common cause of `moduleToProgram`
-> being rejected — DSC / RDBI / SecurityAccess succeed against the still-running
-> application, but WDBI 0x0102 only exists in the bootloader. See section 0 of the
-> frame-by-frame reference for the handover protocol.
-
 ### ECU → Script Map
 
 | Script       | ECUs                                                                                                                     |
@@ -414,7 +401,7 @@ reset(soft)
 [prog 0]
 reset(soft)  orFlags  boardPartSerialGet  andNotFlags
 diagnosticSession(2)  varifyCompAndFirmware
-securityAccess(7)      FUN_0040be8e algorithm
+securityAccess(7)
 moduleToProgram(0)
 initializeEraseModule(1)   accepts non-standard response count
 transferData
@@ -771,9 +758,6 @@ additionally retries up to 3 times with 10 s between attempts.
 
 **0b. Bootloader handover wait** (`enterBootloader(0)` — always emitted after `reset`):
 
-The GTW3's `enter_bootloader_v0` @ `0x40000732` in update.img implements a two-phase
-handover. Source: `FUN_00402120` + `FUN_00401f8c` in hashpicker_sim_2.
-
 1. **Phase 1 — keep-alive while watching for boot-ID change** (up to 334 × 10 ms = 3.34 s):
    sleep 10 ms, send `3E 80` (TesterPresent fire-and-forget, no response
    expected), check the boot-broadcast CAN ID for this node — break when its
@@ -870,11 +854,11 @@ single-CPU ECUs the module byte is `0x00`.
 
 Module byte values for script `0x00651070` (PCS/DI/PM family):
 
-| ECU                    | Module byte | Notes                                                         |
-| ---------------------- | ----------- | ------------------------------------------------------------- |
-| `pcs`, `pm`, `pms`     | `0x00`      | CPU1 / primary — confirmed                                    |
-| `pcscpu2`              | `0x0C`      | CPU2 on shared PCS node (0x628) — confirmed; `0x04` rejected  |
-| `di`, `dis`            | `0x04`      | CPU2 on dedicated node (0x606) — confirmed from wire captures |
+| ECU                | Module byte | Notes                                                         |
+| ------------------ | ----------- | ------------------------------------------------------------- |
+| `pcs`, `pm`, `pms` | `0x00`      | CPU1 / primary — confirmed                                    |
+| `pcscpu2`          | `0x0C`      | CPU2 on shared PCS node (0x628) — confirmed; `0x04` rejected  |
+| `di`, `dis`        | `0x04`      | CPU2 on dedicated node (0x606) — confirmed from wire captures |
 
 Newer firmware variants may use different secondary module bytes. The tool tries
 the primary value first and falls back to an alternate if NRC 0x10 or 0x31 is

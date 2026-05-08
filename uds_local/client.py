@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import os
 import sys
 import threading
 import time
@@ -123,62 +122,6 @@ class MalformedResponseError(UdsError):
         self.detail = detail
 
 
-class _BusFrameLogger(can.Listener):
-    """Passive logger for CAN frames during a session.
-
-    By default only logs TX (request_can_id) and RX (response_can_id) frames.
-    Set env var TM3DIAG_LOG_ALL_FRAMES=1 to also log OTH frames (every other
-    ID on the bus — useful for diagnosing UnexpectedPacketReceptionWarning but
-    very noisy on a live vehicle bus).
-
-    Disable entirely with log_frames=False on UdsSession or TM3DIAG_NO_FRAME_LOG=1.
-    """
-
-    def __init__(
-        self,
-        request_id: int,
-        response_id: int,
-        broadcast_id: int | None = None,
-        stream: TextIO | None = None,
-        log_other: bool = False,
-    ) -> None:
-        super().__init__()
-        self._request_id = request_id
-        self._response_id = response_id
-        self._broadcast_id = broadcast_id
-        self._stream = stream if stream is not None else sys.stderr
-        self._log_other = log_other
-        self._t0 = time.monotonic()
-        self._stopped = False
-
-    def on_message_received(self, msg: can.Message) -> None:
-        if self._stopped or msg.is_error_frame or msg.is_remote_frame:
-            return
-        if msg.arbitration_id == self._request_id:
-            tag = "TX "
-        elif msg.arbitration_id == self._response_id:
-            tag = "RX "
-        elif msg.arbitration_id == self._broadcast_id:
-            tag = "BCT"
-        else:
-            if not self._log_other:
-                return
-            tag = "OTH"
-        rel = time.monotonic() - self._t0
-        data_hex = " ".join(f"{b:02X}" for b in msg.data)
-        # 11-bit IDs print as 3 hex chars; 29-bit fits in 8.
-        id_width = 8 if msg.is_extended_id else 3
-        print(
-            f"  CAN [+{rel:7.3f}s] {tag} id=0x{msg.arbitration_id:0{id_width}X}"
-            f" dlc={msg.dlc} {data_hex}",
-            file=self._stream,
-            flush=True,
-        )
-
-    def stop(self) -> None:
-        self._stopped = True
-
-
 class _BroadcastWatcher(can.Listener):
     """Counts inbound frames matching a single broadcast (heartbeat) CAN ID.
 
@@ -235,7 +178,6 @@ class UdsSession:
         node: NodeConfig,
         channel: str,
         interface: str = "socketcan",
-        log_frames: bool = True,
     ):
         self._bus = can.Bus(interface=interface, channel=channel)
         # Pre-create one shared Notifier and hand it to the transport so there
@@ -260,20 +202,7 @@ class UdsSession:
         self._tp_stop = threading.Event()
         self._tp_thread: threading.Thread | None = None
 
-        # Attach passive frame logger. TX, RX, and (if known) the node's
-        # broadcast heartbeat ID are always shown. Set TM3DIAG_LOG_ALL_FRAMES=1
-        # to also see every other ID on the bus. Disable entirely with
-        # TM3DIAG_NO_FRAME_LOG=1.
         bcast = broadcast_for(node.name)
-        self._frame_logger: _BusFrameLogger | None = None
-        if log_frames and not os.environ.get("TM3DIAG_NO_FRAME_LOG"):
-            self._frame_logger = _BusFrameLogger(
-                request_id=node.request_can_id,
-                response_id=node.response_can_id,
-                broadcast_id=bcast.can_id if bcast is not None else None,
-                log_other=bool(os.environ.get("TM3DIAG_LOG_ALL_FRAMES")),
-            )
-            self._install_listener(self._frame_logger)
 
         # Install per-node broadcast watcher so wait_for_bootloader can
         # short-circuit Phase 1 the moment the ECU resumes broadcasting

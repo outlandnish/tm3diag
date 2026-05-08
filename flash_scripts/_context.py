@@ -14,8 +14,9 @@ class FlashContext:
     """Carries per-flash-run state shared between step functions."""
     bhx_file: object           # bhx.BhxFile
     entry: object              # metadata.FirmwareEntry
-    module_byte: int = 0x00    # written by module_to_program step
-    erase_timeout: float = 3.0 # P2 seconds applied around erase (restored after)
+    module_byte: int = 0x00              # written by module_to_program step
+    fallback_module_byte: int | None = None  # tried if module_byte gets NRC 0x10/0x31
+    erase_timeout: float = 3.0           # P2 seconds applied around erase (restored after)
     security_level: int = 0    # security access level index
     protocol_ver: int | None = None  # set by step_verify_comp_fw, consumed by step_security_access
     expected_fw_type: int = 0x01  # 1 = regular firmware; 2 = bootloader image

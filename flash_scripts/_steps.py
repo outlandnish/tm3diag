@@ -234,10 +234,24 @@ def step_module_to_program(sess: "UdsSession", ctx: FlashContext) -> None:
     try:
         sess.module_to_program(ctx.module_byte)
     except UdsError as e:
-        print(
-            f"    WARNING: moduleToProgram NRC 0x{e.nrc:02X} ({e.nrc_name})"
-            " — DID 0x0102 not supported by this ECU, continuing"
-        )
+        if ctx.fallback_module_byte is not None and e.nrc in (0x10, 0x31):
+            print(
+                f"    NRC 0x{e.nrc:02X} ({e.nrc_name}) — retrying with"
+                f" fallback module byte 0x{ctx.fallback_module_byte:02X}"
+            )
+            try:
+                sess.module_to_program(ctx.fallback_module_byte)
+                ctx.module_byte = ctx.fallback_module_byte
+            except UdsError as e2:
+                print(
+                    f"    WARNING: fallback also failed NRC 0x{e2.nrc:02X}"
+                    f" ({e2.nrc_name}) — continuing"
+                )
+        else:
+            print(
+                f"    WARNING: moduleToProgram NRC 0x{e.nrc:02X} ({e.nrc_name})"
+                " — DID 0x0102 not supported by this ECU, continuing"
+            )
 
 
 def step_erase(sess: "UdsSession", ctx: FlashContext) -> None:

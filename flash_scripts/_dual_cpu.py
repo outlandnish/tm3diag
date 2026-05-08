@@ -41,6 +41,14 @@ if TYPE_CHECKING:
 _PCS_PRIMARY_TYPES = frozenset({"pcs", "pm", "pms"})
 _PCS_SECONDARY_TYPES = frozenset({"pcscpu2", "di", "dis"})
 
+# Fallback module bytes for secondary CPUs — tried if the primary byte gets
+# NRC 0x10/0x31. Newer firmware uses 0x04; older firmware uses 0x0C.
+_SECONDARY_MODULE_FALLBACK: dict[str, int] = {
+    "pcscpu2": 0x04,
+    "di":      0x04,
+    "dis":     0x04,
+}
+
 
 def find_dual_cpu_pair(selected: list) -> tuple[object, object] | None:
     """Detect a PCS-family dual-CPU pairing in `selected`.
@@ -102,6 +110,9 @@ def run_pcs_dual_cpu(
         bhx_file=secondary_bhx,
         entry=secondary_entry,
         module_byte=secondary_module_byte,
+        fallback_module_byte=_SECONDARY_MODULE_FALLBACK.get(
+            secondary_entry.component.lower()
+        ),
         erase_timeout=SCRIPT_PCS.erase_timeout,
         security_level=SCRIPT_PCS.security_level,
         expected_fw_type=SCRIPT_PCS.expected_fw_type,
@@ -126,6 +137,7 @@ def run_pcs_dual_cpu(
     ctx.bhx_file = primary_bhx
     ctx.entry = primary_entry
     ctx.module_byte = primary_module_byte
+    ctx.fallback_module_byte = None
     step_module_to_program(sess, ctx)
     step_erase(sess, ctx)
     step_transfer_loop(sess, ctx)

@@ -21,6 +21,7 @@ from .security import compute_key
 _SESSION_DEFAULT = 0x01
 _SESSION_PROGRAMMING = 0x02
 _SESSION_EXTENDED = 0x03
+_SESSION_SAFETY = 0x04
 
 _SID_DSC = 0x10  # DiagnosticSessionControl
 _SID_SA = 0x27  # SecurityAccess
@@ -348,8 +349,6 @@ class UdsSession:
         Starts the routine, then polls requestResults (subfunction 3) up to
         50 times (100 ms apart) until the response byte equals 1.
         """
-        import time as _time
-        _RC_REQ_RESULTS = 0x03
         payload_start = [
             _SID_RC, _RC_START,
             (_RC_VENDOR_PREFLIGHT >> 8) & 0xFF, _RC_VENDOR_PREFLIGHT & 0xFF,
@@ -358,11 +357,11 @@ class UdsSession:
         self._check_positive(resp, _SID_RC)
 
         payload_poll = [
-            _SID_RC, _RC_REQ_RESULTS,
+            _SID_RC, _RC_REQUEST_RESULTS,
             (_RC_VENDOR_PREFLIGHT >> 8) & 0xFF, _RC_VENDOR_PREFLIGHT & 0xFF,
         ]
         for _ in range(50):
-            _time.sleep(0.1)
+            time.sleep(0.1)
             resp = self._send_raw(payload_poll)
             self._check_positive(resp, _SID_RC)
             if len(resp) >= 5 and resp[4] == 0x01:

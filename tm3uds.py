@@ -18,6 +18,9 @@ import argparse
 import sys
 
 import config as _cfg
+from uds_local.client import (
+    _SESSION_DEFAULT, _SESSION_PROGRAMMING, _SESSION_EXTENDED, _SESSION_SAFETY,
+)
 
 _NODES_JSON  = _cfg.NODES_JSON
 _ETH_COMPACT = _cfg.ETH_COMPACT
@@ -111,7 +114,7 @@ def cmd_routine(args: argparse.Namespace) -> None:
 def cmd_security_access(args: argparse.Namespace) -> None:
     cfg = _load_config(args.node)
     with _make_session(args.node, args.channel, args.interface) as sess:
-        sess.diagnostic_session(0x02)  # programming session required for SA
+        sess.diagnostic_session(_SESSION_PROGRAMMING)  # programming session required for SA
         sess.start_tester_present()
         sess.security_access()
         sess.stop_tester_present()
@@ -123,8 +126,8 @@ def cmd_security_access(args: argparse.Namespace) -> None:
 
 def cmd_session(args: argparse.Namespace) -> None:
     mode_map = {
-        "default": 0x01, "programming": 0x02,
-        "extended": 0x03, "safety": 0x04,
+        "default": _SESSION_DEFAULT, "programming": _SESSION_PROGRAMMING,
+        "extended": _SESSION_EXTENDED, "safety": _SESSION_SAFETY,
     }
     mode_arg = args.mode.lower()
     if mode_arg in mode_map:

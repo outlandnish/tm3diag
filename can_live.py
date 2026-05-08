@@ -25,7 +25,7 @@ from aiohttp import web
 from can_decoder import CanDatabase
 
 _STATIC_DIR = Path(__file__).parent / "can_live_ui"
-_DB: CanDatabase = None  # type: ignore[assignment]  — set in main() before use
+_DB: CanDatabase | None = None
 
 log = logging.getLogger("can_live")
 

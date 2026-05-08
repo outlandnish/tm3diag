@@ -16,6 +16,9 @@ from typing import Any
 
 import config as _cfg
 from decode_bin import load_json as _load_json
+from uds_local.client import (
+    _SESSION_DEFAULT, _SESSION_PROGRAMMING, _SESSION_EXTENDED, _SESSION_SAFETY,
+)
 
 _NODES_JSON  = _cfg.NODES_JSON
 _ETH_COMPACT = _cfg.ETH_COMPACT
@@ -289,7 +292,7 @@ def _did_menu(sess, cfg, odj_fields: dict[str, Any]) -> None:
         if sl:
             print(f"  DID requires security level {sl} — running security access...")
             try:
-                sess.diagnostic_session(0x02)
+                sess.diagnostic_session(_SESSION_PROGRAMMING)
                 sess.security_access()
             except UdsError as e:
                 print(f"  Security access failed: {e}")
@@ -352,7 +355,7 @@ def _routine_menu(sess, cfg) -> None:
         if needs_sa:
             print("  Routine requires security access — authenticating...")
             try:
-                sess.diagnostic_session(0x02)
+                sess.diagnostic_session(_SESSION_PROGRAMMING)
                 sess.security_access()
             except UdsError as e:
                 print(f"  Security access failed: {e}")
@@ -482,7 +485,10 @@ def _main_menu(sess, cfg, odj_fields: dict[str, Any], artifacts_dir: Path | None
 
 def _session_cmd(sess) -> None:
     from uds_local.client import UdsError
-    mode_map = {"default": 0x01, "programming": 0x02, "extended": 0x03, "safety": 0x04}
+    mode_map = {
+        "default": _SESSION_DEFAULT, "programming": _SESSION_PROGRAMMING,
+        "extended": _SESSION_EXTENDED, "safety": _SESSION_SAFETY,
+    }
     raw = input("  Session (default/programming/extended/safety or 0xNN): ").strip().lower()
     mode = mode_map.get(raw)
     if mode is None:

@@ -13,7 +13,6 @@ Tesla Model 3 diagnostics tools for CAN
 | [`tm3uds.py`](docs/tm3uds.md)                 | General-purpose UDS CLI for reading/writing DIDs, routines, and session management       |
 | [`dfu.py`](docs/dfu.md)                       | Firmware flash CLI — identity discovery, file selection, and ECU-specific flash sequence |
 | [`bhx.py`](docs/bhx.md)                       | BHX firmware image parser and builder                                                    |
-| [`pcs_send.py`](docs/pcs_send.md)             | Interactive PCS CAN scripting shell                                                      |
 | [`compact_to_dbc.py`](docs/compact_to_dbc.md) | Convert `Model3_ETH.compact.json` to DBC                                                 |
 | [`can_live.py`](docs/can_live.md)             | Web-based live CAN signal viewer                                                         |
 
@@ -27,11 +26,15 @@ cp .env.example .env
 
 ## Data files
 
-Node configurations live in `data/`:
+The tools require three data files extracted from a Tesla firmware image. Point to them via `.env` or environment variables:
 
-- `nodes.json` — CAN IDs, security parameters, and ODJ sources for each ECU
-- `Model3_ETH.compact.json` — CAN message ID map
-- `odj/` — Per-ECU DID definitions (name, hex ID, read/write sizes, security level)
+| Variable | File | Description |
+| -------- | ---- | ----------- |
+| `TM3_NODES_JSON` | `nodes.json` | CAN IDs, security parameters, and ODJ sources for each ECU |
+| `TM3_ETH_COMPACT` | `Model3_ETH.compact.json` | CAN message ID map |
+| `TM3_ODJ_DIR` | `odj/` | Per-ECU DID definitions (name, hex ID, read/write sizes, security level) |
+
+These are found in `opt/odin/data/Model3/` inside the Odin firmware squashfs. `.bin` encrypted variants are also supported if `TM3_BIN_KEY` is set.
 
 ## Reference
 

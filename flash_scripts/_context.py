@@ -15,10 +15,13 @@ class FlashContext:
     bhx_file: object           # bhx.BhxFile
     entry: object              # metadata.FirmwareEntry
     module_byte: int = 0x00              # written by module_to_program step
-    fallback_module_byte: int | None = None  # tried if module_byte gets NRC 0x10/0x31
-    erase_timeout: float = 3.0           # P2 seconds applied around erase (restored after)
+    # tried if module_byte gets NRC 0x10/0x31
+    fallback_module_byte: int | None = None
+    # P2 seconds applied around erase (restored after)
+    erase_timeout: float = 3.0
     security_level: int = 0    # security access level index
-    protocol_ver: int | None = None  # set by step_verify_comp_fw, consumed by step_security_access
+    # set by step_verify_comp_fw, consumed by step_security_access
+    protocol_ver: int | None = None
     expected_fw_type: int = 0x01  # 1 = regular firmware; 2 = bootloader image
     # CAN access plumbing for steps that need to open a transient session to
     # another ECU (e.g. SCRIPT_BL_UPDATER_VCFRONT's VCRIGHT prep). Populated by

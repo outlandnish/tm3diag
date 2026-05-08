@@ -28,11 +28,11 @@ cp .env.example .env
 
 The tools require three data files extracted from a Tesla firmware image. Point to them via `.env` or environment variables:
 
-| Variable | File | Description |
-| -------- | ---- | ----------- |
-| `TM3_NODES_JSON` | `nodes.json` | CAN IDs, security parameters, and ODJ sources for each ECU |
-| `TM3_ETH_COMPACT` | `Model3_ETH.compact.json` | CAN message ID map |
-| `TM3_ODJ_DIR` | `odj/` | Per-ECU DID definitions (name, hex ID, read/write sizes, security level) |
+| Variable          | File                      | Description                                                              |
+| ----------------- | ------------------------- | ------------------------------------------------------------------------ |
+| `TM3_NODES_JSON`  | `nodes.json`              | CAN IDs, security parameters, and ODJ sources for each ECU               |
+| `TM3_ETH_COMPACT` | `Model3_ETH.compact.json` | CAN message ID map                                                       |
+| `TM3_ODJ_DIR`     | `odj/`                    | Per-ECU DID definitions (name, hex ID, read/write sizes, security level) |
 
 These are found in `opt/odin/data/Model3/` inside the Odin firmware squashfs. `.bin` encrypted variants are also supported if `TM3_BIN_KEY` is set.
 
@@ -40,7 +40,6 @@ These are found in `opt/odin/data/Model3/` inside the Odin firmware squashfs. `.
 
 - [FIRMWARE_UPDATE.md](docs/FIRMWARE_UPDATE.md) — UDS flash protocol, script map, frame-by-frame reference
 - [ECU_DIDS.md](docs/ECU_DIDS.md) — DID reference for all ECU nodes
-- [UDS_VM_OPCODES.md](docs/UDS_VM_OPCODES.md) — VM opcode table from `hashpicker_sim`
 
 ## Requirements
 

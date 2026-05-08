@@ -20,20 +20,11 @@ from uds_local.client import (
     _SESSION_DEFAULT, _SESSION_PROGRAMMING, _SESSION_EXTENDED, _SESSION_SAFETY,
 )
 
-_NODES_JSON  = _cfg.NODES_JSON
+_NODES_JSON = _cfg.NODES_JSON
 _ETH_COMPACT = _cfg.ETH_COMPACT
-_ODJ_DIR     = _cfg.ODJ_DIR
-_CACHE_FILE  = Path(__file__).parent / ".tm3diag_cache"
+_ODJ_DIR = _cfg.ODJ_DIR
+_CACHE_FILE = Path(__file__).parent / ".tm3diag_cache"
 
-# Named routines from hashpicker_sim VM opcode table (UDS_VM_OPCODES.md).
-# Format: name → (routine_id, description, requires_security_access)
-# opcode 9  → 0xFF00  initializeEraseModule
-# opcode 11 → 0x0201  checkModuleProgrammedCorrectly (CRC verify)
-# opcode 12 → 0x0202  checkCorrectComponentAndRev
-# opcode 21/24 → 0x540  otaStateRoutineControl / vcWaitForOTAMode
-# opcode 25 → 0x543   ibstPowerControl
-# opcode 37 → 0x601   disableIntrusionSensor
-# opcode 39 → 0x0204/0x0304  bmsContactorControl (inhibit / inhibit+open)
 _NAMED_ROUTINES: dict[str, tuple[int, str, bool]] = {
     "erase":              (0xFF00, "initializeEraseModule — EraseMemory", True),
     "verify-crc":         (0x0201, "checkModuleProgrammedCorrectly — CRC verify", False),
@@ -78,7 +69,8 @@ def _decode_fields(data: bytes, fields: dict[str, Any]) -> list[tuple[str, str]]
             n = int.from_bytes(chunk, "big")
             if dtype == "int" and chunk[0] & 0x80:
                 n -= 1 << (byte_len * 8)
-            results.append((name, f"{n}  (0x{int.from_bytes(chunk, 'big'):0{byte_len*2}X})"))
+            results.append(
+                (name, f"{n}  (0x{int.from_bytes(chunk, 'big'):0{byte_len*2}X})"))
         else:
             results.append((name, chunk.hex()))
     return results
@@ -102,7 +94,8 @@ class _Completer:
 
     def complete(self, text: str, state: int) -> str | None:
         if state == 0:
-            self._matches = [o for o in self._options if o.lower().startswith(text.lower())]
+            self._matches = [
+                o for o in self._options if o.lower().startswith(text.lower())]
         return self._matches[state] if state < len(self._matches) else None
 
 
@@ -166,7 +159,8 @@ def _pre_connection_menu(nodes: dict, channel: str, interface: str) -> str | Non
         elif cmd == "scan":
             print(f"\n  Scanning on {channel}...")
             try:
-                results = scan_network(channel, _NODES_JSON, _ETH_COMPACT, interface=interface)
+                results = scan_network(
+                    channel, _NODES_JSON, _ETH_COMPACT, interface=interface)
                 print()
                 print_scan_table(results)
                 print()
@@ -179,7 +173,8 @@ def _pre_connection_menu(nodes: dict, channel: str, interface: str) -> str | Non
                 continue
             name = parts[1].upper()
             if name not in nodes:
-                print(f"  Unknown node {name!r}. Known: {', '.join(node_names)}")
+                print(
+                    f"  Unknown node {name!r}. Known: {', '.join(node_names)}")
                 continue
             return name
 
@@ -276,7 +271,8 @@ def _did_menu(sess, cfg, odj_fields: dict[str, Any]) -> None:
             except ValueError:
                 print(f"  Invalid hex: {raw!r}")
                 continue
-            match = next((n for n, s in readable.items() if int(s.get("hex_id", "0"), 16) == did_id), None)
+            match = next((n for n, s in readable.items() if int(
+                s.get("hex_id", "0"), 16) == did_id), None)
             if match:
                 name, spec = match, readable[match]
             else:
@@ -290,7 +286,8 @@ def _did_menu(sess, cfg, odj_fields: dict[str, Any]) -> None:
         sl = spec.get("read", {}).get("security_level", 0) if spec else 0
 
         if sl:
-            print(f"  DID requires security level {sl} — running security access...")
+            print(
+                f"  DID requires security level {sl} — running security access...")
             try:
                 sess.diagnostic_session(_SESSION_PROGRAMMING)
                 sess.security_access()
@@ -418,7 +415,8 @@ def _dfu_menu(sess, cfg, artifacts_dir: Path | None) -> None:
 
     cached_force = cache.get("force", False)
     default = "Y" if cached_force else "N"
-    force_input = input(f"  Skip identity mismatch check? [y/N] (last: {default}) ").strip().lower()
+    force_input = input(
+        f"  Skip identity mismatch check? [y/N] (last: {default}) ").strip().lower()
     if force_input == "":
         force = cached_force
     else:
@@ -489,7 +487,8 @@ def _session_cmd(sess) -> None:
         "default": _SESSION_DEFAULT, "programming": _SESSION_PROGRAMMING,
         "extended": _SESSION_EXTENDED, "safety": _SESSION_SAFETY,
     }
-    raw = input("  Session (default/programming/extended/safety or 0xNN): ").strip().lower()
+    raw = input(
+        "  Session (default/programming/extended/safety or 0xNN): ").strip().lower()
     mode = mode_map.get(raw)
     if mode is None:
         try:
@@ -552,11 +551,14 @@ def main() -> int:
     from uds_local.node_config import load_node_config
     from uds_local.client import UdsSession
 
-    parser = argparse.ArgumentParser(description="Interactive Tesla Model 3 ECU diagnostic terminal")
-    parser.add_argument("--node", "-n", help="ECU node name (e.g. PCS, CP). Prompts if omitted.")
+    parser = argparse.ArgumentParser(
+        description="Interactive Tesla Model 3 ECU diagnostic terminal")
+    parser.add_argument(
+        "--node", "-n", help="ECU node name (e.g. PCS, CP). Prompts if omitted.")
     parser.add_argument("--channel", "-c", help="CAN interface channel")
     parser.add_argument("--interface", "-i", help="python-can interface type")
-    parser.add_argument("--artifacts", "-a", help="Path to seed_artifacts_v2 (for DFU)")
+    parser.add_argument("--artifacts", "-a",
+                        help="Path to seed_artifacts_v2 (for DFU)")
     _cfg.apply_defaults(parser)
     args = parser.parse_args()
 
@@ -567,7 +569,8 @@ def main() -> int:
         print(f"Error: unknown node {node_name!r}")
         return 1
 
-    artifacts_dir = Path(args.artifacts).expanduser().resolve() if args.artifacts else None
+    artifacts_dir = Path(args.artifacts).expanduser(
+    ).resolve() if args.artifacts else None
 
     if not node_name:
         node_name = _pre_connection_menu(nodes, args.channel, args.interface)

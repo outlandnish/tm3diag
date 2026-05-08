@@ -1,94 +1,45 @@
 # Tesla ECU Firmware Update — UDS Protocol Reference
 
-Reverse engineered from `hashpicker_sim`. All frames are ISO-TP over CAN.
-See [UDS_VM_OPCODES.md](UDS_VM_OPCODES.md) for the VM layer and
-[README.md](README.md) for the BHX parser tool.
+---
+
+### ECU → Script Group Map
+
+| Script group                     | ECUs                                                                                                                     |
+| -------------------------------- | ------------------------------------------------------------------------------------------------------------------------ |
+| gtw3                             | gtw3                                                                                                                     |
+| Standard                         | hvbms, cp, epas3p, epas3s, epbl, epbr, hvp, ocs1p, sccmk, vcsec, tas                                                     |
+| vcfront / ibstcal                | vcfront, ibstcal                                                                                                         |
+| vcright                          | vcright                                                                                                                  |
+| vcleft                           | vcleft                                                                                                                   |
+| pcs / di / pm family (multi-CPU) | pcs (mod=0x00), pcscpu2 (mod=0x0c), pm (mod=0x00), pms (mod=0x00), di (mod=0x0c), dis (mod=0x0c)                         |
+| park (extended erase timeout)    | park                                                                                                                     |
+| park / aps                       | park, aps                                                                                                                |
+| RAM app (variant A)              | vcleftramapp (mod=0x06), vcrightramapp (mod=0x0f), vcfrontramapp (mod=0x0f), vcsecramapp (mod=0x0f), sccmksub (mod=0x06) |
+| ibst                             | ibst                                                                                                                     |
+| espcal / rcmcal                  | espcal (mod=0x07), rcmcal (mod=0x07)                                                                                     |
+| esp                              | esp                                                                                                                      |
+| ibstcal (bootloader path)        | ibstcal (bootloader path)                                                                                                |
+| rcm                              | rcm                                                                                                                      |
+| tpms                             | tpms                                                                                                                     |
+| cmp                              | cmp                                                                                                                      |
+| ptc                              | ptc                                                                                                                      |
+| RAM app (variant B)              | vcrightramapp, vcfrontramapp, vcsecramapp, bleepcenter (mod=0x0f)                                                        |
+| vcleftramapp (OTA paths)         | vcleftramapp (mod=0x0f)                                                                                                  |
+| opc / opcs                       | opc (mod=0x0c), opcs (mod=0x0c)                                                                                          |
+| ths / swc / lumbar* / bleep*     | ths (mod=0x0c), swc (mod=0x0c), lumbarl/lumbar/lumbarr (mod=0x0b), bleep\* (various)                                     |
+| Bootloader updater (`*bu`)       | parkbu (mod=0x12), hvbmsbu (mod=0x02), hvpbu (mod=0x0e)                                                                  |
+| vcfrontbu (OTA preamble)         | vcfrontbu (mod=0x0d)                                                                                                     |
+| Bootloader image (`*bl`)         | parkbl (mod=0x12), hvbmsbl (mod=0x02), hvpbl (mod=0x0e), vcfrontbl (mod=0x0d)                                            |
 
 ---
 
-## BHX File Format
+### gtw3
 
-BHX is a big-endian container. Headers are parsed locally — **never sent over UDS**.
-Only the raw SHDR payload bytes are transmitted.
-
-### GHDR — Global Header
-
-| Offset | Size | Field              | Notes                                                 |
-| ------ | ---- | ------------------ | ----------------------------------------------------- |
-| `0x00` | 4    | Magic `"GHDR"`     |                                                       |
-| `0x04` | 4    | Version            | `1` or `2`, big-endian                                |
-| `0x08` | 4    | Total payload size | Sum of all SHDR payload sizes, not headers            |
-| `0x0C` | 4    | Total size         | **v2 only** — alternate total (redundant with `0x08`) |
-
-### SHDR — Section Header (20 bytes) + payload
-
-| Offset  | Size | Field          | Notes                                                  |
-| ------- | ---- | -------------- | ------------------------------------------------------ |
-| `+0x00` | 4    | Magic `"SHDR"` |                                                        |
-| `+0x04` | 4    | Version        | `1`, big-endian                                        |
-| `+0x08` | 4    | Target address | Big-endian — used verbatim in `RequestDownload`        |
-| `+0x0C` | 4    | Payload size   | Big-endian — used verbatim in `RequestDownload`        |
-| `+0x10` | 4    | CRC32          | Of this section's payload; validated by ECU bootloader |
-| `+0x14` | N    | **Payload**    | The only bytes sent over UDS                           |
-
-Payload offset in file:
-
-- GHDR v1: `0x20` (12-byte GHDR + 20-byte SHDR header)
-- GHDR v2: `0x24` (16-byte GHDR + 20-byte SHDR header)
+No UDS flash sequence — stub only.
 
 ---
 
-## Flash Scripts
-
-17 unique scripts exist in the binary at address `0x00650fa0`–`0x006512e0`. Each
-script contains one or more 48-byte program slots at `+0x00`, `+0x30`, `+0x60`, etc.
-The orchestration layer selects which slot to run based on context.
-
-The `module` byte in the ECU node table (`+0x20`, 1 byte) is loaded into
-`context+0x29` before the VM runs. `moduleToProgram` reads and consumes it,
-sending `2E 01 02 <module>` to select the target CPU/region in the
-bootloader. For single-CPU ECUs this is `0x00`. **Almost every ECU has
-`0x00` here**; the only non-zero values in the binary are for PCS-family
-CPU2 nodes (`pcscpu2`, `di`, `dis`) which carry `0x0C`.
-
-### ECU → Script Map
-
-| Script       | ECUs                                                                                                                     |
-| ------------ | ------------------------------------------------------------------------------------------------------------------------ |
-| `0x00650fa0` | gtw3                                                                                                                     |
-| `0x00650fb0` | hvbms, cp, epas3p, epas3s, epbl, epbr, hvp, ocs1p, sccmk, vcsec, tas                                                     |
-| `0x00651000` | vcfront, ibstcal                                                                                                         |
-| `0x00651030` | vcright                                                                                                                  |
-| `0x00651050` | vcleft                                                                                                                   |
-| `0x00651070` | pcs (mod=0x00), pcscpu2 (mod=0x0c), pm (mod=0x00), pms (mod=0x00), di (mod=0x0c), dis (mod=0x0c)                         |
-| `0x006510d0` | park                                                                                                                     |
-| `0x006510f0` | park, aps                                                                                                                |
-| `0x00651110` | vcleftramapp (mod=0x06), vcrightramapp (mod=0x0f), vcfrontramapp (mod=0x0f), vcsecramapp (mod=0x0f), sccmksub (mod=0x06) |
-| `0x00651140` | ibst                                                                                                                     |
-| `0x00651170` | espcal (mod=0x07), rcmcal (mod=0x07)                                                                                     |
-| `0x00651190` | esp                                                                                                                      |
-| `0x006511b0` | ibstcal (bootloader path)                                                                                                |
-| `0x006511d0` | rcm                                                                                                                      |
-| `0x006511f0` | tpms                                                                                                                     |
-| `0x00651230` | cmp                                                                                                                      |
-| `0x00651270` | ptc                                                                                                                      |
-| `0x00651290` | vcrightramapp, vcfrontramapp, vcsecramapp, bleepcenter (mod=0x0f)                                                        |
-| `0x006512b0` | vcleftramapp (mod=0x0f)                                                                                                  |
-| `0x006512d0` | opc (mod=0x0c), opcs (mod=0x0c)                                                                                          |
-| `0x006512e0` | ths (mod=0x0c), swc (mod=0x0c), lumbarl/lumbar/lumbarr (mod=0x0b), bleep\* (various)                                     |
-| `0x00651300` | parkbu (mod=0x12), hvbmsbu (mod=0x02), hvpbu (mod=0x0e) — bootloader updater (`*bu`)                                     |
-| `0x00651320` | vcfrontbu (mod=0x0d) — vcfront-specific bootloader updater (OTA preamble)                                                |
-| `0x00651340` | parkbl (mod=0x12), hvbmsbl (mod=0x02), hvpbl (mod=0x0e), vcfrontbl (mod=0x0d) — bootloader image (`*bl`)                 |
-
----
-
-### `0x00650fa0` — gtw3
-
-Single unrecognized opcode. No UDS flash sequence — stub only.
-
----
-
-### `0x00650fb0` — Standard (hvbms, cp, epas3p/s, epbl/r, hvp, ocs1p, sccmk, vcsec, tas)
+### Standard (hvbms, cp, epas3p/s, epbl/r, hvp, ocs1p, sccmk, vcsec, tas)
 
 ```
 [prog 0]
@@ -112,7 +63,7 @@ sleep(300ms)
 
 ---
 
-### `0x00651000` — vcfront / ibstcal (power context variant)
+### vcfront / ibstcal (power context variant)
 
 ```
 [prog 0]  — power rail on, flash, power rail off
@@ -140,7 +91,7 @@ reset(soft)  sleep(500ms)
 
 ---
 
-### `0x00651030` — vcright
+### vcright
 
 ```
 [prog 0]  — standard flash
@@ -157,7 +108,7 @@ reset(soft)  sleep(500ms)
 
 ---
 
-### `0x00651050` — vcleft (pre-flash vendor routine)
+### vcleft (pre-flash vendor routine)
 
 ```
 [prog 0]
@@ -173,7 +124,7 @@ reset(soft)  sleep(500ms)
 
 ---
 
-### `0x00651070` — pcs / pcscpu2 / di / dis / pm / pms (multi-CPU)
+### pcs / pcscpu2 / di / dis / pm / pms (multi-CPU)
 
 The `module` byte selects which CPU the bootloader programs (`2E 01 02 <module>`).
 
@@ -230,7 +181,7 @@ reset(soft)
 
 ---
 
-### `0x006510d0` — park (extended erase timeout)
+### park (extended erase timeout)
 
 ```
 [prog 0]
@@ -248,7 +199,7 @@ reset(soft)
 
 ---
 
-### `0x006510f0` — park / aps
+### park / aps
 
 ```
 [prog 0]
@@ -264,7 +215,7 @@ reset(soft)
 
 ---
 
-### `0x00651110` — RAM app scripts (vcleft/vcright/vcfront/vcsec ramapp, sccmksub)
+### RAM app scripts — variant A (vcleft/vcright/vcfront/vcsec ramapp, sccmksub)
 
 ```
 [prog 0]  — RAM app flash (no boardPartSerialGet)
@@ -288,7 +239,7 @@ reset(soft)
 
 ---
 
-### `0x00651140` — ibst
+### ibst
 
 ```
 [prog 0]  — flash count check + DTC clear + security level 3
@@ -314,7 +265,7 @@ reset(soft)
 
 ---
 
-### `0x00651170` — espcal / rcmcal (calibration flash, security level 3)
+### espcal / rcmcal (calibration flash, security level 3)
 
 ```
 [prog 0]
@@ -332,7 +283,7 @@ reset(soft)
 
 ---
 
-### `0x00651190` — esp (flash count check + security level 3)
+### esp (flash count check + security level 3)
 
 ```
 [prog 0]
@@ -347,7 +298,7 @@ reset(soft)
 
 ---
 
-### `0x006511b0` — ibstcal bootloader path (hard reset with retries)
+### ibstcal bootloader path (hard reset with retries)
 
 ```
 [prog 0]
@@ -363,7 +314,7 @@ sleep(100ms)
 
 ---
 
-### `0x006511d0` — rcm (Pektron: flash count + hard reset + explicit erase)
+### rcm (Pektron: flash count + hard reset + explicit erase)
 
 ```
 [prog 0]
@@ -380,7 +331,7 @@ reset(2)
 
 ---
 
-### `0x006511f0` — tpms (security level 4 — baolong_hash)
+### tpms (security level 4 — baolong_hash)
 
 ```
 [prog 0]
@@ -395,7 +346,7 @@ reset(soft)
 
 ---
 
-### `0x00651230` — cmp (security level 7 — pektron-style, non-standard erase)
+### cmp (security level 7 — pektron-style, non-standard erase)
 
 ```
 [prog 0]
@@ -416,7 +367,7 @@ reset(soft)
 
 ---
 
-### `0x00651270` — ptc (non-standard erase, timeout 10s)
+### ptc (non-standard erase, timeout 10s)
 
 ```
 [prog 0]
@@ -435,7 +386,7 @@ reset(soft)
 
 ---
 
-### `0x00651290` — vcright/vcfront/vcsec ramapp, bleepcenter
+### RAM app scripts — variant B (vcright/vcfront/vcsec ramapp, bleepcenter)
 
 ```
 [prog 0]  — flash without boardPartSerialGet
@@ -459,7 +410,7 @@ CALL sub1  checkModuleProgrammed  checkCorrectComponentAndRev
 
 ---
 
-### `0x006512b0` — vcleftramapp (pre-flash routine + OTA paths)
+### vcleftramapp (pre-flash routine + OTA paths)
 
 ```
 [prog 0]  — pre-flash routineControl0601 + standard flash
@@ -490,7 +441,7 @@ CALL sub1  checkModuleProgrammed  checkCorrectComponentAndRev  reset(soft)
 
 ---
 
-### `0x006512d0` — opc / opcs (OTA state machine)
+### opc / opcs (OTA state machine)
 
 ```
 [prog 0]  — OTA: securityAccess(13)
@@ -506,7 +457,7 @@ CALL sub1  checkModuleProgrammed  checkCorrectComponentAndRev  reset(soft)
 
 ---
 
-### `0x006512e0` — ths / swc / lumbar* / bleep* (OTA + multi-CPU style)
+### ths / swc / lumbar* / bleep* (OTA + multi-CPU style)
 
 ```
 [prog 0]  — OTA: securityAccess(13)
@@ -528,7 +479,7 @@ CALL sub5
 
 ---
 
-### `0x00651300` — bootloader-updater (parkbu, hvbmsbu, hvpbu)
+### Bootloader updater — parkbu, hvbmsbu, hvpbu
 
 The "bu" file (e.g. `parkbu.hex`, `hvpbu.hex`) is a **bootloader update agent**
 that gets installed into the regular application slot first. The script is a
@@ -553,15 +504,15 @@ Module byte at `+0x20` is `0x00` for all `*bu` nodes; the wire frame is
 `2E 01 02 00`. (The non-zero values at `+0x1C` — `0x12` for parkbu,
 `0x02` for hvbmsbu, `0x0E` for hvpbu — are `node_id`s, not module bytes.)
 
-`vcfrontbu` uses a different script (`0x00651320`) — see below.
+`vcfrontbu` uses a different script — see below.
 
 ---
 
-### `0x00651320` — vcfront-specific bootloader-updater (vcfrontbu)
+### vcfrontbu — vcfront-specific bootloader updater
 
 VCFRONT can't be flashed without first putting the **VCRIGHT** ECU into a
 coordinated OTA state (the front and right vehicle controllers share door-lock
-and OTA-state machinery). The `0x00651320` script wraps the standard
+and OTA-state machinery). The vcfrontbu script wraps the standard
 `SCRIPT_BL_UPDATER` body with a leading `CALL sub4` that opens a transient UDS
 handle to VCRIGHT, runs the prep, then closes it:
 
@@ -577,7 +528,7 @@ checkModuleProgrammed  checkCorrectComponentAndRev
 reset(soft)
 ```
 
-#### `sub4` (`0x006513a0`) — VCRIGHT-side OTA prep + IOCBI lockout
+#### `sub4` — VCRIGHT-side OTA prep + IOCBI lockout
 
 Decoded VM bytecode `1A 19 0D 03 03 03 02 00 18 00 17 01 1B 00 2C 00`:
 
@@ -608,16 +559,16 @@ A flash tool implementing this needs:
 3. After RET, the VCRIGHT session is closed and the standard bu flash continues
    against VCFRONT on its normal CAN IDs.
 
-`sub5` (`0x006513b0`) is identical to sub4 but with `vcFrontLockoutIOControl(0)`
+`sub5` is identical to sub4 but with `vcFrontLockoutIOControl(0)`
 instead of `(1)` — the "release" counterpart to sub4's "engage". Used in some other
-VCFRONT/VCRIGHT scripts but **not** in `0x00651320`.
+VCFRONT/VCRIGHT scripts but **not** in the vcfrontbu script.
 
 Module byte at `+0x20` for `vcfrontbu` is `0x00` (wire frame `2E 01 02 00`);
 the `0x0D` at `+0x1C` is the VCFRONT `node_id`, not the module byte.
 
 ---
 
-### `0x00651340` — bootloader image (parkbl, hvbmsbl, hvpbl, vcfrontbl)
+### Bootloader image — parkbl, hvbmsbl, hvpbl, vcfrontbl
 
 The "bl" file is the actual bootloader being installed. This script runs
 **immediately after** the bu's trailing reset, with no opening reset of its
@@ -645,9 +596,9 @@ corresponding `*bu`).
 
 For an ECU with both bu and bl artifacts, the full update flow is:
 
-1. **Flash `*bu`** via script `0x00651300` — replaces the app slot with the
+1. **Flash `*bu`** (bootloader updater script) — replaces the app slot with the
    update agent. ECU resets and the agent boots.
-2. **Flash `*bl`** via script `0x00651340` — agent erases the bootloader
+2. **Flash `*bl`** (bootloader image script) — agent erases the bootloader
    sector and writes the new bootloader. ECU resets into the new bootloader.
 3. **Re-flash the regular `*` (app)** via the parent ECU's normal script —
    restores the application to the app slot. **Without this step the ECU
@@ -683,11 +634,11 @@ ship only `cp.bhx`; the PLC modem firmware was added at variant 14.
 
 ### Flash properties
 
-| ecu_type   | Script                  | Module byte | File format | Target                 |
-| ---------- | ----------------------- | ----------- | ----------- | ---------------------- |
-| `cp`       | `0x00650fb0` (Standard) | `0x00`      | BHX         | CP MCU app slot        |
-| `cpPlcFw`  | `0x00650fb0` (Standard) | `0x00`      | Intel HEX   | PLC modem firmware     |
-| `cpPlcPib` | `0x00650fb0` (Standard) | `0x00`      | Intel HEX   | PLC modem PIB (config) |
+| ecu_type   | Script group | Module byte | File format | Target                 |
+| ---------- | ------------ | ----------- | ----------- | ---------------------- |
+| `cp`       | Standard     | `0x00`      | BHX         | CP MCU app slot        |
+| `cpPlcFw`  | Standard     | `0x00`      | Intel HEX   | PLC modem firmware     |
+| `cpPlcPib` | Standard     | `0x00`      | Intel HEX   | PLC modem PIB (config) |
 
 All three use the **same script**, the same wire frame for `moduleToProgram`
 (`2E 01 02 00`), and the **same UDS CAN IDs** (`UDS_cpRequest` /
@@ -852,7 +803,7 @@ The `module` byte is taken from the ECU node table entry (`+0x20`) and placed in
 `context+0x29` before the VM runs. `moduleToProgram` reads and consumes it. For
 single-CPU ECUs the module byte is `0x00`.
 
-Module byte values for script `0x00651070` (PCS/DI/PM family):
+Module byte values for the PCS/DI/PM family:
 
 | ECU                | Module byte | Notes                                                         |
 | ------------------ | ----------- | ------------------------------------------------------------- |
@@ -938,15 +889,15 @@ The protocol_ver=5 PCS bootloader rejects the 5-byte form with NRC 0x31.
 
 Timeout during erase — set before sending, restore after:
 
-| Script              | Erase timeout     |
-| ------------------- | ----------------- |
-| Standard            | P2=3s / P2\*=6s   |
-| `0x00651070` (PCS)  | P2=5s / P2\*=10s  |
-| `0x006510d0` (park) | P2=1s / P2\*=2s   |
-| `0x00651140` (ibst) | P2=4s / P2\*=8s   |
-| `0x006511d0` (rcm)  | P2=4s / P2\*=8s   |
-| `0x006511f0` (tpms) | P2=3s / P2\*=6s   |
-| `0x00651270` (ptc)  | P2=10s / P2\*=20s |
+| Script group | Erase timeout     |
+| ------------ | ----------------- |
+| Standard     | P2=3s / P2\*=6s   |
+| PCS family   | P2=5s / P2\*=10s  |
+| park         | P2=1s / P2\*=2s   |
+| ibst         | P2=4s / P2\*=8s   |
+| rcm          | P2=4s / P2\*=8s   |
+| tpms         | P2=3s / P2\*=6s   |
+| ptc          | P2=10s / P2\*=20s |
 
 ---
 
@@ -1064,7 +1015,7 @@ Two files provide the same mapping; use `signed_metadata_map.tsv` in production:
 Several ECUs map the same boot ID key to more than one BHX file. Each row carries a
 different `ecu_type` and `local_filename`; each is a separate sequential flash operation.
 
-**PCS** — two CPUs, same CAN IDs, same script (`0x00651070`), `moduleToProgram` selects the target:
+**PCS** — two CPUs, same CAN IDs, same script group (PCS/DI/PM family), `moduleToProgram` selects the target:
 
 | Row | `local_filename` | `ecu_type` | SHDR address | Module byte | Flash sectors |
 | --- | ---------------- | ---------- | ------------ | ----------- | ------------- |
@@ -1092,7 +1043,7 @@ files are available up-front.
 
 When the lookup yields both a primary (`ecu_type ∈ {pcs, pm, pms}`) and a
 secondary (`ecu_type ∈ {pcscpu2}`) entry **on the same UDS endpoint**, run
-script `0x00651070` **prog 1** once with both files. CPU2/secondary is flashed
+the PCS/DI/PM family script **prog 1** once with both files. CPU2/secondary is flashed
 first, then CPU1/primary, in a single `securityAccess` window:
 
 ```
@@ -1164,8 +1115,7 @@ key[i] = seed[i] ^ 0x35   for i in 0..15
 | `0xF01D` | `USAGE_ID`           | 2     |                                           |
 | `0xF01E` | `SUB_USAGE_ID`       | 2     | secondary node                            |
 
-`BOOTLOADER_VERSION` (DID `0xF180`) — 19 bytes. Observed on PM (`"PMS12-13"`)
-and DI (`"DIS12-13"`):
+`BOOTLOADER_VERSION` (DID `0xF180`) — 19 bytes.
 
 ```
 Byte   Field

@@ -16,7 +16,22 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from ._constants import _RC_CHECK_REV, _RC_ERASE, _RC_VERIFY_CRC
+from ._context import FlashContext
+from ._ecu_map import get_script
+from ._scripts import SCRIPT_PCS
+from ._steps import (
+    step_check_rev,
+    step_ecu_reset,
+    step_erase,
+    step_module_to_program,
+    step_programming_session,
+    step_security_access,
+    step_sleep_300ms,
+    step_transfer_loop,
+    step_verify_comp_fw,
+    step_verify_crc,
+    step_wait_for_bootloader,
+)
 
 if TYPE_CHECKING:
     from uds_local.client import UdsSession
@@ -25,14 +40,6 @@ if TYPE_CHECKING:
 # ecu_type → role in PCS-family dual-CPU pairings
 _PCS_PRIMARY_TYPES = frozenset({"pcs", "pm", "pms"})
 _PCS_SECONDARY_TYPES = frozenset({"pcscpu2", "di", "dis"})
-
-# Module bytes for prog 1's two moduleToProgram calls.
-#
-# These are the **bytecode literals** from prog 1 at 0x006510a0
-# (`05 04` then `05 00`).
-
-_PROG1_MODULE_SECONDARY = 0x04
-_PROG1_MODULE_PRIMARY = 0x00
 
 
 def find_dual_cpu_pair(selected: list) -> tuple[object, object] | None:
@@ -69,12 +76,12 @@ def run_pcs_dual_cpu(
       diagnosticSession(2)
       varifyCompAndFirmwareType(1)
       securityAccess(0)                       — protocol_ver-aware
-      moduleToProgram(4)   netSetTimeout(30)  — CPU2/secondary
+      moduleToProgram(secondary_module_byte)   netSetTimeout(30)  — CPU2/secondary
       initializeEraseModule(0)
       netSetTimeout(1)
       transferData(secondary_bhx)
       checkModuleProgrammedCorrectly
-      moduleToProgram(0)   netSetTimeout(30)  — CPU1/primary
+      moduleToProgram(primary_module_byte)   netSetTimeout(30)  — CPU1/primary
       initializeEraseModule(0)
       transferData(primary_bhx)
       netSetTimeout(4)
@@ -82,115 +89,48 @@ def run_pcs_dual_cpu(
       checkCorrectComponentAndRev
       reset(soft)
     """
+    primary_module_byte = get_script(primary_entry.component.lower())[1]
+    secondary_module_byte = get_script(secondary_entry.component.lower())[1]
+
     print(f"  Dual-CPU sequence (prog 1, single auth session):")
     print(f"    primary   ({primary_entry.dest_name}, ecu_type={primary_entry.component})"
-          f"  → moduleToProgram(0x{_PROG1_MODULE_PRIMARY:02X})")
+          f"  → moduleToProgram(0x{primary_module_byte:02X})")
     print(f"    secondary ({secondary_entry.dest_name}, ecu_type={secondary_entry.component})"
-          f"  → moduleToProgram(0x{_PROG1_MODULE_SECONDARY:02X}) [flashed first]")
+          f"  → moduleToProgram(0x{secondary_module_byte:02X}) [flashed first]")
 
-    print("  Step: ECUReset 11 81 (SPR, no wait)")
-    sess.ecu_reset_no_wait(0x01)
-    print("  Step: Wait for bootloader handover")
-    sess.wait_for_bootloader()
-
-    print("  Step: DiagnosticSessionControl(PROGRAMMING)")
-    sess.diagnostic_session(0x02)
-
-    print("  Step: ReadDataByIdentifier COMP_AND_FW_TYPE (0x0101)")
-    comp_fw = sess.read_did(0x0101)
-    print(
-        f"    raw response: {len(comp_fw)} bytes —"
-        f" {' '.join(f'{b:02X}' for b in comp_fw)}"
+    ctx = FlashContext(
+        bhx_file=secondary_bhx,
+        entry=secondary_entry,
+        module_byte=secondary_module_byte,
+        erase_timeout=SCRIPT_PCS.erase_timeout,
+        security_level=SCRIPT_PCS.security_level,
+        expected_fw_type=SCRIPT_PCS.expected_fw_type,
     )
-    if len(comp_fw) < 3:
-        from uds_local.client import MalformedResponseError
-        raise MalformedResponseError(
-            0x22,
-            f"DID 0x0101 response too short ({len(comp_fw)} bytes, expected 3 "
-            "for [component_key, fw_type, protocol_ver])",
-        )
-    # ODJ-documented layout (application response):
-    #   byte[0] = COMPONENT_KEY, byte[1] = FIRMWARE_TYPE, byte[2] = PROTOCOL_VER
-    component_key, fw_type, protocol_ver = comp_fw[0], comp_fw[1], comp_fw[2]
-    print(
-        f"    parsed (per app ODJ): component_key=0x{component_key:02X}"
-        f"  fw_type=0x{fw_type:02X}"
-        f"  protocol_ver=0x{protocol_ver:02X}"
-    )
-    if fw_type != 0x01:
-        from uds_local.client import MalformedResponseError
-        raise MalformedResponseError(
-            0x22,
-            f"DID 0x0101 FIRMWARE_TYPE byte 0x{fw_type:02X} != expected 0x01"
-        )
 
-    seed_level = 0x01 if protocol_ver < 3 else 0x05
-    print(
-        f"  Step: SecurityAccess (idx=0 protocol_ver={protocol_ver}"
-        f" seed_level=0x{seed_level:02X})"
-    )
-    sess.security_access(level_idx=0, seed_level=seed_level)
+    # Outer setup — once for the whole dual-CPU session
+    step_ecu_reset(sess, ctx)
+    step_wait_for_bootloader(sess, ctx)
+    step_programming_session(sess, ctx)
+    step_verify_comp_fw(sess, ctx)      # sets ctx.protocol_ver for step_security_access
+    step_security_access(sess, ctx)
 
     # ---- CPU2 / secondary first ----
-    _flash_one_cpu_in_session(
-        sess,
-        module_byte=_PROG1_MODULE_SECONDARY,
-        bhx_file=secondary_bhx,
-        label=f"secondary ({secondary_entry.component})",
-        verify_rev_at_end=False,
-    )
+    print(f"  --- secondary ({secondary_entry.component}) ---")
+    step_module_to_program(sess, ctx)
+    step_erase(sess, ctx)
+    step_transfer_loop(sess, ctx)
+    step_verify_crc(sess, ctx)
 
     # ---- CPU1 / primary second ----
-    _flash_one_cpu_in_session(
-        sess,
-        module_byte=_PROG1_MODULE_PRIMARY,
-        bhx_file=primary_bhx,
-        label=f"primary ({primary_entry.component})",
-        verify_rev_at_end=True,
-    )
+    print(f"  --- primary ({primary_entry.component}) ---")
+    ctx.bhx_file = primary_bhx
+    ctx.entry = primary_entry
+    ctx.module_byte = primary_module_byte
+    step_module_to_program(sess, ctx)
+    step_erase(sess, ctx)
+    step_transfer_loop(sess, ctx)
+    step_verify_crc(sess, ctx)
+    step_check_rev(sess, ctx)
 
-    print("  Step: ECUReset 11 81 (SPR, no wait) — return to application")
-    sess.ecu_reset_no_wait(0x01)
-    sess.sleep(0.3)
-
-
-def _flash_one_cpu_in_session(
-    sess: "UdsSession",
-    module_byte: int,
-    bhx_file: object,
-    label: str,
-    verify_rev_at_end: bool,
-) -> None:
-    """One CPU's slice of prog 1 — assumes session + auth already established."""
-    print(f"  --- {label} ---")
-    print(f"  Step: netSetTimeout(30) + moduleToProgram(0x{module_byte:02X})")
-    sess.set_timeout(30.0)
-    sess.module_to_program(module_byte)
-
-    print("  Step: RC 0xFF00 initializeEraseModule (P2=30s)")
-    sess.start_tester_present()
-    try:
-        sess.routine_control(_RC_ERASE, b"\x01")
-    finally:
-        sess.stop_tester_present()
-
-    print("  Step: netSetTimeout(1)")
-    sess.set_timeout(1.0)
-
-    for seg_idx, seg in enumerate(bhx_file.segments):
-        print(
-            f"  Step: Transfer SHDR {seg_idx}"
-            f" addr=0x{seg.start_address:08X} size={seg.length} bytes"
-        )
-        max_block_len = sess.request_download(seg.start_address, seg.length)
-        sess.transfer_data(seg.data, max_block_len)
-        sess.request_transfer_exit()
-
-    if verify_rev_at_end:
-        print("  Step: netSetTimeout(4)")
-        sess.set_timeout(4.0)
-    print("  Step: RC 0x0201 checkModuleProgrammedCorrectly")
-    sess.routine_control(_RC_VERIFY_CRC)
-    if verify_rev_at_end:
-        print("  Step: RC 0x0202 checkCorrectComponentAndRev")
-        sess.routine_control(_RC_CHECK_REV)
+    step_ecu_reset(sess, ctx)
+    step_sleep_300ms(sess, ctx)

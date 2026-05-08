@@ -77,19 +77,20 @@ ECU_SCRIPT_MAP: dict[str, _Entry] = {
     "vcleft": (SCRIPT_VCLEFT, 0x00),
 
     # pcs/pcscpu2/di/dis/pm/pms (0x00651070)
-    # Module byte values are taken from prog 1's bytecode literals at
-    # 0x006510a0 (`05 04` then `05 00`), NOT from EcuNodeEntry+0x20. The sim
-    # has +0x20=0x0C for di/dis/pcscpu2, but two successful third-party flash
-    # captures (DI: `2E 01 02 04`, PM: `2E 01 02 00`) show the real
-    # bootloader expects 0x04 / 0x00 — the prog 1 literals — not the entry
-    # override values. The sim's context+0x29 override mechanism produces
-    # the wrong wire byte for the secondary side; we bypass it here.
+    #
+    # Module bytes for primary/secondary CPU selection (DID 0x0102):
+    #
+    # di/dis have their own dedicated CAN nodes (0x606/0x605) — the 0x04 wire
+    # byte is confirmed for those nodes.
     "pcs":     (SCRIPT_PCS, 0x00),  # primary / CPU1 — verified via PM log
     "pm":      (SCRIPT_PCS, 0x00),  # primary / CPU1 — verified via PM log
     "pms":     (SCRIPT_PCS, 0x00),  # primary / CPU1
-    "pcscpu2": (SCRIPT_PCS, 0x04),  # secondary / CPU2 — was 0x0C, see note above
-    "di":      (SCRIPT_PCS, 0x04),  # secondary / CPU2 — verified via DI log
-    "dis":     (SCRIPT_PCS, 0x04),  # secondary / CPU2 — was 0x0C, see note above
+    # secondary / CPU2 — shared PCS node; sim value, unverified
+    "pcscpu2": (SCRIPT_PCS, 0x0C),
+    # secondary / CPU2 — verified via DI log (separate node)
+    "di":      (SCRIPT_PCS, 0x0C),
+    # secondary / CPU2 — separate node, assumed same as di
+    "dis":     (SCRIPT_PCS, 0x0C),
 
     # park (0x006510d0)
     "park": (SCRIPT_PARK, 0x00),
@@ -107,7 +108,8 @@ ECU_SCRIPT_MAP: dict[str, _Entry] = {
     "vcleftramapp":  (SCRIPT_RAMAPP, 0x06),
     "vcrightramapp": (SCRIPT_RAMAPP, 0x0F),
     "vcfrontramapp": (SCRIPT_RAMAPP, 0x0F),
-    "vcsecramapp":   (SCRIPT_RAMAPP, 0x0F),  # was vcsecrumapp (typo); seed metadata uses vcsecramapp
+    # was vcsecrumapp (typo); seed metadata uses vcsecramapp
+    "vcsecramapp":   (SCRIPT_RAMAPP, 0x0F),
     "sccmksub":      (SCRIPT_RAMAPP, 0x06),
 
     # OPC RAMAPPs delivered to the PMS module's primary side. Seed metadata

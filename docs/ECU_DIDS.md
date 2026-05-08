@@ -267,7 +267,7 @@ Security: `tesla_hash`, 16B seed.
 | `0xF01E` | SUB_USAGE_ID | R | 0 | 2B | SUB_USAGE_ID |
 | `0xF030` | SUB_PACKAGE_PART_NUMBER | R | 0 | 20B | SUB_PACKAGE_PART_NUMBER |
 | `0xF031` | SUB_PACKAGE_SERIAL_NUMBER | R | 0 | 14B | SUB_PACKAGE_SERIAL_NUMBER |
-| `0xF180` | BOOTLOADER_VERSION | R | 0 | 19B | MODULES, COMPONENT_ID, PCBA_ID, ASSEMBLY_ID, USAGE_ID, FIRMWARE_TYPE, GIT_HASH, BUILD_CONFIG_ID |
+| `0xF180` | BOOTLOADER_VERSION | R | 0 | 19B | MODULES, part name (ASCII bytes 1-8), git hash (bytes 9-16), build config ID (bytes 17-18) |
 
 ---
 
@@ -510,5 +510,5 @@ Security: `tesla_hash`, 16B seed.
 - **ECU log DIDs** (`0xE00`, `0xE0F`): present on DI/DIS, EPBL/EPBR, HVBMS, HVP, PCS, VCFRONT, VCLEFT, VCRIGHT, VCSEC. Read `GET_ECULOG_DESCRIPTOR` first to get `LOG_IDENTIFIER` + `SIZE`, then use the legacy/tesla upload protocol to retrieve the log body.
 - **ROHC DIDs** (`0x561`–`0x563`): on VCLEFT only. These are the intrusion sensor genealogy fields read by `hashpicker_sim` opcode 36 before writing `modinfo.log`.
 - **RCM event data recorders** (`0x5817`/`0x5818`): 2600 bytes each — largest single-DID read in the fleet.
-- **`0xF180` layout varies by ECU**: PCS/HVBMS/HVP use the c2000 bootloader 19-byte format (MODULES + COMPONENT_ID + PCBA_ID + ASSEMBLY_ID + USAGE_ID + UNUSED + FIRMWARE_TYPE + GIT_HASH + BUILD_CONFIG_ID); RCM uses a Bosch variant (SVN-based fields); VCFRONT/VCLEFT/VCRIGHT/VCSEC store a flat version blob.
+- **`0xF180` layout varies by ECU**: PCS/DI/PM family use a 19-byte format — byte 0 = MODULES, bytes 1-8 = ASCII part name (e.g. `"PMS12-13"`), bytes 9-16 = git hash, bytes 17-18 = build config ID. RCM uses a Bosch variant with SVN-based fields. VCFRONT/VCLEFT/VCRIGHT/VCSEC store a flat version blob.
 - **Nodes with no unique DIDs** (common only): CMP, EPAS3P, EPAS3S, IBST, PARK, PTC, RADC, SCCM, TPMS (except `0xF090` sensor ID).

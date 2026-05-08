@@ -7,15 +7,15 @@ Tesla Model 3 diagnostics tools for CAN
 
 ## Tools
 
-| Tool | Description |
-| ---- | ----------- |
-| [`tm3diag.py`](docs/tm3diag.md) | Interactive diagnostic terminal — read DIDs, run routines, trigger firmware updates |
-| [`tm3uds.py`](docs/tm3uds.md) | General-purpose UDS CLI for reading/writing DIDs, routines, and session management |
-| [`dfu.py`](docs/dfu.md) | Firmware flash CLI — identity discovery, file selection, and ECU-specific flash sequence |
-| [`bhx.py`](docs/bhx.md) | BHX firmware image parser and builder |
-| [`pcs_send.py`](docs/pcs_send.md) | Interactive PCS CAN scripting shell |
-| [`compact_to_dbc.py`](docs/compact_to_dbc.md) | Convert `Model3_ETH.compact.json` to DBC |
-| [`can_live.py`](docs/can_live.md) | Web-based live CAN signal viewer |
+| Tool                                          | Description                                                                              |
+| --------------------------------------------- | ---------------------------------------------------------------------------------------- |
+| [`tm3diag.py`](docs/tm3diag.md)               | Interactive diagnostic terminal — read DIDs, run routines, trigger firmware updates      |
+| [`tm3uds.py`](docs/tm3uds.md)                 | General-purpose UDS CLI for reading/writing DIDs, routines, and session management       |
+| [`dfu.py`](docs/dfu.md)                       | Firmware flash CLI — identity discovery, file selection, and ECU-specific flash sequence |
+| [`bhx.py`](docs/bhx.md)                       | BHX firmware image parser and builder                                                    |
+| [`pcs_send.py`](docs/pcs_send.md)             | Interactive PCS CAN scripting shell                                                      |
+| [`compact_to_dbc.py`](docs/compact_to_dbc.md) | Convert `Model3_ETH.compact.json` to DBC                                                 |
+| [`can_live.py`](docs/can_live.md)             | Web-based live CAN signal viewer                                                         |
 
 ## Configuration
 
@@ -24,27 +24,6 @@ All tools read defaults from a `.env` file in the project root. Copy the example
 ```
 cp .env.example .env
 ```
-
-```sh
-# CAN interface
-TM3_CHANNEL=can0
-TM3_INTERFACE=socketcan
-# TM3_BITRATE=500000
-
-# Data files (defaults to data/ in the project root)
-# TM3_NODES_JSON=/path/to/nodes.json
-# TM3_ETH_COMPACT=/path/to/Model3_ETH.compact.json
-# TM3_ODJ_DIR=/path/to/odj
-
-# Firmware artifacts
-# TM3_ARTIFACTS_DIR=/path/to/seed_artifacts_v2
-
-# Odin .bin decryption key (base64-encoded, NOT committed to the repo)
-# Found in opt/odin/odin from a firmware squashfs extraction.
-# TM3_BIN_KEY=<base64-encoded value>
-```
-
-CLI flags always override `.env` values. `.env` is gitignored.
 
 ## Data files
 

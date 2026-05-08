@@ -23,6 +23,7 @@ from flash_scripts import (
     run_pcs_dual_cpu,
 )
 from flash_scripts._display import StatusDisplay
+from flash_scripts._prompt import prompt_confirm, prompt_select
 from uds_local.client import UdsSession
 
 _NODES_JSON  = _cfg.NODES_JSON
@@ -107,31 +108,26 @@ def phase2_firmware_selection(
     if len(matches) == 1:
         selected = matches
     else:
-        print(f"  Found {len(matches)} firmware options:")
-        for i, e in enumerate(matches):
-            cond_str = (
-                ",".join(f"{k}={v}" for k, v in e.conditions.items()) or "*"
-            )
-            print(
-                f"  [{i}] {e.src_path} → {e.dest_name}"
-                f"  crc={e.crc}  cond={cond_str}"
-            )
         dest_names = {e.dest_name for e in matches}
         if len(dest_names) == len(matches):
             selected = matches
         else:
-            raw = input("  Select index (or 'all'): ").strip()
-            if raw.lower() == "all":
-                selected = matches
-            else:
-                try:
-                    selected = [matches[int(raw)]]
-                except (ValueError, IndexError):
-                    _abort(f"Invalid selection: {raw!r}")
+            def _entry_label(e) -> str:
+                cond_str = ",".join(f"{k}={v}" for k, v in e.conditions.items()) or "*"
+                return f"{e.src_path} → {e.dest_name}  crc={e.crc}  cond={cond_str}"
 
-    selected = _prompt_bootloader_choice(selected, node_name)
-    selected = _prompt_subcomponent_choice(selected, node_name)
-    selected = _prompt_dual_cpu_choice(selected)
+            labels = [_entry_label(e) for e in matches] + ["All"]
+            choice = prompt_select(
+                f"Select firmware ({len(matches)} options)",
+                labels,
+                default=0,
+                display=display,
+            )
+            selected = matches if choice == len(matches) else [matches[choice]]
+
+    selected = _prompt_bootloader_choice(selected, node_name, display)
+    selected = _prompt_subcomponent_choice(selected, node_name, display)
+    selected = _prompt_dual_cpu_choice(selected, display)
 
     for e in selected:
         src = artifacts_dir / e.src_path
@@ -142,49 +138,41 @@ def phase2_firmware_selection(
     return selected
 
 
-def _prompt_bootloader_choice(selected: list, node_name: str) -> list:
+def _prompt_bootloader_choice(selected: list, node_name: str, display: StatusDisplay) -> list:
     """If `selected` includes bootloader updater/image entries, ask whether to flash them."""
     bus, bls, apps = find_bootloader_entries(selected)
     if not bus and not bls:
         return selected
 
-    print("\n  Bootloader updates detected for this firmware package:")
+    print("\n  Bootloader updates detected:")
     for e in bus:
-        print(f"    [{e.component}] {e.dest_name} (bootloader updater — installed into app slot first)")
+        print(f"    [{e.component}] {e.dest_name} (updater — flashed into app slot first)")
     for e in bls:
-        print(f"    [{e.component}] {e.dest_name} (bootloader image — written by the updater agent)")
-
+        print(f"    [{e.component}] {e.dest_name} (bootloader image — written by updater agent)")
     print()
     print("  WARNING: Bootloader flashing can brick the ECU if interrupted.")
-    print("  After bu+bl complete, the regular app slot still holds the")
-    print("  update agent — the regular application MUST be reflashed to")
-    print("  restore normal operation.")
+    print("  The app slot will hold the update agent after bu+bl — reflash")
+    print("  the regular app to restore normal operation.")
     if apps:
-        app_summary = ", ".join(e.dest_name for e in apps)
-        print(f"  (Selected app entries that will reflash after BL: {app_summary})")
+        print(f"  (App entries that reflash after BL: {', '.join(e.dest_name for e in apps)})")
     else:
-        print("  (No regular app entries selected — the ECU will be left running")
-        print("   the bootloader update agent. Add the app file to your selection.)")
+        print("  (No regular app entries selected — ECU will boot the update agent.)")
+    print()
 
-    while True:
-        raw = input("  Include bootloader updates? [y/N]: ").strip().lower() or "n"
-        if raw in ("n", "no"):
-            print("  → Skipping bootloader files.")
-            return apps
-        if raw in ("y", "yes"):
-            for e in bus + bls:
-                parent = parent_node_for_bootloader(e.component)
-                if parent and parent.lower() != node_name.lower():
-                    print(
-                        f"  Warning: --node {node_name} but bootloader entry"
-                        f" {e.component} expects parent {parent!r}"
-                    )
-            print("  → Including bootloader files (bu → bl → app).")
-            return bus + bls + apps
-        print(f"  Invalid choice: {raw!r}")
+    if not prompt_confirm("Include bootloader updates?", default=False, display=display):
+        return apps
+
+    for e in bus + bls:
+        parent = parent_node_for_bootloader(e.component)
+        if parent and parent.lower() != node_name.lower():
+            print(
+                f"  Warning: --node {node_name} but bootloader entry"
+                f" {e.component} expects parent {parent!r}"
+            )
+    return bus + bls + apps
 
 
-def _prompt_subcomponent_choice(selected: list, node_name: str) -> list:
+def _prompt_subcomponent_choice(selected: list, node_name: str, display: StatusDisplay) -> list:
     """If `selected` includes subcomponent entries, ask whether to flash them."""
     subs, others = find_subcomponent_entries(selected)
     if not subs:
@@ -192,19 +180,13 @@ def _prompt_subcomponent_choice(selected: list, node_name: str) -> list:
 
     parents = sorted({parent_node_for_subcomponent(e.component) or "?" for e in subs})
 
-    print("\n  Subcomponents detected for this firmware package:")
+    print("\n  Subcomponents detected:")
     for e in subs:
         parent = parent_node_for_subcomponent(e.component) or "?"
-        print(
-            f"    [{e.component}] {e.dest_name}"
-            f"  (flashed via parent: {parent})"
-        )
-
+        print(f"    [{e.component}] {e.dest_name}  (flashed via parent: {parent})")
     print()
-    print("  Subcomponents are co-versioned with the parent app (same lookup")
-    print("  key). Skipping them after flashing the parent app will leave the")
-    print("  subcomponent on the previous firmware revision and may cause")
-    print("  feature regressions (e.g. PLC charging negotiation for CP).")
+    print("  Subcomponents are co-versioned with the parent app — skipping")
+    print("  them may leave the subcomponent on a mismatched firmware revision.")
 
     parents_lower = {p.lower() for p in parents}
     if node_name.lower() not in parents_lower:
@@ -212,50 +194,33 @@ def _prompt_subcomponent_choice(selected: list, node_name: str) -> list:
             f"  Warning: --node {node_name} but subcomponents expect parent(s)"
             f" {sorted(parents)}"
         )
+    print()
 
-    while True:
-        raw = input("  Include subcomponents? [Y/n]: ").strip().lower() or "y"
-        if raw in ("y", "yes"):
-            print("  → Including subcomponents (flashed after parent app, in TSV order).")
-            return selected
-        if raw in ("n", "no"):
-            print("  → Skipping subcomponents.")
-            return others
-        print(f"  Invalid choice: {raw!r}")
+    if prompt_confirm("Include subcomponents?", default=True, display=display):
+        return selected
+    return others
 
 
-def _prompt_dual_cpu_choice(selected: list) -> list:
+def _prompt_dual_cpu_choice(selected: list, display: StatusDisplay) -> list:
     """If `selected` contains a PCS-family dual-CPU pair, ask which CPU(s) to flash."""
     pair = find_dual_cpu_pair(selected)
     if pair is None:
         return selected
     primary, secondary = pair
-    print("\n  Dual-CPU PCS-family pairing detected:")
-    print(f"    [1] primary only   ({primary.dest_name}, ecu_type={primary.component})")
-    print(f"    [2] secondary only ({secondary.dest_name}, ecu_type={secondary.component})")
-    print(f"    [3] both           — prog 1, single authenticated session [default]")
-    while True:
-        raw = input("  Flash which? [1/2/3]: ").strip() or "3"
-        if raw == "1":
-            keep_primary, keep_secondary = True, False
-        elif raw == "2":
-            keep_primary, keep_secondary = False, True
-        elif raw == "3":
-            keep_primary, keep_secondary = True, True
-        else:
-            print(f"  Invalid choice: {raw!r}")
-            continue
-        result = []
-        for e in selected:
-            if e is primary:
-                if keep_primary:
-                    result.append(e)
-            elif e is secondary:
-                if keep_secondary:
-                    result.append(e)
-            else:
-                result.append(e)
-        return result
+    print()
+    labels = [
+        f"Primary only   ({primary.dest_name}, ecu_type={primary.component})",
+        f"Secondary only ({secondary.dest_name}, ecu_type={secondary.component})",
+        f"Both           — prog 1, single authenticated session",
+    ]
+    choice = prompt_select("Flash which CPU(s)?", labels, default=2, display=display)
+    keep_primary   = choice in (0, 2)
+    keep_secondary = choice in (1, 2)
+    return [
+        e for e in selected
+        if not (e is primary and not keep_primary)
+        and not (e is secondary and not keep_secondary)
+    ]
 
 
 def _decode_pcs_identity(data: bytes) -> dict | None:
@@ -463,9 +428,9 @@ def run_flash(
     identity = phase1_identity(sess, node_name, display)
     selected = phase2_firmware_selection(artifacts_dir, identity, node_name, display)
     phase3_preflight(artifacts_dir, selected, identity, force, display)
-    confirm = input("\nProceed with flashing? [y/N] ").strip().lower()
-    if confirm != "y":
-        print("Aborted by user.")
+    print()
+    if not prompt_confirm("Proceed with flashing?", default=False, display=display):
+        print("Aborted.")
         return
     phase4_flash(sess, artifacts_dir, selected, display, channel=channel, interface=interface)
 

@@ -25,10 +25,26 @@ def _resolve(env_key: str, default: Path) -> Path:
 
 _DEFAULT_DATA_DIR = _PROJECT_DIR / "data"
 
-NODES_JSON    = _resolve("TM3_NODES_JSON",   _DEFAULT_DATA_DIR / "nodes.json")
-ETH_COMPACT   = _resolve("TM3_ETH_COMPACT",  _DEFAULT_DATA_DIR / "Model3_ETH.compact.json")
-ODJ_DIR       = _resolve("TM3_ODJ_DIR",      _DEFAULT_DATA_DIR / "odj")
-ARTIFACTS_DIR = _resolve("TM3_ARTIFACTS_DIR", _PROJECT_DIR / "seed_artifacts_v2")
+# TM3_ROOT points to the squashfs-root of a firmware extraction.
+# Individual vars override the derived paths when set explicitly.
+_ROOT = _resolve("TM3_ROOT", _DEFAULT_DATA_DIR)
+
+def _resolve_eth_compact(root: Path) -> Path:
+    """Return the ETH compact path, preferring .bin over .json when both exist."""
+    candidate = root / "opt/odin/data/Model3/dej/Model3_ETH.compact.json"
+    if not candidate.exists() and candidate.with_suffix(".bin").exists():
+        return candidate.with_suffix(".bin")
+    return candidate
+
+_DEFAULT_NODES_JSON    = _ROOT / "opt/odin/data/Model3/nodes.json"
+_DEFAULT_ETH_COMPACT   = _resolve_eth_compact(_ROOT)
+_DEFAULT_ODJ_DIR       = _ROOT / "opt/odin/data/Model3/odj"
+_DEFAULT_ARTIFACTS_DIR = _ROOT / "deploy/seed_artifacts_v2"
+
+NODES_JSON    = _resolve("TM3_NODES_JSON",    _DEFAULT_NODES_JSON)
+ETH_COMPACT   = _resolve("TM3_ETH_COMPACT",   _DEFAULT_ETH_COMPACT)
+ODJ_DIR       = _resolve("TM3_ODJ_DIR",       _DEFAULT_ODJ_DIR)
+ARTIFACTS_DIR = _resolve("TM3_ARTIFACTS_DIR", _DEFAULT_ARTIFACTS_DIR)
 
 # ---------------------------------------------------------------------------
 # CAN / argparse defaults

@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
-import json
 from dataclasses import dataclass, field
 from pathlib import Path
+
+from decode_bin import load_json as _load_json  # type: ignore[import-untyped]
 
 
 @dataclass
@@ -25,11 +26,6 @@ class NodeConfig:
     security_buffer_size: int
     security_kw: dict
     dids: dict[str, OdjEntry] = field(default_factory=dict)
-
-
-def _load_json(path: Path) -> dict:
-    with open(path) as f:
-        return json.load(f)
 
 
 def _parse_odj(odj_path: Path) -> dict[str, OdjEntry]:

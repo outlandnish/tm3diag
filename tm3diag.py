@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any
 
 import config as _cfg
+from decode_bin import load_json as _load_json
 
 _NODES_JSON  = _cfg.NODES_JSON
 _ETH_COMPACT = _cfg.ETH_COMPACT
@@ -82,7 +83,7 @@ def _decode_fields(data: bytes, fields: dict[str, Any]) -> list[tuple[str, str]]
 
 def _load_odj_fields(odj_path: Path) -> dict[str, Any]:
     try:
-        return json.loads(odj_path.read_text()).get("data", {})
+        return _load_json(odj_path).get("data", {})
     except Exception:
         return {}
 

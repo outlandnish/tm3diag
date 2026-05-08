@@ -8,9 +8,10 @@ Defaults to data/Model3_ETH.compact.json -> Model3_ETH.dbc
 
 from __future__ import annotations
 
-import json
 import sys
 from pathlib import Path
+
+from decode_bin import load_json
 
 _DEFAULT_IN = Path(__file__).parent / "data" / "Model3_ETH.compact.json"
 _DEFAULT_OUT = Path(__file__).parent / "Model3_ETH.dbc"
@@ -50,8 +51,7 @@ def _sanitize(name: str) -> str:
 
 
 def convert(src: Path, dst: Path) -> None:
-    with open(src) as f:
-        db = json.load(f)
+    db = load_json(src)
 
     messages = db["messages"]
 

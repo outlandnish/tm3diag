@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from queue import Full
 import sys
 import threading
 import time
@@ -54,8 +55,6 @@ _RC_OTA_MODE = 0x0540
 
 
 # ISO 14229-1 NRC names — the only NRCs hashpicker_sim's UDS stack recognizes
-# (table at 0x0043e200; 22 entries; no Tesla-custom NRCs). Any NRC outside
-# this set is shown as "unknown" but still printed numerically.
 _NRC_NAMES: dict[int, str] = {
     0x10: "generalReject",
     0x11: "serviceNotSupported",
@@ -207,7 +206,6 @@ class UdsSession:
 
         # Install per-node broadcast watcher so wait_for_bootloader can
         # short-circuit Phase 1 the moment the ECU resumes broadcasting
-        # (mirrors update.img's enter_bootloader_v0 counter watch).
         self._broadcast_watcher: _BroadcastWatcher | None = None
         if bcast is not None:
             self._broadcast_watcher = _BroadcastWatcher(bcast.can_id)
@@ -256,25 +254,7 @@ class UdsSession:
         level_idx: int = 0,
         seed_level: int | None = None,
     ) -> None:
-        """Full seed → key exchange.
-
-        `level_idx` picks the algorithm (via the node config) and is forwarded
-        to `compute_key`. `seed_level` is the actual UDS sub-function byte;
-        when `None`, falls back to `level_idx * 2 + 1` (legacy behavior, only
-        correct for `level_idx == 0` with `protocol_ver < 3`).
-
-        Seed levels per `DAT_00650e08[idx*16]` in `uds_security_access`:
-          idx 0 → 0x05, but **overridden to 0x01 if protocol_ver < 3** (most ECUs)
-          idx 1 → 0x01
-          idx 2 → 0x05
-          idx 3 → 0x11 (tesla_hash — ibst, esp, espcal, rcmcal, rcm)
-          idx 4 → 0x11 (baolong_hash — tpms)
-          idx 5 → 0x03
-          idx 6 → 0x01
-          idx 7 → 0x05 (pektron-style FUN_0040be8e — cmp)
-        Callers should compute `seed_level` from `protocol_ver` (read at DID
-        0x0101 byte[2]) and pass it explicitly — see flash_scripts.py.
-        """
+        # Full seed → key exchange.
         algo = self._node.security_algorithm
         buf_size = self._node.security_buffer_size
         kw = self._node.security_kw
@@ -341,7 +321,6 @@ class UdsSession:
         count = int.from_bytes(data[:4], "big")
         if count >= limit:
             raise FlashCountError(count, limit)
-        print(f"    Flash count: {count} / {limit}")
 
     def vendor_preflight_routine(self) -> None:
         """RC 0x0601 — vcleft/vcleftramapp pre-flash vendor routine.
@@ -373,21 +352,11 @@ class UdsSession:
 
     def wait_for_ota_mode(self, attempts: int = 5) -> None:
         """VCWaitForOTAMode — RC 0x0540 start, then poll until response byte == 2.
-
-        Replicates `uds_vc_wait_for_ota_mode` (`0x00409dd8`): bumps P2 to 1 s,
-        starts the routine, sleeps 100 ms, polls requestResults; loops up to
-        `attempts` times. Returns on success; raises `UdsError` on timeout or
-        unexpected response.
-
-        Used in sub4 (`0x006513a0`) when prepping VCRIGHT for a VCFRONT bu
-        flash. **Requires the vehicle to actually be in OTA state** — not
-        achievable on a bench setup against a single ECU.
         """
         self.set_timeout(1.0)
         rid_hi = (_RC_OTA_MODE >> 8) & 0xFF
         rid_lo = _RC_OTA_MODE & 0xFF
-        for attempt in range(attempts):
-            print(f"    wait_for_ota_mode attempt {attempt + 1}/{attempts}")
+        for _ in range(attempts):
             resp = self._send_raw([_SID_RC, _RC_START, rid_hi, rid_lo])
             if not resp or (resp and resp[0] == 0x7F):
                 # Start failed; brief delay and retry the entire start+poll cycle
@@ -403,7 +372,6 @@ class UdsSession:
             self._check_positive(resp, _SID_RC)
             # response: 71 03 05 40 <result_count?> <result>
             if len(resp) >= 5 and resp[4] == 0x02:
-                print(f"    OTA mode active (response[0]=0x02)")
                 return
         raise MalformedResponseError(
             _SID_RC,
@@ -440,10 +408,16 @@ class UdsSession:
         max_block_len = int.from_bytes(resp[2:2 + max_block_len_size], "big")
         return min(max_block_len, 512)
 
-    def transfer_data(self, payload: bytes, max_block_len: int) -> None:
+    def transfer_data(
+        self,
+        payload: bytes,
+        max_block_len: int,
+        progress_cb=None,
+    ) -> None:
         """Transfer payload in chunks.
 
         max_block_len includes the 1-byte sequence counter.
+        progress_cb(bytes_sent, total_bytes) is called after each chunk.
 
         bus.send() is patched for the duration to retry on ENOBUFS (errno 105).
         select()-based timeouts don't help here — select checks the socket send
@@ -453,6 +427,7 @@ class UdsSession:
         chunk_size = max_block_len - 2  # subtract SID + seq bytes
         seq = 0x01
         offset = 0
+        total = len(payload)
 
         orig_send = self._bus.send
 
@@ -464,16 +439,19 @@ class UdsSession:
                     if getattr(exc, "error_code", None) != 105:
                         raise
                     time.sleep(0.001)
-            raise can.CanOperationError("TX queue persistently full after retries", 105)
+            raise can.CanOperationError(
+                "TX queue persistently full after retries", 105)
 
         self._bus.send = _send_with_retry
         try:
-            while offset < len(payload):
+            while offset < total:
                 chunk = payload[offset:offset + chunk_size]
                 resp = self._send_raw([_SID_TD, seq] + list(chunk))
                 self._check_positive(resp, _SID_TD)
                 offset += len(chunk)
                 seq = 0x00 if seq == 0xFF else seq + 1  # wrap 0xFF → 0x00
+                if progress_cb is not None:
+                    progress_cb(offset, total)
         finally:
             self._bus.send = orig_send
 
@@ -488,12 +466,7 @@ class UdsSession:
     def ecu_reset_no_wait(self, reset_type: int = 0x01) -> None:
         """Send ECUReset with `suppressPositiveResponse` set — fire-and-forget.
 
-        Frame is `11 (reset_type | 0x80)`. Matches the VM's `reset(0)` opcode
-        (`uds_reset` at `0x0040934c` → `FUN_004301d2(..., '\\0')`), which OR's the
-        SPR bit into the subfunction and does not wait for `51 xx`. Sending plain
-        `11 01` here is technically valid but provokes a positive response the
-        ECU may not finish before it reboots, occasionally racing the bootloader
-        handover.
+        Frame is `11 (reset_type | 0x80)`
         """
         msg = UdsMessage(
             payload=bytearray([_SID_ER, reset_type | 0x80]),
@@ -503,9 +476,6 @@ class UdsSession:
 
     def _send_tp_no_wait(self) -> None:
         """Fire-and-forget TesterPresent (`3E 80`) — keep-alive, no response expected.
-
-        Matches `FUN_00430bb0(handle, '\\0')` used by the VM's
-        `enterBootloader(0)` keep-alive loop.
         """
         msg = UdsMessage(
             payload=bytearray([_SID_TP, 0x80]),
@@ -534,8 +504,7 @@ class UdsSession:
         the full budget — same as the firmware does for those.
 
         **Phase 2 — TP-with-response confirmation**: send `3E 00` and wait
-        for `7E 00`, with **P2 timeout = `confirm_p2_ms` (40 ms by default,
-        matching the binary's `FUN_4002024c(handle, 0x28)`)** and back-to-back
+        for `7E 00`, with **P2 timeout = `confirm_p2_ms` (40 ms by default, and back-to-back
         retries up to `confirm_max_attempts` (14 by default).
 
         On success, returns silently. On total failure, raises `TimeoutError`
@@ -589,33 +558,15 @@ class UdsSession:
                 f" over {keepalive_phase_s:.2f}s"
                 " — no broadcast tracker for this node, fixed wait"
             )
-        if bus_errors:
-            phase1_summary += f" ({bus_errors} send errors)"
-        print(phase1_summary)
-
-        # Inter-phase sleep — matches the binary's FUN_40007482(10) between
-        # the Phase 1 loop exit and tpHandleMultipleRequestRecv.
+        # Inter-phase sleep
         time.sleep(0.010)
 
         # Phase 2: 14 fast 3E 00 probes (P2 = 40 ms) back-to-back.
         nrc_count = 0
         first_nrc: int | None = None
-        phase2_start = time.monotonic()
         for attempt in range(1, confirm_max_attempts + 1):
             resp = self._send_raw([_SID_TP, 0x00], timeout_ms=confirm_p2_ms)
             if resp and resp[0] == 0x7E:
-                elapsed = time.monotonic() - phase2_start
-                # Match the binary: only log if it took more than one attempt
-                if attempt > 1:
-                    print(
-                        f"    Phase 2: bootloader replied to 3E 00 after"
-                        f" {attempt} attempts ({elapsed:.3f}s)"
-                    )
-                else:
-                    print(
-                        f"    Phase 2: bootloader replied to 3E 00 immediately"
-                        f" ({elapsed*1000:.1f} ms)"
-                    )
                 return
             if resp and resp[0] == 0x7F:
                 nrc_count += 1

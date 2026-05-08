@@ -22,6 +22,7 @@ from flash_scripts import (
     parent_node_for_subcomponent,
     run_pcs_dual_cpu,
 )
+from flash_scripts._display import StatusDisplay
 from uds_local.client import UdsSession
 
 _NODES_JSON  = _cfg.NODES_JSON
@@ -36,15 +37,10 @@ def _abort(msg: str) -> None:
     sys.exit(1)
 
 
-def _print_section(title: str) -> None:
-    print(f"\n{'='*60}")
-    print(f"  {title}")
-    print(f"{'='*60}")
-
-
-def phase1_identity(sess: UdsSession, node_name: str) -> dict:
+def phase1_identity(sess: UdsSession, node_name: str, display: StatusDisplay) -> dict:
     """Read ECU identity via DID 0xF180. Returns a dict of parsed fields."""
-    _print_section("Phase 1: Identity Discovery")
+    display.set_header("[1/4] Identity")
+    display.set_detail("Reading DID 0xF180...")
 
     f180 = sess.read_did(_DID_BOOTLOADER_VERSION)
     if len(f180) < 7:
@@ -73,13 +69,12 @@ def phase1_identity(sess: UdsSession, node_name: str) -> dict:
         "lookup_key": lookup_key,
     }
 
-    print(f"  Node:          {node_name}")
-    print(f"  COMPONENT_ID:  0x{component_id:04X}")
-    print(f"  PCBA_ID:       {pcba_id}")
-    print(f"  ASSEMBLY_ID:   {assembly_id}")
-    print(f"  USAGE_ID:      {usage_id}")
-    print(f"  lookup_key:    {lookup_key}")
-
+    display.set_detail(
+        f"Node: {node_name}  COMPONENT_ID: 0x{component_id:04X}"
+        f"  PCBA_ID: {pcba_id}  ASSEMBLY_ID: {assembly_id}"
+        f"  USAGE_ID: {usage_id}  key: {lookup_key}"
+    )
+    display.finalize()
     return identity
 
 
@@ -87,11 +82,13 @@ def phase2_firmware_selection(
     artifacts_dir: Path,
     identity: dict,
     node_name: str,
+    display: StatusDisplay,
 ) -> list:
     """Load metadata and return selected FirmwareEntry list."""
     from uds_local.metadata import load_metadata, find_firmware
 
-    _print_section("Phase 2: Firmware Selection")
+    display.set_header("[2/4] Firmware Selection")
+    display.set_detail("Loading metadata...")
 
     tsv_path = artifacts_dir / "signed_metadata_map.tsv"
     if not tsv_path.exists():
@@ -104,6 +101,8 @@ def phase2_firmware_selection(
         _abort(
             f"No firmware found for {identity['lookup_key']} in {tsv_path}"
         )
+
+    display.finalize()
 
     if len(matches) == 1:
         selected = matches
@@ -144,13 +143,7 @@ def phase2_firmware_selection(
 
 
 def _prompt_bootloader_choice(selected: list, node_name: str) -> list:
-    """If `selected` includes bootloader updater/image entries, ask whether to flash them.
-
-    Bootloader flashing has real bricking risk — if interrupted, the ECU may not
-    be recoverable without external programmer hardware. Default is **skip**.
-    Apps that are part of a complete BL update package stay in the list either
-    way; only the `*bu` and `*bl` entries are filtered out on a "no" answer.
-    """
+    """If `selected` includes bootloader updater/image entries, ask whether to flash them."""
     bus, bls, apps = find_bootloader_entries(selected)
     if not bus and not bls:
         return selected
@@ -179,7 +172,6 @@ def _prompt_bootloader_choice(selected: list, node_name: str) -> list:
             print("  → Skipping bootloader files.")
             return apps
         if raw in ("y", "yes"):
-            # Sanity: warn if --node arg doesn't match the bootloader's parent
             for e in bus + bls:
                 parent = parent_node_for_bootloader(e.component)
                 if parent and parent.lower() != node_name.lower():
@@ -188,21 +180,12 @@ def _prompt_bootloader_choice(selected: list, node_name: str) -> list:
                         f" {e.component} expects parent {parent!r}"
                     )
             print("  → Including bootloader files (bu → bl → app).")
-            # Order: bu first, bl second, then everything else.
             return bus + bls + apps
         print(f"  Invalid choice: {raw!r}")
 
 
 def _prompt_subcomponent_choice(selected: list, node_name: str) -> list:
-    """If `selected` includes subcomponent entries, ask whether to flash them.
-
-    Subcomponents (e.g. cpPlcFw, cpPlcPib for CP) are firmware blobs flashed
-    via the parent ECU's UDS endpoint — the parent's bootloader receives them
-    and routes the contents to the subcomponent over an internal interconnect.
-    They're co-versioned with the parent app (same lookup key in the TSV), so
-    the default is **include** — skipping them after a parent-app update can
-    leave the subcomponent on a mismatched firmware revision.
-    """
+    """If `selected` includes subcomponent entries, ask whether to flash them."""
     subs, others = find_subcomponent_entries(selected)
     if not subs:
         return selected
@@ -223,7 +206,6 @@ def _prompt_subcomponent_choice(selected: list, node_name: str) -> list:
     print("  subcomponent on the previous firmware revision and may cause")
     print("  feature regressions (e.g. PLC charging negotiation for CP).")
 
-    # Sanity warning if the user's --node arg doesn't match a subcomponent's parent
     parents_lower = {p.lower() for p in parents}
     if node_name.lower() not in parents_lower:
         print(
@@ -235,8 +217,6 @@ def _prompt_subcomponent_choice(selected: list, node_name: str) -> list:
         raw = input("  Include subcomponents? [Y/n]: ").strip().lower() or "y"
         if raw in ("y", "yes"):
             print("  → Including subcomponents (flashed after parent app, in TSV order).")
-            # Order: parent app(s) first, then subcomponents — TSV order.
-            # `selected` may already have them interleaved; preserve original order.
             return selected
         if raw in ("n", "no"):
             print("  → Skipping subcomponents.")
@@ -245,12 +225,7 @@ def _prompt_subcomponent_choice(selected: list, node_name: str) -> list:
 
 
 def _prompt_dual_cpu_choice(selected: list) -> list:
-    """If `selected` contains a PCS-family dual-CPU pair, ask which CPU(s) to flash.
-
-    Returns the (possibly narrowed) entry list, preserving any non-pair entries
-    (e.g. bootloader updates). Default (empty input) is "both", which lets phase
-    4 dispatch to prog 1 (single auth session). Picking one CPU drops to prog 0.
-    """
+    """If `selected` contains a PCS-family dual-CPU pair, ask which CPU(s) to flash."""
     pair = find_dual_cpu_pair(selected)
     if pair is None:
         return selected
@@ -270,8 +245,6 @@ def _prompt_dual_cpu_choice(selected: list) -> list:
         else:
             print(f"  Invalid choice: {raw!r}")
             continue
-        # Preserve original order; drop the unchosen pair member but keep
-        # everything else (e.g. bootloader entries flashed before the apps).
         result = []
         for e in selected:
             if e is primary:
@@ -306,16 +279,18 @@ def phase3_preflight(
     selected: list,
     identity: dict,
     force: bool,
+    display: StatusDisplay,
 ) -> None:
     """Cross-check BHX identity header against DID reads."""
     import bhx
 
-    _print_section("Phase 3: Pre-flight Verification")
+    display.set_header("[3/4] Pre-flight")
 
+    all_ok = True
     for entry in selected:
         src = artifacts_dir / entry.src_path
         if src.suffix.lower() != ".bhx":
-            print(f"  {entry.src_path}: not a BHX file, skipping pre-flight check")
+            display.set_detail(f"{entry.src_path}: not a BHX file, skipping")
             continue
         bhx_file = bhx.parse_file(src)
         found_identity = False
@@ -343,24 +318,25 @@ def phase3_preflight(
                 )
 
             if mismatches:
+                all_ok = False
+                display.finalize()
                 for m in mismatches:
                     print(f"  MISMATCH: {m}")
                 if not force:
-                    _abort(
-                        "BHX identity mismatch. Use --force to override."
-                    )
+                    _abort("BHX identity mismatch. Use --force to override.")
                 else:
                     print("  (--force: proceeding despite mismatch)")
             else:
-                print(
-                    f"  {entry.src_path}: identity OK"
+                display.set_detail(
+                    f"{entry.src_path}: identity OK"
                     f" (component_id=0x{bhx_component_id:04X})"
                 )
         if not found_identity:
-            print(
-                f"  {entry.src_path}: no identity header found,"
-                " skipping pre-flight check"
+            display.set_detail(
+                f"{entry.src_path}: no identity header, skipping check"
             )
+
+    display.finalize()
 
 
 def _parse_firmware(src: Path):
@@ -375,9 +351,10 @@ def _parse_firmware(src: Path):
     _abort(f"Unsupported firmware file type: {src.suffix!r} ({src.name})")
 
 
-def phase4_dry_run(artifacts_dir: Path, selected: list) -> None:
+def phase4_dry_run(artifacts_dir: Path, selected: list, display: StatusDisplay) -> None:
     """Print what would be flashed without sending any UDS frames."""
-    _print_section("Phase 4: Dry Run — Flash Plan")
+    display.set_header("[4/4] Dry Run — Flash Plan")
+    display.finalize()
 
     pair = find_dual_cpu_pair(selected)
     if pair is not None:
@@ -428,24 +405,16 @@ def phase4_flash(
     sess: UdsSession,
     artifacts_dir: Path,
     selected: list,
+    display: StatusDisplay,
     channel: str | None = None,
     interface: str | None = None,
 ) -> None:
-    """Execute the flash sequence for the selected firmware entries.
-
-    If `selected` contains a PCS-family dual-CPU pairing (primary +
-    secondary), runs script 0x00651070 prog 1 once with both files in a
-    single authenticated session. Otherwise loops per-entry through prog 0.
-
-    `channel`/`interface` are forwarded to the FlashContext so steps that need
-    to open a transient session to a different ECU (e.g. SCRIPT_BL_UPDATER_VCFRONT
-    talking to VCRIGHT) can share the user's CAN interface.
-    """
+    """Execute the flash sequence for the selected firmware entries."""
     pair = find_dual_cpu_pair(selected)
     if pair is not None:
         primary_entry, secondary_entry = pair
-        _print_section(
-            f"Phase 4: Flash (dual-CPU) — "
+        display.set_header(
+            f"[4/4] Flash (dual-CPU) — "
             f"{primary_entry.dest_name} + {secondary_entry.dest_name}"
         )
         primary_bhx = _parse_firmware(artifacts_dir / primary_entry.src_path)
@@ -455,49 +424,50 @@ def phase4_flash(
             primary_bhx, primary_entry,
             secondary_bhx, secondary_entry,
         )
-        print("  Flash complete.")
+        display.set_detail("Flash complete")
+        display.finalize()
         return
 
     for fw_index, entry in enumerate(selected):
-        _print_section(f"Phase 4: Flash — {entry.dest_name}")
+        display.set_header(f"[4/4] Flash — {entry.dest_name}")
 
         ecu_type = entry.component.lower()
         try:
             script, module_byte = get_script(ecu_type)
         except KeyError:
+            display.finalize()
             print(f"  Skipping {entry.dest_name}: no flash script for '{ecu_type}'")
             continue
 
         src = artifacts_dir / entry.src_path
         bhx_file = _parse_firmware(src)
 
-        print(f"  Script: {script}  module=0x{module_byte:02X}")
         script.module_byte = module_byte
-        script.run(sess, bhx_file, entry, channel=channel, interface=interface)
+        script.run(sess, bhx_file, entry, channel=channel, interface=interface, display=display)
 
-        if fw_index < len(selected) - 1:
-            print("  Continuing to next firmware file...")
-        else:
-            print("  Flash complete.")
+        if fw_index == len(selected) - 1:
+            display.set_detail("Flash complete")
+            display.finalize()
 
 
 def run_flash(
     sess: UdsSession,
     artifacts_dir: Path,
     node_name: str,
+    display: StatusDisplay,
     force: bool = False,
     channel: str | None = None,
     interface: str | None = None,
 ) -> None:
     """Run all four flash phases against an already-open UdsSession."""
-    identity = phase1_identity(sess, node_name)
-    selected = phase2_firmware_selection(artifacts_dir, identity, node_name)
-    phase3_preflight(artifacts_dir, selected, identity, force)
+    identity = phase1_identity(sess, node_name, display)
+    selected = phase2_firmware_selection(artifacts_dir, identity, node_name, display)
+    phase3_preflight(artifacts_dir, selected, identity, force, display)
     confirm = input("\nProceed with flashing? [y/N] ").strip().lower()
     if confirm != "y":
         print("Aborted by user.")
         return
-    phase4_flash(sess, artifacts_dir, selected, channel=channel, interface=interface)
+    phase4_flash(sess, artifacts_dir, selected, display, channel=channel, interface=interface)
 
 
 def main() -> int:
@@ -544,9 +514,10 @@ def main() -> int:
 
     from uds_local.node_config import load_node_config
 
+    display = StatusDisplay()
+
     try:
         if args.packed_key is not None:
-            # Offline path: no CAN connection needed
             identity = {
                 "f180_raw": "(offline)",
                 "component_id": 0,
@@ -556,18 +527,18 @@ def main() -> int:
                 "packed_key": args.packed_key,
                 "lookup_key": f"{args.node.lower()}:{args.packed_key}",
             }
-            _print_section("Phase 1: Identity (offline)")
-            print(f"  Node:        {args.node}")
-            print(f"  packed_key:  {args.packed_key}")
-            print(f"  lookup_key:  {identity['lookup_key']}")
+            display.set_header("[1/4] Identity (offline)")
+            display.set_detail(
+                f"Node: {args.node}  packed_key: {args.packed_key}"
+                f"  lookup_key: {identity['lookup_key']}"
+            )
+            display.finalize()
 
             selected = phase2_firmware_selection(
-                artifacts_dir, identity, args.node
+                artifacts_dir, identity, args.node, display
             )
-            phase3_preflight(
-                artifacts_dir, selected, identity, args.force
-            )
-            phase4_dry_run(artifacts_dir, selected)
+            phase3_preflight(artifacts_dir, selected, identity, args.force, display)
+            phase4_dry_run(artifacts_dir, selected, display)
             return 0
 
         cfg = load_node_config(args.node, _NODES_JSON, _ETH_COMPACT, _ODJ_DIR)
@@ -576,15 +547,15 @@ def main() -> int:
             sess.diagnostic_session(0x01)
 
             if args.dry_run:
-                identity = phase1_identity(sess, args.node)
-                selected = phase2_firmware_selection(artifacts_dir, identity, args.node)
-                phase3_preflight(artifacts_dir, selected, identity, args.force)
-                phase4_dry_run(artifacts_dir, selected)
+                identity = phase1_identity(sess, args.node, display)
+                selected = phase2_firmware_selection(artifacts_dir, identity, args.node, display)
+                phase3_preflight(artifacts_dir, selected, identity, args.force, display)
+                phase4_dry_run(artifacts_dir, selected, display)
                 return 0
 
             run_flash(
-                sess, artifacts_dir, args.node, force=args.force,
-                channel=args.channel, interface=args.interface,
+                sess, artifacts_dir, args.node, display,
+                force=args.force, channel=args.channel, interface=args.interface,
             )
 
     except KeyboardInterrupt:

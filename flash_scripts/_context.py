@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Callable
+
+from ._display import StatusDisplay
 
 if TYPE_CHECKING:
     from uds_local.client import UdsSession
@@ -28,6 +30,7 @@ class FlashContext:
     # phase 4 / `FlashScript.run` from the caller's CLI args.
     channel: str | None = None
     interface: str | None = None
+    display: StatusDisplay = field(default_factory=StatusDisplay)
 
 
 StepFn = Callable[["UdsSession", FlashContext], None]
@@ -56,6 +59,7 @@ class FlashScript:
         entry: object,
         channel: str | None = None,
         interface: str | None = None,
+        display: StatusDisplay | None = None,
     ) -> None:
         ctx = FlashContext(
             bhx_file=bhx_file,
@@ -66,6 +70,7 @@ class FlashScript:
             expected_fw_type=self.expected_fw_type,
             channel=channel,
             interface=interface,
+            display=display if display is not None else StatusDisplay(),
         )
         for step in self.steps:
             step(sess, ctx)

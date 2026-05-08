@@ -75,14 +75,12 @@ class Segment:
     # They are NOT the SHDR checksum algorithm.
 
     def _uds_checksum_word_interleaved(self, block: bytes) -> int:
-        """FUN_004122b7: even bytes * 0x100, odd bytes * 0x1."""
         total = 0
         for i, b in enumerate(block):
             total += b * 0x100 if (i & 1) == 0 else b
         return total & 0xFFFF_FFFF
 
     def _uds_checksum_byte_sum(self, block: bytes) -> int:
-        """FUN_00412322: plain byte sum."""
         return sum(block) & 0xFFFF_FFFF
 
 

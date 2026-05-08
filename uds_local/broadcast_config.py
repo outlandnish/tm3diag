@@ -40,11 +40,6 @@ from dataclasses import dataclass
 @dataclass(frozen=True)
 class BroadcastInfo:
     """Heartbeat CAN ID + bus assignment for one node.
-
-    `bus` is the gateway's internal numbering (0 or 2). It's informational —
-    tm3diag connects to whichever CAN bus the caller specified at session
-    construction; matching only uses `can_id`. Useful for sanity-checking
-    that you're on the right physical bus for the target ECU.
     """
 
     bus: int
@@ -68,7 +63,8 @@ NODE_BROADCAST_CONFIG: dict[str, BroadcastInfo | None] = {
     "PM":      BroadcastInfo(bus=0, can_id=0x5F4),
     "PMS":     BroadcastInfo(bus=0, can_id=0x5E4),
     "RCMCAL":  BroadcastInfo(bus=0, can_id=0x503),
-    "SCCM":    BroadcastInfo(bus=0, can_id=0x519),  # firmware names this 'sccmk'
+    # firmware names this 'sccmk'
+    "SCCM":    BroadcastInfo(bus=0, can_id=0x519),
     "VCRIGHT": BroadcastInfo(bus=0, can_id=0x529),
     # ---- Bus 2 ----
     "CP":      BroadcastInfo(bus=2, can_id=0x639),

@@ -34,7 +34,7 @@ The tools require three data files extracted from a Tesla firmware image. Point 
 | `TM3_ETH_COMPACT` | `Model3_ETH.compact.json` | CAN message ID map                                                       |
 | `TM3_ODJ_DIR`     | `odj/`                    | Per-ECU DID definitions (name, hex ID, read/write sizes, security level) |
 
-These are found in `opt/odin/data/Model3/` inside the Odin firmware squashfs. `.bin` encrypted variants are also supported if `TM3_BIN_KEY` is set.
+These are found in `opt/odin/data/Model3/` inside the firmware squashfs root. `.bin` encrypted variants are also supported if `TM3_BIN_KEY` is set.
 
 ## Reference
 

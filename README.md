@@ -24,17 +24,7 @@ All tools read defaults from a `.env` file in the project root. Copy the example
 cp .env.example .env
 ```
 
-## Data files
-
-The tools require three data files extracted from a Tesla firmware image. Point to them via `.env` or environment variables:
-
-| Variable          | File                      | Description                                                              |
-| ----------------- | ------------------------- | ------------------------------------------------------------------------ |
-| `TM3_NODES_JSON`  | `nodes.json`              | CAN IDs, security parameters, and ODJ sources for each ECU               |
-| `TM3_ETH_COMPACT` | `Model3_ETH.compact.json` | CAN message ID map                                                       |
-| `TM3_ODJ_DIR`     | `odj/`                    | Per-ECU DID definitions (name, hex ID, read/write sizes, security level) |
-
-These are found in `opt/odin/data/Model3/` inside the firmware squashfs root. `.bin` encrypted variants are also supported if `TM3_BIN_KEY` is set.
+You'll need to point it to your Tesla firmware squashfs root directory. If your ODJ and Model3_ETH.compact.json file are encrypted as bin files, follow the instructions in `.env.example` to obtain your key.
 
 ## Reference
 

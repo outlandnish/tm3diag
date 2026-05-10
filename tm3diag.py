@@ -8,6 +8,11 @@ Usage:
 """
 
 from __future__ import annotations
+from uds_local.client import (
+    _SESSION_DEFAULT, _SESSION_PROGRAMMING, _SESSION_EXTENDED, _SESSION_SAFETY,
+)
+from decode_bin import load_json as _load_json
+import config as _cfg
 
 import json
 import readline
@@ -15,20 +20,17 @@ import warnings
 from pathlib import Path
 from typing import Any
 
-warnings.filterwarnings("ignore", category=RuntimeWarning, module=r"uds\.packet\.abstract_packet")
-warnings.filterwarnings("ignore", message="A CAN packet that does not start UDS message transmission")
-warnings.filterwarnings("ignore", module=r"uds\.can\.transport_interface\.common")
+warnings.filterwarnings("ignore", category=RuntimeWarning,
+                        module=r"uds\.packet\.abstract_packet")
+warnings.filterwarnings(
+    "ignore", message="A CAN packet that does not start UDS message transmission")
+warnings.filterwarnings(
+    "ignore", module=r"uds\.can\.transport_interface\.common")
 
-import config as _cfg
-from decode_bin import load_json as _load_json
-from uds_local.client import (
-    _SESSION_DEFAULT, _SESSION_PROGRAMMING, _SESSION_EXTENDED, _SESSION_SAFETY,
-)
 
 _NODES_JSON = _cfg.NODES_JSON
 _ETH_COMPACT = _cfg.ETH_COMPACT
 _ODJ_DIR = _cfg.ODJ_DIR
-_CACHE_FILE = Path(__file__).parent / ".tm3diag_cache"
 
 _NAMED_ROUTINES: dict[str, tuple[int, str, bool]] = {
     "erase":              (0xFF00, "initializeEraseModule — EraseMemory", True),
@@ -211,7 +213,6 @@ def _show_identity(sess, cfg) -> None:
         return
 
     print(f"\n  Connected to {cfg.name}")
-    print(f"  0xF180 raw: {data.hex()}")
 
     # Load field spec from the node's ODJ
     f180_fields: dict[str, Any] = {}
@@ -405,8 +406,10 @@ def _routine_menu(sess, cfg, odj_routines: dict[str, Any]) -> None:
                     rid = int(spec.get("hex_id", "0"), 16)
                     sl = spec.get("start", {}).get("security_level", 0)
                     sa_str = f"  [sl={sl}]" if sl else ""
-                    actions = [a for a in ("start", "stop", "results") if spec.get(a)]
-                    print(f"    0x{rid:04X}  {name:<40} {', '.join(actions)}{sa_str}")
+                    actions = [a for a in (
+                        "start", "stop", "results") if spec.get(a)]
+                    print(
+                        f"    0x{rid:04X}  {name:<40} {', '.join(actions)}{sa_str}")
             continue
 
         # Resolve to (routine_id, needs_sa, sl, odj_spec | None)
@@ -446,7 +449,8 @@ def _routine_menu(sess, cfg, odj_routines: dict[str, Any]) -> None:
             continue
 
         if needs_sa:
-            print(f"  Routine requires security level {sl} — authenticating...")
+            print(
+                f"  Routine requires security level {sl} — authenticating...")
             try:
                 sess.diagnostic_session(_SESSION_PROGRAMMING)
                 sess.security_access(seed_level=sl)
@@ -456,11 +460,13 @@ def _routine_menu(sess, cfg, odj_routines: dict[str, Any]) -> None:
 
         if odj_spec:
             # Prompt for action
-            available = [a for a in ("start", "stop", "results") if odj_spec.get(a)]
+            available = [a for a in (
+                "start", "stop", "results") if odj_spec.get(a)]
             if len(available) == 1:
                 action = available[0]
             else:
-                action_raw = input(f"  Action ({'/'.join(available)}): ").strip().lower()
+                action_raw = input(
+                    f"  Action ({'/'.join(available)}): ").strip().lower()
                 if action_raw not in available:
                     print(f"  Unknown action: {action_raw!r}")
                     continue
@@ -478,7 +484,8 @@ def _routine_menu(sess, cfg, odj_routines: dict[str, Any]) -> None:
         else:
             arg_raw = input("  Arg bytes (hex, empty for none): ").strip()
             try:
-                arg = bytes.fromhex(arg_raw.replace(" ", "")) if arg_raw else b""
+                arg = bytes.fromhex(arg_raw.replace(
+                    " ", "")) if arg_raw else b""
             except ValueError:
                 print(f"  Invalid hex: {arg_raw!r}")
                 continue
@@ -495,55 +502,23 @@ def _routine_menu(sess, cfg, odj_routines: dict[str, Any]) -> None:
 # DFU (firmware update via dfu.py phases)
 # ---------------------------------------------------------------------------
 
-def _dfu_menu(sess, cfg, artifacts_dir: Path | None) -> None:
+def _dfu_menu(sess, cfg, artifacts_dir: Path | None, force: bool | None = None) -> None:
     from uds_local.client import UdsError
     from dfu import run_flash
     from flash_scripts._display import StatusDisplay
 
     _hdr(f"Firmware update (DFU) — {cfg.name}")
 
-    import json
-    cache: dict = {}
-    if _CACHE_FILE.exists():
-        try:
-            cache = json.loads(_CACHE_FILE.read_text())
-        except Exception:
-            cache = {}
-
     if artifacts_dir is None:
-        cached_path = cache.get("artifacts_dir")
-        cached = None
-        if cached_path:
-            try:
-                cached = Path(cached_path).expanduser().resolve()
-                if not cached.is_dir():
-                    cached = None
-            except Exception:
-                cached = None
-        if cached:
-            print(f"  Using cached artifacts path: {cached}")
-            artifacts_dir = cached
-        else:
-            artifacts_dir_str = input("  Path to seed_artifacts_v2: ").strip()
-            artifacts_dir = Path(artifacts_dir_str).expanduser().resolve()
+        artifacts_dir = _cfg.ARTIFACTS_DIR
 
     if not artifacts_dir.is_dir():
         print(f"  Artifacts directory not found: {artifacts_dir}")
+        print("  Set TM3_ARTIFACTS_DIR in .env or pass --artifacts")
         return
 
-    cache["artifacts_dir"] = str(artifacts_dir)
-
-    cached_force = cache.get("force", False)
-    default = "Y" if cached_force else "N"
-    force_input = input(
-        f"  Skip identity mismatch check? [y/N] (last: {default}) ").strip().lower()
-    if force_input == "":
-        force = cached_force
-    else:
-        force = force_input == "y"
-    cache["force"] = force
-
-    _CACHE_FILE.write_text(json.dumps(cache))
+    if force is None:
+        force = _cfg.DFU_FORCE or False
 
     try:
         run_flash(sess, artifacts_dir, cfg.name, StatusDisplay(), force=force)
@@ -559,7 +534,7 @@ def _dfu_menu(sess, cfg, artifacts_dir: Path | None) -> None:
 # Main menu
 # ---------------------------------------------------------------------------
 
-def _main_menu(sess, cfg, odj_fields: dict[str, Any], odj_routines: dict[str, Any], artifacts_dir: Path | None) -> None:
+def _main_menu(sess, cfg, odj_fields: dict[str, Any], odj_routines: dict[str, Any], artifacts_dir: Path | None, force: bool = False) -> None:
     _setup_completion([
         "dids", "routine", "board-parts", "clear-dtc",
         "dfu", "session", "reset", "quit",
@@ -592,7 +567,7 @@ def _main_menu(sess, cfg, odj_fields: dict[str, Any], odj_routines: dict[str, An
         elif cmd == "clear-dtc":
             _clear_dtc_cmd(sess)
         elif cmd == "dfu":
-            _dfu_menu(sess, cfg, artifacts_dir)
+            _dfu_menu(sess, cfg, artifacts_dir, force=force)
         elif cmd == "session":
             _session_cmd(sess)
         elif cmd == "reset":
@@ -679,6 +654,8 @@ def main() -> int:
     parser.add_argument("--interface", "-i", help="python-can interface type")
     parser.add_argument("--artifacts", "-a",
                         help="Path to seed_artifacts_v2 (for DFU)")
+    parser.add_argument("--force", action="store_true", default=False,
+                        help="Skip identity mismatch check during DFU (also TM3_DFU_FORCE)")
     _cfg.apply_defaults(parser)
     args = parser.parse_args()
 
@@ -715,7 +692,8 @@ def main() -> int:
     try:
         with UdsSession(cfg, args.channel, interface=args.interface) as sess:
             _show_identity(sess, cfg)
-            _main_menu(sess, cfg, odj_fields, odj_routines, artifacts_dir)
+            _main_menu(sess, cfg, odj_fields, odj_routines,
+                       artifacts_dir, force=args.force)
     except KeyboardInterrupt:
         pass
     except Exception as e:

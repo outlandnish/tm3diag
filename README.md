@@ -39,7 +39,6 @@ These are found in `opt/odin/data/Model3/` inside the firmware squashfs root. `.
 ## Reference
 
 - [FIRMWARE_UPDATE.md](docs/FIRMWARE_UPDATE.md) — UDS flash protocol, script map, frame-by-frame reference
-- [ECU_DIDS.md](docs/ECU_DIDS.md) — DID reference for all ECU nodes
 
 ## Requirements
 

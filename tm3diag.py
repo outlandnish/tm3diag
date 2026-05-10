@@ -11,8 +11,13 @@ from __future__ import annotations
 
 import json
 import readline
+import warnings
 from pathlib import Path
 from typing import Any
+
+warnings.filterwarnings("ignore", category=RuntimeWarning, module=r"uds\.packet\.abstract_packet")
+warnings.filterwarnings("ignore", message="A CAN packet that does not start UDS message transmission")
+warnings.filterwarnings("ignore", module=r"uds\.can\.transport_interface\.common")
 
 import config as _cfg
 from decode_bin import load_json as _load_json
@@ -79,6 +84,13 @@ def _decode_fields(data: bytes, fields: dict[str, Any]) -> list[tuple[str, str]]
 def _load_odj_fields(odj_path: Path) -> dict[str, Any]:
     try:
         return _load_json(odj_path).get("data", {})
+    except Exception:
+        return {}
+
+
+def _load_odj_routines(odj_path: Path) -> dict[str, Any]:
+    try:
+        return _load_json(odj_path).get("routines", {})
     except Exception:
         return {}
 
@@ -290,7 +302,7 @@ def _did_menu(sess, cfg, odj_fields: dict[str, Any]) -> None:
                 f"  DID requires security level {sl} — running security access...")
             try:
                 sess.diagnostic_session(_SESSION_PROGRAMMING)
-                sess.security_access()
+                sess.security_access(seed_level=sl)
             except UdsError as e:
                 print(f"  Security access failed: {e}")
                 continue
@@ -307,15 +319,67 @@ def _did_menu(sess, cfg, odj_fields: dict[str, Any]) -> None:
 # Routine menu
 # ---------------------------------------------------------------------------
 
-def _routine_menu(sess, cfg) -> None:
+def _prompt_routine_inputs(fields: dict[str, Any]) -> bytes | None:
+    """Prompt for each input field and pack into bytes. Returns None on error."""
+    if not fields:
+        return b""
+    # Determine total byte length from the highest byte_position + ceil(bit_length/8)
+    total = max(
+        f["byte_position"] + (f["bit_length"] + 7) // 8
+        for f in fields.values()
+    )
+    buf = bytearray(total)
+    for fname, fspec in fields.items():
+        bit_len = fspec["bit_length"]
+        byte_pos = fspec["byte_position"]
+        bit_pos = fspec["bit_position"]
+        dtype = fspec.get("data_type", "uint")
+        enum_map = fspec.get("map", {}).get("enum", {})
+        if enum_map:
+            opts = ", ".join(f"{k}={v}" for k, v in enum_map.items())
+            raw = input(f"    {fname} ({opts}): ").strip()
+            rev = {str(v): k for k, v in enum_map.items()}
+            rev.update({k.upper(): v for k, v in enum_map.items()})
+            if raw.upper() in {k.upper(): v for k, v in enum_map.items()}:
+                val = {k.upper(): v for k, v in enum_map.items()}[raw.upper()]
+            else:
+                try:
+                    val = int(raw, 0)
+                except ValueError:
+                    print(f"  Invalid value: {raw!r}")
+                    return None
+        else:
+            prompt = f"    {fname} ({'signed' if dtype == 'int' else 'uint'}, {bit_len}b): "
+            raw = input(prompt).strip()
+            try:
+                val = int(raw, 0)
+            except ValueError:
+                print(f"  Invalid value: {raw!r}")
+                return None
+        # Pack bits into buf
+        mask = (1 << bit_len) - 1
+        val &= mask
+        for i in range(bit_len):
+            bit = (val >> i) & 1
+            b = byte_pos + (bit_pos + i) // 8
+            bp = (bit_pos + i) % 8
+            if bit:
+                buf[b] |= (1 << bp)
+            else:
+                buf[b] &= ~(1 << bp)
+    return bytes(buf)
+
+
+def _routine_menu(sess, cfg, odj_routines: dict[str, Any]) -> None:
     from uds_local.client import UdsError
 
     named = list(_NAMED_ROUTINES.keys())
-    _setup_completion(named + ["back", "list"])
+    odj_names = sorted(odj_routines.keys())
+    all_names = named + odj_names
+    _setup_completion(all_names + ["back", "list"])
 
     _hdr(f"Routine control — {cfg.name}")
-    print("  Type a routine name, hex ID (0xNNNN), or 'back'")
-    print("  Named routines: " + ", ".join(named))
+    print("  Type a routine name (tab to complete), hex ID (0xNNNN), 'list', or 'back'")
 
     while True:
         try:
@@ -329,44 +393,99 @@ def _routine_menu(sess, cfg) -> None:
             return
         if raw.lower() == "list":
             print()
-            for name, (rid, desc, needs_sa) in _NAMED_ROUTINES.items():
-                sa_str = "  [security access]" if needs_sa else ""
-                print(f"    0x{rid:04X}  {name:<24} {desc}{sa_str}")
+            if named:
+                print("  — built-in —")
+                for name, (rid, desc, needs_sa) in _NAMED_ROUTINES.items():
+                    sa_str = "  [sa]" if needs_sa else ""
+                    print(f"    0x{rid:04X}  {name:<40} {desc}{sa_str}")
+            if odj_names:
+                print("  — node ODJ —")
+                for name in odj_names:
+                    spec = odj_routines[name]
+                    rid = int(spec.get("hex_id", "0"), 16)
+                    sl = spec.get("start", {}).get("security_level", 0)
+                    sa_str = f"  [sl={sl}]" if sl else ""
+                    actions = [a for a in ("start", "stop", "results") if spec.get(a)]
+                    print(f"    0x{rid:04X}  {name:<40} {', '.join(actions)}{sa_str}")
             continue
 
+        # Resolve to (routine_id, needs_sa, sl, odj_spec | None)
+        odj_spec = None
         needs_sa = False
-        if raw.lower() in _NAMED_ROUTINES:
+        sl = 1
+        if raw in odj_routines:
+            odj_spec = odj_routines[raw]
+            routine_id = int(odj_spec.get("hex_id", "0"), 16)
+            sl = odj_spec.get("start", {}).get("security_level", 0)
+            needs_sa = bool(sl)
+            print(f"  → 0x{routine_id:04X}  {raw}")
+        elif raw.lower() in _NAMED_ROUTINES:
             routine_id, desc, needs_sa = _NAMED_ROUTINES[raw.lower()]
             print(f"  → 0x{routine_id:04X}  {desc}")
         elif raw.lower().startswith("0x"):
-            try:
-                routine_id = int(raw, 16)
-                desc = ""
-            except ValueError:
-                print(f"  Invalid hex: {raw!r}")
-                continue
+            # Check odj by hex id
+            match = next(
+                (n for n, s in odj_routines.items()
+                 if int(s.get("hex_id", "0"), 16) == int(raw, 16)),
+                None,
+            )
+            if match:
+                odj_spec = odj_routines[match]
+                routine_id = int(odj_spec.get("hex_id", "0"), 16)
+                sl = odj_spec.get("start", {}).get("security_level", 0)
+                needs_sa = bool(sl)
+                print(f"  → 0x{routine_id:04X}  {match}")
+            else:
+                try:
+                    routine_id = int(raw, 16)
+                except ValueError:
+                    print(f"  Invalid hex: {raw!r}")
+                    continue
         else:
-            print(f"  Unknown routine: {raw!r}")
+            print(f"  Unknown routine: {raw!r}  (try 'list' or tab complete)")
             continue
 
         if needs_sa:
-            print("  Routine requires security access — authenticating...")
+            print(f"  Routine requires security level {sl} — authenticating...")
             try:
                 sess.diagnostic_session(_SESSION_PROGRAMMING)
-                sess.security_access()
+                sess.security_access(seed_level=sl)
             except UdsError as e:
                 print(f"  Security access failed: {e}")
                 continue
 
-        arg_raw = input("  Arg bytes (hex, empty for none): ").strip()
-        try:
-            arg = bytes.fromhex(arg_raw.replace(" ", "")) if arg_raw else b""
-        except ValueError:
-            print(f"  Invalid hex: {arg_raw!r}")
-            continue
+        if odj_spec:
+            # Prompt for action
+            available = [a for a in ("start", "stop", "results") if odj_spec.get(a)]
+            if len(available) == 1:
+                action = available[0]
+            else:
+                action_raw = input(f"  Action ({'/'.join(available)}): ").strip().lower()
+                if action_raw not in available:
+                    print(f"  Unknown action: {action_raw!r}")
+                    continue
+                action = action_raw
+            sub = odj_spec[action]
+            input_fields = sub.get("input", {})
+            if input_fields:
+                print(f"  Inputs for {action}:")
+                arg = _prompt_routine_inputs(input_fields)
+                if arg is None:
+                    continue
+            else:
+                arg = b""
+            subtype = {"start": 0x01, "stop": 0x02, "results": 0x03}[action]
+        else:
+            arg_raw = input("  Arg bytes (hex, empty for none): ").strip()
+            try:
+                arg = bytes.fromhex(arg_raw.replace(" ", "")) if arg_raw else b""
+            except ValueError:
+                print(f"  Invalid hex: {arg_raw!r}")
+                continue
+            subtype = 0x01
 
         try:
-            result = sess.routine_control(routine_id, arg)
+            result = sess.routine_control(routine_id, arg, subtype=subtype)
             print(f"  Result: {result.hex() if result else '(empty)'}")
         except UdsError as e:
             print(f"  Error: {e}")
@@ -379,6 +498,7 @@ def _routine_menu(sess, cfg) -> None:
 def _dfu_menu(sess, cfg, artifacts_dir: Path | None) -> None:
     from uds_local.client import UdsError
     from dfu import run_flash
+    from flash_scripts._display import StatusDisplay
 
     _hdr(f"Firmware update (DFU) — {cfg.name}")
 
@@ -426,7 +546,7 @@ def _dfu_menu(sess, cfg, artifacts_dir: Path | None) -> None:
     _CACHE_FILE.write_text(json.dumps(cache))
 
     try:
-        run_flash(sess, artifacts_dir, cfg.name, force=force)
+        run_flash(sess, artifacts_dir, cfg.name, StatusDisplay(), force=force)
     except SystemExit:
         print("  DFU aborted.")
     except UdsError as e:
@@ -439,7 +559,7 @@ def _dfu_menu(sess, cfg, artifacts_dir: Path | None) -> None:
 # Main menu
 # ---------------------------------------------------------------------------
 
-def _main_menu(sess, cfg, odj_fields: dict[str, Any], artifacts_dir: Path | None) -> None:
+def _main_menu(sess, cfg, odj_fields: dict[str, Any], odj_routines: dict[str, Any], artifacts_dir: Path | None) -> None:
     _setup_completion([
         "dids", "routine", "board-parts", "clear-dtc",
         "dfu", "session", "reset", "quit",
@@ -466,7 +586,7 @@ def _main_menu(sess, cfg, odj_fields: dict[str, Any], artifacts_dir: Path | None
         elif cmd == "dids":
             _did_menu(sess, cfg, odj_fields)
         elif cmd == "routine":
-            _routine_menu(sess, cfg)
+            _routine_menu(sess, cfg, odj_routines)
         elif cmd == "board-parts":
             _board_parts_cmd(sess)
         elif cmd == "clear-dtc":
@@ -583,17 +703,19 @@ def main() -> int:
         print(f"Error loading node config: {e}")
         return 1
 
-    # Merge all ODJ field specs for this node
+    # Merge all ODJ field specs and routines for this node
     odj_fields: dict[str, Any] = {}
+    odj_routines: dict[str, Any] = {}
     for odj_name in nodes[node_name].get("odj_sources", []):
         odj_fields.update(_load_odj_fields(_ODJ_DIR / odj_name))
+        odj_routines.update(_load_odj_routines(_ODJ_DIR / odj_name))
 
     print(f"\nConnecting to {node_name} on {args.channel}...")
 
     try:
         with UdsSession(cfg, args.channel, interface=args.interface) as sess:
             _show_identity(sess, cfg)
-            _main_menu(sess, cfg, odj_fields, artifacts_dir)
+            _main_menu(sess, cfg, odj_fields, odj_routines, artifacts_dir)
     except KeyboardInterrupt:
         pass
     except Exception as e:

@@ -291,9 +291,9 @@ class UdsSession:
         resp = self._send_raw(payload)
         self._check_positive(resp, _SID_WDBI)
 
-    def routine_control(self, routine_id: int, arg: bytes = b"") -> bytes:
+    def routine_control(self, routine_id: int, arg: bytes = b"", subtype: int = 0x01) -> bytes:
         payload = [
-            _SID_RC, _RC_START,
+            _SID_RC, subtype,
             (routine_id >> 8) & 0xFF, routine_id & 0xFF,
         ] + list(arg)
         resp = self._send_raw(payload)

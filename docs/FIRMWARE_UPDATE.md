@@ -126,13 +126,7 @@ reset(soft)  sleep(500ms)
 
 ### pcs / pcscpu2 / di / dis / pm / pms (multi-CPU)
 
-The `module` byte selects which CPU the bootloader programs (`2E 01 02 <module>`).
-
-Module byte values for secondary CPUs depend on topology. `pcscpu2` shares the
-PCS CAN node (0x628/0x629) and uses `0x0C` (confirmed on hardware — `0x04`
-rejected with NRC 0x10 on the shared node). `di`/`dis` have dedicated nodes
-(0x606/0x616); `0x04` is confirmed from wire captures on those nodes. Newer
-firmware variants may swap these — see the module byte table in section 3.
+The `module` byte selects which CPU the bootloader programs (`2E 01 02 <module>`)
 
 Prog 1 (single-session dual-CPU) is supported when the secondary shares the
 same UDS endpoint as the primary (i.e. `pcscpu2` on the PCS node). When `di`
@@ -1009,35 +1003,6 @@ Two files provide the same mapping; use `signed_metadata_map.tsv` in production:
 1. Connect to the ECU and read the boot ID (boot broadcast message or DID `0xF180`)
 2. Resolve `<ecu>:<boot_id>` in the table — filter rows by matching `conditions` against vehicle options
 3. Collect **all** matching rows — multi-file ECUs produce more than one
-
-### Multi-file ECUs: multiple rows, one boot ID
-
-Several ECUs map the same boot ID key to more than one BHX file. Each row carries a
-different `ecu_type` and `local_filename`; each is a separate sequential flash operation.
-
-**PCS** — two CPUs, same CAN IDs, same script group (PCS/DI/PM family), `moduleToProgram` selects the target:
-
-| Row | `local_filename` | `ecu_type` | SHDR address | Module byte | Flash sectors |
-| --- | ---------------- | ---------- | ------------ | ----------- | ------------- |
-| 1   | `pcs.bhx`        | `pcs`      | `0x00088000` | `0x00`      | 4, 5, 6       |
-| 2   | `pcscpu2.bhx`    | `pcscpu2`  | `0x00082000` | `0x0C`      | 1, 2, 3, 4    |
-
-Component IDs: CPU1 = `0x001b`, CPU2 = `0x0096`. Bootloader in Sector 0 (`0x80000–0x81FFF`) is never erased.
-
-**DI** — keyed by the PM (power module) boot ID, but `ecu_type=di`:
-
-```
-pm:390004738   di/12360/DI_23-63-2_M3_Single_crc.bhx   di.bhx   di   ...   drivetrainType=0,vdcType=0
-```
-
-The `di` node carries module byte `0x0c`, so it is flashed as a secondary CPU even though the
-lookup key came from `pm`.
-
-### Flash ordering for multi-file ECUs
-
-PCS-family ECUs that resolve to **both** a primary and a secondary BHX file
-have two valid execution paths. Either works; **prog 1 is preferred** when both
-files are available up-front.
 
 #### Prog 1 — single authenticated session, both CPUs
 

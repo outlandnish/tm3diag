@@ -55,7 +55,13 @@ _ENV_MAP = {
     "interface":     ("TM3_INTERFACE",      str,  "socketcan"),
     "bitrate":       ("TM3_BITRATE",        int,  None),
     "artifacts":     ("TM3_ARTIFACTS_DIR",  str,  None),
+    "force":         ("TM3_DFU_FORCE",      bool, None),
 }
+
+DFU_FORCE: bool | None = None
+_dfu_force_val = os.environ.get("TM3_DFU_FORCE")
+if _dfu_force_val is not None:
+    DFU_FORCE = _dfu_force_val.lower() in ("1", "true", "yes")
 
 
 def apply_defaults(parser) -> None:

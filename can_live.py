@@ -232,7 +232,8 @@ def main() -> None:
     app = _build_app(bus)
 
     url = f"http://localhost:{args.port}"
-    if not args.no_browser:
+    in_wsl = "microsoft" in open("/proc/version").read().lower() if Path("/proc/version").exists() else False
+    if not args.no_browser and not in_wsl:
         def _open_browser() -> None:
             if not webbrowser.open(url):
                 log.info("Could not open browser automatically — visit %s", url)

@@ -18,22 +18,25 @@ prompts and reorder the selected entry list:
 # verify that the user's --node argument can drive the bootloader flash, and
 # by display logic to group bu+bl with the parent app entry.
 _BL_PARENT_NODE: dict[str, str] = {
-    "parkbu":    "park",
-    "parkbl":    "park",
-    "hvbmsbu":   "hvbms",
-    "hvbmsbl":   "hvbms",
-    "hvpbu":     "hvp",
-    "hvpbl":     "hvp",
-    "vcfrontbu": "vcfront",
-    "vcfrontbl": "vcfront",
-    "pcsbu":     "pcs",
-    "pcsbl":     "pcs",
+    "parkbu":     "park",
+    "parkbl":     "park",
+    "hvbmsbu":    "hvbms",
+    "hvbmsbl":    "hvbms",
+    "hvpbu":      "hvp",
+    "hvpbl":      "hvp",
+    "vcfrontbu":  "vcfront",
+    "vcfrontbl":  "vcfront",
+    "pcsbu":      "pcs",
+    "pcsbl":      "pcs",
+    "pcscpu2bu":  "pcs",
+    "pcscpu2bl":  "pcs",
 }
 
 
 def is_bootloader_ecu_type(ecu_type: str) -> bool:
     """True if ecu_type names a bootloader updater/image (bu/bl)."""
-    return ecu_type.lower() in _BL_PARENT_NODE
+    t = ecu_type.lower()
+    return t.endswith("bu") or t.endswith("bl")
 
 
 def parent_node_for_bootloader(ecu_type: str) -> str | None:
@@ -51,9 +54,9 @@ def find_bootloader_entries(selected: list) -> tuple[list, list, list]:
     bus, bls, apps = [], [], []
     for e in selected:
         ecu_type = e.component.lower()
-        if ecu_type.endswith("bu") and ecu_type in _BL_PARENT_NODE:
+        if ecu_type.endswith("bu"):
             bus.append(e)
-        elif ecu_type.endswith("bl") and ecu_type in _BL_PARENT_NODE:
+        elif ecu_type.endswith("bl"):
             bls.append(e)
         else:
             apps.append(e)

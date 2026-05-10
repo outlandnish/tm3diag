@@ -11,15 +11,21 @@ Usage:
 """
 
 from __future__ import annotations
+import config as _cfg
+import can
 
 import argparse
 import code
 import threading
 import time
+import warnings
 from typing import Any
 
-import can
-import config as _cfg
+warnings.filterwarnings("ignore", category=RuntimeWarning,
+                        module=r"uds\.packet\.abstract_packet")
+warnings.filterwarnings(
+    "ignore", message="A CAN packet that does not start UDS message transmission")
+
 
 try:
     from can_decoder import CanDatabase
@@ -32,11 +38,11 @@ except Exception:
 # ---------------------------------------------------------------------------
 
 DEFAULTS: dict[str, Any] = {
-    "hv_voltage": 400,    # volts
-    "ac_limit": 32,       # amps
-    "dcdc_voltage": 13.8, # volts
-    "charge_power": 0,    # watts
-    "evse_limit": 32,     # amps
+    "hv_voltage": 67.2,    # volts
+    "ac_limit": 15,        # amps
+    "dcdc_voltage": 15.0,  # volts
+    "charge_power": 0,     # watts
+    "evse_limit": 15,      # amps
 }
 
 # ---------------------------------------------------------------------------
@@ -44,9 +50,11 @@ DEFAULTS: dict[str, Any] = {
 # ---------------------------------------------------------------------------
 
 _hb_lock = threading.Lock()
-_hb_counter = 0   # VCFront counter 0-15
-_bms_mux = False  # 0x3B2 alternates between two payloads
-_vcf_mux = False  # 0x545 alternates between two payloads
+_hb_counter = 0     # 0x545 VCFront counter 0-15
+_bms_mux = False    # 0x3B2 alternates between two payloads
+_vcf_mux = False    # 0x545 alternates between two payloads
+_vcfront_ctr = 0    # 0x3A1 vehicleStatusCounter 0-15
+_contactor_stage = "closed"  # "open" | "precharge" | "closed"
 
 # ---------------------------------------------------------------------------
 # Raw send helper
@@ -60,7 +68,8 @@ def _send(can_id: int, data: list[int] | bytes) -> None:
     if _bus is None:
         return
     try:
-        _bus.send(can.Message(arbitration_id=can_id, data=bytes(data), is_extended_id=False))
+        _bus.send(can.Message(arbitration_id=can_id,
+                  data=bytes(data), is_extended_id=False))
     except can.CanOperationError:
         pass  # drop frame on buffer-full; next tick will retry
 
@@ -75,76 +84,279 @@ def raw(can_id: int, data: list[int] | bytes) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Payload builders — signal layout from Model3_ETH.compact.json
+# ---------------------------------------------------------------------------
+
+def _build_hvp_pcs_control(
+    v: float | None = None,
+    control: str = "SHUTDOWN",
+    charge_hw: bool = False,
+    dcdc_hw: bool = False,
+) -> list[int]:
+    """HVP_pcsControl (0x22A) — 4 bytes.
+
+    control: 'SHUTDOWN' | 'SUPPORT' | 'PRECHARGE' | 'DISCHARGE'
+    v: DC link voltage request in volts (default: DEFAULTS['hv_voltage'])    
+    """
+    ctrl_map = {"SHUTDOWN": 0, "SUPPORT": 1, "PRECHARGE": 2, "DISCHARGE": 3}
+    v_volts = v if v is not None else DEFAULTS["hv_voltage"]
+    # HVP_dcLinkVoltageRequest: bits 0-15, scale=0.1, signed
+    v_raw = int(v_volts / 0.1) & 0xFFFF
+    word = v_raw
+    word |= ctrl_map.get(control, 0) << 16   # bits 16-17
+    word |= int(charge_hw) << 18              # bit 18
+    word |= int(dcdc_hw) << 19               # bit 19
+    # HVP_dcLinkVoltageFiltered bits 20-30: leave 0
+    return list(word.to_bytes(4, "little"))
+
+
+def _build_hvp_contactor_state(stage: str | None = None) -> list[int]:
+    """HVP_contactorState (0x20A) — 6 bytes.
+
+    stage: 'open' | 'precharge' | 'closed' (default: _contactor_stage)
+
+    Contactor state encoding per stage:
+      open:      negState=OPEN(1),       posState=OPEN(1),       setState=OPEN(1)
+      precharge: negState=PULLED_IN(4),  posState=PRECHARGE(2),  setState=CLOSING(2)
+      closed:    negState=ECONOMIZED(6), posState=ECONOMIZED(6), setState=CLOSED(5)
+
+    All stages assert packCtrsClosingAllowed(35), dcLinkAllowedToEnergize(36), hvilStatus=OK(1@40).
+    """
+    s = stage if stage is not None else _contactor_stage
+    if s == "open":
+        neg, pos, setst = 1, 1, 1
+    elif s == "precharge":
+        neg, pos, setst = 4, 2, 2
+    else:  # closed
+        neg, pos, setst = 6, 6, 5
+    word = 0
+    word |= neg << 0    # packContNegativeState
+    word |= pos << 3    # packContPositiveState
+    word |= setst << 8    # packContactorSetState
+    word |= 1 << 35       # packCtrsClosingAllowed
+    word |= 1 << 36       # dcLinkAllowedToEnergize
+    word |= 1 << 40       # hvilStatus=STATUS_OK
+    return list(word.to_bytes(6, "little"))
+
+
+def _build_bms_status() -> list[int]:
+    """BMS_status (0x212) — 8 bytes.
+
+    Signals from compact JSON (all LITTLE endian):
+      hvacPowerRequest   bit 0      1
+      updateAllowed      bit 4      1
+      pcsPwmEnabled      bit 7      1
+      contactorState     bits 8-10  BMS_CTRSET_CLOSED=4
+      uiChargeStatus     bits 11-13 BMS_CHARGING=3
+      hvState            bits 16-18 HV_UP_FOR_CHARGE=4
+      chargeRequest      bit 29     1
+      state              bits 32-35 BMS_CHARGE=3 (width 4)
+      smStateRequest     bits 56-59 BMS_CHARGE=3 (width 4)
+    """
+    word = 0
+    word |= 1 << 0    # hvacPowerRequest
+    word |= 1 << 4    # updateAllowed
+    word |= 1 << 7    # pcsPwmEnabled
+    word |= 4 << 8    # contactorState=BMS_CTRSET_CLOSED
+    word |= 3 << 11   # uiChargeStatus=BMS_CHARGING
+    word |= 4 << 16   # hvState=HV_UP_FOR_CHARGE
+    word |= 1 << 29   # chargeRequest
+    word |= 3 << 32   # state=BMS_CHARGE (bit 32, width 4)
+    word |= 3 << 56   # smStateRequest=BMS_CHARGE (bit 56, width 4)
+    return list(word.to_bytes(8, "little"))
+
+
+def _build_cp_evse_status(pilot_a: float | None = None, cable_a: int | None = None) -> list[int]:
+    """CP_evseStatus (0x21D) — 8 bytes.
+
+    Signals from compact JSON (all LITTLE endian):
+      evseAccept         bit 0      1
+      proximity          bits 2-3   LATCHED=3
+      pilot              bits 4-6   LINE_CHARGE=2
+      pilotCurrent       bits 8-15  scale=0.5
+      cableCurrentLimit  bits 24-30
+      evseChargeType_UI  bits 38-39 AC_CHARGER_PRESENT=2
+      acChargeState      bits 53-55 AC_CHARGE_ENABLED=3
+    """
+    pa = pilot_a if pilot_a is not None else DEFAULTS["evse_limit"]
+    ca = cable_a if cable_a is not None else int(DEFAULTS["evse_limit"])
+    word = 0
+    word |= 1 << 0                    # evseAccept
+    word |= 3 << 2                    # proximity=LATCHED
+    word |= 2 << 4                    # pilot=LINE_CHARGE
+    word |= int(pa / 0.5) << 8        # pilotCurrent
+    word |= (ca & 0x7F) << 24         # cableCurrentLimit
+    word |= 2 << 38                   # evseChargeType=AC_CHARGER_PRESENT
+    word |= 3 << 53                   # acChargeState=AC_CHARGE_ENABLED
+    return list(word.to_bytes(8, "little"))
+
+
+def _build_cp_charge_status(ac_limit_a: float | None = None) -> list[int]:
+    """CP_chargeStatus (0x23D) — 4 bytes.
+
+    Signals from compact JSON (all LITTLE endian):
+      hvChargeStatus        bits 0-2  CP_CHARGE_ENABLED=5
+      chargeShutdownRequest bits 3-4  NO_SHUTDOWN=0
+      acChargeCurrentLimit  bits 8-15 scale=0.5
+    """
+    a = ac_limit_a if ac_limit_a is not None else DEFAULTS["ac_limit"]
+    word = 0
+    word |= 5 << 0              # hvChargeStatus=CP_CHARGE_ENABLED
+    word |= int(a / 0.5) << 8  # acChargeCurrentLimit
+    return list(word.to_bytes(4, "little"))
+
+
+def _build_vcfront_sensors() -> list[int]:
+    """VCFRONT_sensors (0x321) — 8 bytes.
+
+    Signals from compact JSON (all LITTLE endian):
+      tempCoolantBatInlet  bits 0-9   scale=0.125, offset=-40 -> 29.5°C = raw 556
+      tempCoolantPTInlet   bits 10-20 scale=0.125, offset=-40 -> 29.625°C = raw 557
+      coolantLevel         bit 21     FILLED=1
+      brakeFluidLevel      bits 22-23 NORMAL=2
+      tempAmbient          bits 24-31 scale=0.5, offset=-40 -> 23.5°C = raw 127
+      washerFluidLevel     bits 32-33 NORMAL=2
+      tempAmbientFiltered  bits 40-47 scale=0.5, offset=-40 -> 23.5°C = raw 127
+    """
+    word = 0
+    word |= 556 << 0   # tempCoolantBatInlet: (29.5 + 40) / 0.125 = 556
+    word |= 557 << 10  # tempCoolantPTInlet:  (29.625 + 40) / 0.125 = 557
+    word |= 1 << 21    # coolantLevel=FILLED
+    word |= 2 << 22    # brakeFluidLevel=NORMAL
+    word |= 127 << 24  # tempAmbient: (23.5 + 40) / 0.5 = 127
+    word |= 2 << 32    # washerFluidLevel=NORMAL
+    word |= 127 << 40  # tempAmbientFiltered: same as tempAmbient
+    return list(word.to_bytes(8, "little"))
+
+
+def _build_ui_charge_request(
+    ac_limit_a: float | None = None,
+    term_pct: float = 80.0,
+) -> list[int]:
+    """UI_chargeRequest (0x333) — 4 bytes.
+
+    Signals from compact JSON (all LITTLE endian):
+      chargeEnableRequest    bit 2      1
+      acChargeCurrentLimit   bits 8-14  (amps, integer)
+      chargeTerminationPct   bits 16-25 scale=0.1
+    """
+    a = int(ac_limit_a if ac_limit_a is not None else DEFAULTS["ac_limit"])
+    term_raw = int(term_pct / 0.1)
+    word = 0
+    word |= 1 << 2               # chargeEnableRequest
+    word |= (a & 0x7F) << 8     # acChargeCurrentLimit
+    word |= (term_raw & 0x3FF) << 16  # chargeTerminationPct
+    return list(word.to_bytes(4, "little"))
+
+
+def _build_vcfront_vehicle_status(ctr: int, hv_charge_enable: bool = True) -> list[int]:
+    """VCFRONT_vehicleStatus (0x3A1) — 8 bytes, with counter + checksum.
+
+    Signals from compact JSON (all LITTLE endian):
+      bmsHvChargeEnable      bit 0      1
+      inAccessoryPlus        bit 5      1
+      12vStatusForDrive      bits 14-15 READY_FOR_DRIVE_12V=1
+      pcs12vVoltageTarget    bits 16-26 scale=0.01 -> DEFAULTS['dcdc_voltage']
+      vehicleStatusCounter   bits 52-55 increments 0-15
+      vehicleStatusChecksum  bits 56-63 = sum(bytes[0:7]) & 0xFF
+    """
+    v_raw = int(DEFAULTS["dcdc_voltage"] / 0.01) & 0x7FF
+    word = 0
+    word |= int(hv_charge_enable) << 0   # bmsHvChargeEnable
+    word |= 1 << 5                        # inAccessoryPlus
+    word |= 1 << 14                       # 12vStatusForDrive=READY_FOR_DRIVE_12V
+    word |= v_raw << 16                   # pcs12vVoltageTarget
+    word |= (ctr & 0xF) << 52            # vehicleStatusCounter
+    buf = list(word.to_bytes(8, "little"))
+    buf[7] = sum(buf[:7]) & 0xFF          # vehicleStatusChecksum
+    return buf
+
+
+# ---------------------------------------------------------------------------
 # PCS TX helpers
 # ---------------------------------------------------------------------------
 
-def pcs_mode(mode: str = "off", hv_voltage: int | None = None) -> None:
-    """Send 0x22A - main PCS mode control.
+def pcs_mode(mode: str = "off", hv_voltage: float | None = None) -> None:
+    """Send 0x22A HVP_pcsControl — 4 bytes.
 
     mode: 'off' | 'charge' | 'dcdc' | 'both'
-    hv_voltage: HV voltage setpoint in volts (default: DEFAULTS['hv_voltage'])
+    hv_voltage: DC link voltage request in volts (default: DEFAULTS['hv_voltage'])
+                For an 18S pack set DEFAULTS['hv_voltage'] = 67 (67.2V full).
     """
-    modes = {"off": 0x00, "charge": 0x05, "dcdc": 0x09, "both": 0x0D}
-    if mode not in modes:
-        print(f"Unknown mode '{mode}'. Choose: {list(modes)}")
+    mode_map = {
+        "off":    ("SHUTDOWN", False, False),
+        "charge": ("SUPPORT",  True,  False),
+        "dcdc":   ("SUPPORT",  False, True),
+        "both":   ("SUPPORT",  True,  True),
+    }
+    if mode not in mode_map:
+        print(f"Unknown mode '{mode}'. Choose: {list(mode_map)}")
         return
-    v = hv_voltage if hv_voltage is not None else DEFAULTS["hv_voltage"]
-    v_raw = int(v)
-    mode_nibble = modes[mode]
-    # byte2: [7:4]=voltage LSBs [3:0]=mode
-    byte2 = ((v_raw & 0xF) << 4) | mode_nibble
-    byte3 = (v_raw >> 4) & 0xFF
-    raw(0x22A, [0x00, 0x00, byte2, byte3, 0x00, 0x00, 0x00, 0x00])
+    control, charge_hw, dcdc_hw = mode_map[mode]
+    raw(0x22A, _build_hvp_pcs_control(hv_voltage, control, charge_hw, dcdc_hw))
 
 
-def charger_enable(current_a: float | None = None) -> None:
-    """Send 0x13D - enable charger with AC current limit.
+def precharge(hv_voltage: float | None = None, timeout_s: float = 5.0) -> None:
+    """Sequence through precharge into charge mode.
 
-    current_a: AC current limit in amps (default: DEFAULTS['ac_limit'])
+    1. Sets contactor stage to 'precharge' and sends PRECHARGE on 0x22A.
+    2. Waits up to timeout_s for the DC link to reach ~95% of target voltage
+       (polled via BMS_log2 pcsPrechargeTargetVoltage if available, else fixed delay).
+    3. Advances contactor stage to 'closed' and switches to SUPPORT mode.
     """
-    a = current_a if current_a is not None else DEFAULTS["ac_limit"]
-    raw(0x13D, [0x05, int(a * 2), 0xAA, 0x1A, 0xFF, 0x02, 0x00, 0x00])
-
-
-def charger_disable() -> None:
-    """Send 0x13D - disable charger."""
-    a = DEFAULTS["ac_limit"]
-    raw(0x13D, [0x0A, int(a * 2), 0xAA, 0x1A, 0xFF, 0x02, 0x00, 0x00])
+    global _contactor_stage
+    v = hv_voltage if hv_voltage is not None else DEFAULTS["hv_voltage"]
+    print(f"Precharge: target {v}V, timeout {timeout_s}s")
+    _contactor_stage = "precharge"
+    _send(0x20A, _build_hvp_contactor_state())
+    raw(0x22A, _build_hvp_pcs_control(v, control="PRECHARGE", charge_hw=True))
+    time.sleep(timeout_s)
+    _contactor_stage = "closed"
+    _send(0x20A, _build_hvp_contactor_state())
+    raw(0x22A, _build_hvp_pcs_control(v, control="SUPPORT", charge_hw=True))
+    print("Precharge complete — now in SUPPORT/charge mode")
 
 
 def charge_power(watts: int | None = None, on: bool = True) -> None:
-    """Send 0x2B2 - charge power request.
+    """Send 0x2B2 - charge power request (DLC=5).
 
-    watts: power in watts (default: DEFAULTS['charge_power'])
-    on: True = charging enabled, False = off
+    watts: power in watts, scale=0.001 (e.g. 1400 = 1.4kW)
+    on: True = charger enabled (byte0=watts_lo), False = disabled (byte0=0x02)
     """
     w = watts if watts is not None else DEFAULTS["charge_power"]
     w_int = int(w)
-    enable_byte = 0x02 if on else 0x00
-    raw(0x2B2, [w_int & 0xFF, (w_int >> 8) & 0xFF, enable_byte, 0x00, 0x00])
+    b0 = w_int & 0xFF if on else 0x02
+    raw(0x2B2, [b0, (w_int >> 8) & 0xFF, 0x00, 0x00, 0x00])
 
 
 def dcdc_voltage(volts: float | None = None) -> None:
-    """Send 0x3A1 - DCDC output voltage setpoint.
+    """Send 0x3A1 VCFRONT_vehicleStatus with updated 12V target.
 
-    volts: desired output voltage (default: DEFAULTS['dcdc_voltage'])
+    volts: desired 12V output voltage (default: DEFAULTS['dcdc_voltage'])
     """
-    v = volts if volts is not None else DEFAULTS["dcdc_voltage"]
-    v_raw = int(v * 100)
-    raw(0x3A1, [0x09, 0x62, v_raw & 0xFF, ((v_raw >> 8) & 0x0F) | 0x90, 0x08, 0x2C, 0x12, 0x5A])
+    global _vcfront_ctr
+    if volts is not None:
+        DEFAULTS["dcdc_voltage"] = volts
+    with _hb_lock:
+        ctr = _vcfront_ctr
+        _vcfront_ctr = (ctr + 1) & 0xF
+    raw(0x3A1, _build_vcfront_vehicle_status(ctr))
 
 
 def evse_limit(current_a: float | None = None) -> None:
-    """Send 0x21D - EVSE and cable current limits.
+    """Send 0x21D CP_evseStatus with updated pilot/cable current.
 
     current_a: EVSE current limit in amps (default: DEFAULTS['evse_limit'])
     """
     a = current_a if current_a is not None else DEFAULTS["evse_limit"]
-    raw(0x21D, [0x2D, int(a * 2), 0x00, 0x80, 0x00, 0x60, 0x10, 0x00])
+    raw(0x21D, _build_cp_evse_status(a, int(a)))
 
 
 def bms_heartbeat() -> None:
-    """Send one 0x3B2 BMS heartbeat frame (prevents bmsMia fault)."""
+    """Send one 0x3B2 BMS_log2 frame (prevents bmsMia fault).
+
+    Alternates between mux 5 (charging) and mux 3 (charge termination).
+    """
     global _bms_mux
     with _hb_lock:
         mux = _bms_mux
@@ -232,17 +444,23 @@ _hb_stop: threading.Event | None = None
 _hb_thread: threading.Thread | None = None
 
 
+def _build_obc_control(ac_limit_a: float | None = None, enabled: bool = True) -> list[int]:
+    """OBC_control (0x13D) — 6 bytes.
+
+    bytes[0]: 0x05=charger enabled, 0x0A=charger disabled
+    bytes[1]: AC current limit, scale=0.5 (e.g. 0x40=64=32A)
+    bytes[2:6]: fixed 0xAA, 0x1A, 0xFF, 0x02
+    """
+    a = ac_limit_a if ac_limit_a is not None else DEFAULTS["ac_limit"]
+    b0 = 0x05 if enabled else 0x0A
+    return [b0, int(a / 0.5), 0xAA, 0x1A, 0xFF, 0x02]
+
+
 def _send_10ms() -> None:
     """Messages sent every 10ms."""
-    v = int(DEFAULTS["hv_voltage"])
-    mode_nibble = 0x00  # off by default; use pcs_mode() to change
-    byte2 = ((v & 0xF) << 4) | mode_nibble
-    byte3 = (v >> 4) & 0xFF
-    _send(0x22A, [0x00, 0x00, byte2, byte3, 0x00, 0x00, 0x00, 0x00])
-
-    a = int(DEFAULTS["ac_limit"] * 2)
-    _send(0x13D, [0x0A, a, 0xAA, 0x1A, 0xFF, 0x02, 0x00, 0x00])  # charger off
-
+    # 0x22A HVP_pcsControl: SHUTDOWN by default; use pcs_mode() to change
+    _send(0x22A, _build_hvp_pcs_control())
+    _send(0x13D, _build_obc_control())
     bms_heartbeat()
 
 
@@ -256,36 +474,37 @@ def _send_100ms(slot: int) -> None:
 
     Spreading avoids blasting all frames at once and overflowing the TX buffer.
     """
+    global _vcfront_ctr
     if slot == 0:
-        _send(0x20A, [0xF6, 0x15, 0x09, 0x82, 0x18, 0x01])
+        _send(0x20A, _build_hvp_contactor_state())
     elif slot == 1:
-        _send(0x212, [0xB9, 0x1C, 0x94, 0xAD, 0xC3, 0x15, 0x06, 0x63])
+        _send(0x212, _build_bms_status())
     elif slot == 2:
         _send(0x232, [0x0A, 0x02, 0xD5, 0x09, 0xCB, 0x04, 0x00, 0x00])
     elif slot == 3:
-        _send(0x25D, [0xD9, 0x8C, 0x01, 0xB5, 0x4A, 0xC1, 0x0A, 0xE0])
+        _send(0x25D, [0xD8, 0x8C, 0x01, 0xB5, 0x4A, 0xC1, 0x0A, 0xE0])
     elif slot == 4:
-        _send(0x321, [0x2C, 0xB6, 0xA8, 0x7F, 0x02, 0x7F, 0x00, 0x00])
+        _send(0x321, _build_vcfront_sensors())
     elif slot == 5:
-        _send(0x333, [0x04, 0x30, 0x29, 0x07, 0x00])
+        _send(0x333, _build_ui_charge_request())
     elif slot == 6:
-        a = int(DEFAULTS["evse_limit"] * 2)
-        _send(0x21D, [0x2D, a, 0x00, 0x80, 0x00, 0x60, 0x10, 0x00])
+        _send(0x21D, _build_cp_evse_status())
     elif slot == 7:
-        ac = int(DEFAULTS["ac_limit"] * 2)
-        _send(0x23D, [0x0A, ac, 0xFF, 0x0F])
+        _send(0x23D, _build_cp_charge_status())
     elif slot == 8:
         w = int(DEFAULTS["charge_power"])
         _send(0x2B2, [w & 0xFF, (w >> 8) & 0xFF, 0x00, 0x00, 0x00])
     elif slot == 9:
-        v_raw = int(DEFAULTS["dcdc_voltage"] * 100)
-        _send(0x3A1, [0x09, 0x62, v_raw & 0xFF, ((v_raw >> 8) & 0x0F) | 0x90, 0x08, 0x2C, 0x12, 0x5A])
+        with _hb_lock:
+            ctr = _vcfront_ctr
+            _vcfront_ctr = (ctr + 1) & 0xF
+        _send(0x3A1, _build_vcfront_vehicle_status(ctr))
 
 
 def start_heartbeats() -> None:
     """Start all periodic PCS keepalive messages.
 
-    10ms:  0x22A (mode), 0x13D (charger), 0x3B2 (bmsMia)
+    10ms:  0x22A (mode), 0x13D (OBC control), 0x3B2 (bmsMia)
     50ms:  0x545 (vcfrontMia)
     100ms: 0x20A, 0x212, 0x21D, 0x232, 0x23D, 0x25D, 0x2B2, 0x321, 0x333 (uiMia), 0x3A1
     """
@@ -318,7 +537,8 @@ def start_heartbeats() -> None:
                 _send_50ms()
             _send_100ms(tick % 10)
 
-    _hb_thread = threading.Thread(target=_run, daemon=True, name="pcs-heartbeat")
+    _hb_thread = threading.Thread(
+        target=_run, daemon=True, name="pcs-heartbeat")
     _hb_thread.start()
     print("Heartbeats started (10ms/50ms/100ms groups, 14 messages total)")
 
@@ -374,15 +594,18 @@ def start_listener(node: str = "PCS") -> None:
                     continue
                 decoded = _DB.decode_frame(msg.arbitration_id, data)
                 signals_str = "  ".join(
-                    f"{s['signal']}={s['value']}{s.get('units','')}"
+                    f"{s['signal']}={s['value']}{s.get('units', '')}"
                     + (f"({s['label']})" if s.get("label") else "")
                     for s in (decoded or [])
                 )
-                print(f"\nRX  0x{msg.arbitration_id:03X}  {db_msg['name']}  {signals_str}")
+                print(
+                    f"\nRX  0x{msg.arbitration_id:03X}  {db_msg['name']}  {signals_str}")
             else:
-                print(f"\nRX  0x{msg.arbitration_id:03X}  [{msg.dlc}]  {data.hex()}")
+                print(
+                    f"\nRX  0x{msg.arbitration_id:03X}  [{msg.dlc}]  {data.hex()}")
 
-    _listener_thread = threading.Thread(target=_run, daemon=True, name="pcs-listener")
+    _listener_thread = threading.Thread(
+        target=_run, daemon=True, name="pcs-listener")
     _listener_thread.start()
     print(f"Listener started (node filter: '{node or 'all'}')")
 
@@ -403,12 +626,13 @@ PCS scripting shell — available functions:
 
   SEND
     pcs_mode(mode, hv_voltage)   0x22A  mode: 'off','charge','dcdc','both'
-    charger_enable(current_a)    0x13D  enable charger
-    charger_disable()            0x13D  disable charger
-    charge_power(watts, on)      0x2B2  charge power request
-    dcdc_voltage(volts)          0x3A1  DCDC output voltage setpoint
+                                         hv_voltage default: DEFAULTS['hv_voltage']
+                                         18S pack example: DEFAULTS['hv_voltage'] = 67
+    precharge(hv_voltage, timeout_s)     ramp DC link then switch to SUPPORT
+    charge_power(watts, on)      0x2B2  charge power request (DLC=5)
+    dcdc_voltage(volts)          0x3A1  update 12V target in VCFRONT_vehicleStatus
     evse_limit(current_a)        0x21D  EVSE current limit
-    bms_heartbeat()              0x3B2  one BMS keepalive frame
+    bms_heartbeat()              0x3B2  one BMS_log2 keepalive frame
     vcfront_heartbeat()          0x545  one VCFront keepalive frame
     raw(can_id, data)                   send arbitrary frame
 
@@ -445,10 +669,12 @@ def help() -> None:
 def main() -> None:
     global _bus
 
-    parser = argparse.ArgumentParser(description="Interactive PCS CAN scripting shell")
+    parser = argparse.ArgumentParser(
+        description="Interactive PCS CAN scripting shell")
     parser.add_argument("--channel", help="CAN channel")
     parser.add_argument("--interface", help="python-can interface")
-    parser.add_argument("--bitrate", type=int, default=None, help="CAN bitrate (optional)")
+    parser.add_argument("--bitrate", type=int, default=None,
+                        help="CAN bitrate (optional)")
     _cfg.apply_defaults(parser)
     args = parser.parse_args()
 
@@ -465,8 +691,7 @@ def main() -> None:
         "DEFAULTS": DEFAULTS,
         "raw": raw,
         "pcs_mode": pcs_mode,
-        "charger_enable": charger_enable,
-        "charger_disable": charger_disable,
+        "precharge": precharge,
         "charge_power": charge_power,
         "dcdc_voltage": dcdc_voltage,
         "evse_limit": evse_limit,

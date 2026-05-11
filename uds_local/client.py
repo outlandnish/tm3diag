@@ -47,7 +47,10 @@ _DID_FLASH_COUNT = 0xF100
 # DID 0x0218: VCFRONT door-lock IOCBI used by sub4 lockout sequence
 _DID_VCFRONT_LOCKOUT = 0x0218
 # IOCBI controlParameter values (ISO 14229)
-_IOCP_SHORT_TERM_ADJUSTMENT = 0x03
+_IOCP_RETURN_TO_ECU          = 0x00
+_IOCP_RESET_TO_DEFAULT       = 0x01
+_IOCP_FREEZE_CURRENT_STATE   = 0x02
+_IOCP_SHORT_TERM_ADJUSTMENT  = 0x03
 # RC 0x0601: vendor pre-flash routine (vcleft / vcleftramapp)
 _RC_VENDOR_PREFLIGHT = 0x0601
 # RC 0x0540: VCWaitForOTAMode — start, then poll until response[0] == 2
@@ -377,6 +380,13 @@ class UdsSession:
             _SID_RC,
             f"OTA mode never reported active (resp[4] != 0x02) after {attempts} attempts",
         )
+
+    def io_control(self, did: int, control_param: int, data: bytes = b"") -> bytes:
+        """Generic IOCBI (0x2F) — caller supplies the controlParameter byte and data."""
+        payload = [_SID_IOCBI, (did >> 8) & 0xFF, did & 0xFF, control_param] + list(data)
+        resp = self._send_raw(payload)
+        self._check_positive(resp, _SID_IOCBI)
+        return bytes(resp[4:]) if len(resp) > 4 else b""
 
     def io_control_short_term_adjustment(self, did: int, control_byte: int) -> None:
         """IOCBI (0x2F) with controlParameter=3 (shortTermAdjustment) and 1-byte data.

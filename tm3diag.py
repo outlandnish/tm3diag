@@ -97,6 +97,13 @@ def _load_odj_routines(odj_path: Path) -> dict[str, Any]:
         return {}
 
 
+def _load_odj_io_controls(odj_path: Path) -> dict[str, Any]:
+    try:
+        return _load_json(odj_path).get("io_controls", {})
+    except Exception:
+        return {}
+
+
 # ---------------------------------------------------------------------------
 # Tab completion
 # ---------------------------------------------------------------------------
@@ -498,6 +505,118 @@ def _routine_menu(sess, cfg, odj_routines: dict[str, Any]) -> None:
             print(f"  Error: {e}")
 
 
+_IOCP_SUFFIX_MAP = {
+    "_RETURN_TO_ECU": (0x00, "returnToECU"),
+    "_RESET":         (0x01, "resetToDefault"),
+    "_FREEZE":        (0x02, "freezeCurrentState"),
+    "_ADJUST":        (0x03, "shortTermAdjustment"),
+}
+
+
+def _io_control_menu(sess, cfg, odj_io_controls: dict[str, Any]) -> None:
+    from uds_local.client import UdsError
+
+    names = sorted(odj_io_controls.keys())
+    _setup_completion(names + ["back", "list"])
+
+    _hdr(f"IO control — {cfg.name}")
+    print("  Type a control name (tab to complete), hex ID (0xNNNN), 'list', or 'back'")
+
+    while True:
+        try:
+            raw = input("\n  IO> ").strip()
+        except (EOFError, KeyboardInterrupt):
+            return
+
+        if not raw:
+            continue
+        if raw.lower() in ("back", "q", "quit"):
+            return
+        if raw.lower() == "list":
+            print()
+            for name in names:
+                spec = odj_io_controls[name]
+                ctrl_id = int(spec.get("hex_id", "0"), 16)
+                sl = spec.get("security_level", 0)
+                sa_str = f"  [sl={sl}]" if sl else ""
+                cp, cp_desc = next(
+                    ((v, d) for sfx, (v, d) in _IOCP_SUFFIX_MAP.items() if name.endswith(sfx)),
+                    (0x03, "shortTermAdjustment"),
+                )
+                print(f"    0x{ctrl_id:04X}  {name:<52} {cp_desc}{sa_str}")
+            continue
+
+        # Resolve to (ctrl_id, sl, spec)
+        spec = None
+        if raw in odj_io_controls:
+            spec = odj_io_controls[raw]
+            ctrl_id = int(spec.get("hex_id", "0"), 16)
+            sl = spec.get("security_level", 0)
+            print(f"  → 0x{ctrl_id:04X}  {raw}")
+        elif raw.lower().startswith("0x"):
+            match = next(
+                (n for n, s in odj_io_controls.items()
+                 if int(s.get("hex_id", "0"), 16) == int(raw, 16)),
+                None,
+            )
+            if match:
+                spec = odj_io_controls[match]
+                ctrl_id = int(spec.get("hex_id", "0"), 16)
+                sl = spec.get("security_level", 0)
+                print(f"  → 0x{ctrl_id:04X}  {match}")
+            else:
+                try:
+                    ctrl_id = int(raw, 16)
+                    sl = 0
+                except ValueError:
+                    print(f"  Invalid hex: {raw!r}")
+                    continue
+        else:
+            print(f"  Unknown control: {raw!r}  (try 'list' or tab complete)")
+            continue
+
+        if sl:
+            print(f"  Control requires security level {sl} — authenticating...")
+            try:
+                sess.diagnostic_session(_SESSION_PROGRAMMING)
+                sess.security_access(seed_level=sl)
+            except UdsError as e:
+                print(f"  Security access failed: {e}")
+                continue
+
+        # Determine control parameter from name suffix
+        ctrl_name = raw if spec else f"0x{ctrl_id:04X}"
+        control_param, _ = next(
+            ((v, d) for sfx, (v, d) in _IOCP_SUFFIX_MAP.items() if ctrl_name.endswith(sfx)),
+            (0x03, "shortTermAdjustment"),
+        )
+
+        # Prompt for input data if spec has input fields
+        if spec and spec.get("input"):
+            input_fields = spec["input"]
+            data = _prompt_routine_inputs(input_fields)
+            if data is None:
+                continue
+        else:
+            arg_raw = input("  Data bytes (hex, empty for none): ").strip()
+            try:
+                data = bytes.fromhex(arg_raw.replace(" ", "")) if arg_raw else b""
+            except ValueError:
+                print(f"  Invalid hex: {arg_raw!r}")
+                continue
+
+        try:
+            result = sess.io_control(ctrl_id, control_param, data)
+            if result and spec and spec.get("output"):
+                decoded = _decode_fields(result, spec["output"])
+                for fname, fval in decoded:
+                    print(f"  {fname}: {fval}")
+            else:
+                print(f"  Result: {result.hex() if result else '(empty)'}")
+        except UdsError as e:
+            print(f"  Error: {e}")
+
+
 # ---------------------------------------------------------------------------
 # DFU (firmware update via dfu.py phases)
 # ---------------------------------------------------------------------------
@@ -534,9 +653,9 @@ def _dfu_menu(sess, cfg, artifacts_dir: Path | None, force: bool | None = None) 
 # Main menu
 # ---------------------------------------------------------------------------
 
-def _main_menu(sess, cfg, odj_fields: dict[str, Any], odj_routines: dict[str, Any], artifacts_dir: Path | None, force: bool = False) -> None:
+def _main_menu(sess, cfg, odj_fields: dict[str, Any], odj_routines: dict[str, Any], odj_io_controls: dict[str, Any], artifacts_dir: Path | None, force: bool = False) -> None:
     _setup_completion([
-        "dids", "routine", "board-parts", "clear-dtc",
+        "dids", "routine", "io-control", "board-parts", "clear-dtc",
         "dfu", "session", "reset", "quit",
     ])
 
@@ -544,6 +663,7 @@ def _main_menu(sess, cfg, odj_fields: dict[str, Any], odj_routines: dict[str, An
         _hdr(f"{cfg.name}  —  Main menu")
         print("  dids        Read DIDs interactively")
         print("  routine     Run a routine control")
+        print("  io-control  InputOutputControlByIdentifier (0x2F)")
         print("  board-parts Read board part/serial DIDs (0xF012–0xF015)")
         print("  clear-dtc   ClearDiagnosticInformation (0xFFFFFF)")
         print("  dfu         Firmware update")
@@ -562,6 +682,8 @@ def _main_menu(sess, cfg, odj_fields: dict[str, Any], odj_routines: dict[str, An
             _did_menu(sess, cfg, odj_fields)
         elif cmd == "routine":
             _routine_menu(sess, cfg, odj_routines)
+        elif cmd == "io-control":
+            _io_control_menu(sess, cfg, odj_io_controls)
         elif cmd == "board-parts":
             _board_parts_cmd(sess)
         elif cmd == "clear-dtc":
@@ -680,19 +802,20 @@ def main() -> int:
         print(f"Error loading node config: {e}")
         return 1
 
-    # Merge all ODJ field specs and routines for this node
     odj_fields: dict[str, Any] = {}
     odj_routines: dict[str, Any] = {}
+    odj_io_controls: dict[str, Any] = {}
     for odj_name in nodes[node_name].get("odj_sources", []):
         odj_fields.update(_load_odj_fields(_ODJ_DIR / odj_name))
         odj_routines.update(_load_odj_routines(_ODJ_DIR / odj_name))
+        odj_io_controls.update(_load_odj_io_controls(_ODJ_DIR / odj_name))
 
     print(f"\nConnecting to {node_name} on {args.channel}...")
 
     try:
         with UdsSession(cfg, args.channel, interface=args.interface) as sess:
             _show_identity(sess, cfg)
-            _main_menu(sess, cfg, odj_fields, odj_routines,
+            _main_menu(sess, cfg, odj_fields, odj_routines, odj_io_controls,
                        artifacts_dir, force=args.force)
     except KeyboardInterrupt:
         pass

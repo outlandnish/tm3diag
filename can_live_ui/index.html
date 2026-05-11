@@ -177,6 +177,25 @@
     text-align: right;
   }
 
+  #alert-filter-btn {
+    background: none;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 4px 10px;
+    color: var(--text-dim);
+    font: inherit;
+    font-size: 11px;
+    cursor: pointer;
+    white-space: nowrap;
+    transition: background .1s, color .1s, border-color .1s;
+  }
+  #alert-filter-btn:hover { color: var(--text); border-color: var(--accent-dim); }
+  #alert-filter-btn.active {
+    background: rgba(227,25,55,.15);
+    border-color: var(--accent);
+    color: var(--accent);
+  }
+
   /* ---- signal table (live) ---- */
   .table-wrap {
     flex: 1;
@@ -328,6 +347,7 @@
     <div class="topbar">
       <div id="node-title" class="node-title">Select a node</div>
       <input id="filter-input" class="filter-input" type="text" placeholder="Filter signals…" style="display:none">
+      <button id="alert-filter-btn" style="display:none">Active alerts only</button>
       <div id="fps-counter"></div>
       <div id="status-dot"></div>
       <div id="status-text">disconnected</div>
@@ -389,14 +409,18 @@ const msgDom   = new Map();
 let frameCount = 0;
 let lastFpsTs  = performance.now();
 
-const nodeList    = document.getElementById('node-list');
-const nodeTitle   = document.getElementById('node-title');
-const tableWrap   = document.getElementById('table-wrap');
-const placeholder = document.getElementById('placeholder');
-const filterInput = document.getElementById('filter-input');
-const statusDot   = document.getElementById('status-dot');
-const statusText  = document.getElementById('status-text');
-const fpsCounter  = document.getElementById('fps-counter');
+const nodeList      = document.getElementById('node-list');
+const nodeTitle     = document.getElementById('node-title');
+const tableWrap     = document.getElementById('table-wrap');
+const placeholder   = document.getElementById('placeholder');
+const filterInput   = document.getElementById('filter-input');
+const alertFilterBtn = document.getElementById('alert-filter-btn');
+const statusDot     = document.getElementById('status-dot');
+const statusText    = document.getElementById('status-text');
+const fpsCounter    = document.getElementById('fps-counter');
+
+let alertRe = null;
+let alertFilterActive = false;
 
 function connect() {
   ws = new WebSocket(WS_URL);
@@ -439,6 +463,13 @@ function handleSchema(msg) {
   tableWrap.innerHTML = '';
   placeholder.style.display = 'none';
   filterInput.style.display = '';
+  alertFilterActive = false;
+  alertFilterBtn.classList.remove('active');
+  // Build alert regex anchored to the active node name
+  const escapedNode = activeNode.toUpperCase().replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  alertRe = new RegExp(`^${escapedNode}_a\\d{3}_`);
+  const hasAlerts = msg.messages.some(m => m.signals.some(s => alertRe.test(s.signal)));
+  alertFilterBtn.style.display = hasAlerts ? '' : 'none';
   msg.messages.forEach(m => {
     msgState.set(m.id, { name: m.name, lastTs: null, cycleTime: m.cycle_time || 0, signals: {} });
     m.signals.forEach(s => {
@@ -489,6 +520,8 @@ function handleFrame(msg) {
       }
     });
   }
+
+  if (alertFilterActive) applyFilter();
 }
 
 function buildMsgSection(m) {
@@ -576,6 +609,12 @@ setInterval(() => {
 
 filterInput.addEventListener('input', applyFilter);
 
+alertFilterBtn.addEventListener('click', () => {
+  alertFilterActive = !alertFilterActive;
+  alertFilterBtn.classList.toggle('active', alertFilterActive);
+  applyFilter();
+});
+
 function makeFilterTerms(raw) {
   // Split on commas, convert each term's * wildcards to a regex
   return raw.split(',').map(t => {
@@ -588,7 +627,8 @@ function makeFilterTerms(raw) {
 
 function applyFilter() {
   const terms = makeFilterTerms(filterInput.value);
-  msgDom.forEach((dom) => {
+  msgDom.forEach((dom, id) => {
+    const state = msgState.get(id);
     let msgVisible = false;
     Object.entries(dom.rows).forEach(([sig, { tr, charGroup }]) => {
       const isStrRow = sig.startsWith('__str__');
@@ -598,7 +638,17 @@ function applyFilter() {
         return;
       }
       const label = (isStrRow ? sig.replace('__str__', '') : sig).toLowerCase();
-      const show = terms.length === 0 || terms.some(re => re.test(label));
+      const matchesText = terms.length === 0 || terms.some(re => re.test(label));
+
+      let matchesAlert = true;
+      if (alertFilterActive && alertRe && alertRe.test(sig) && state) {
+        const sigState = state.signals[sig];
+        matchesAlert = sigState ? (sigState.value === 1 || sigState.value === '1') : false;
+      } else if (alertFilterActive && alertRe && alertRe.test(sig)) {
+        matchesAlert = false;
+      }
+
+      const show = matchesText && matchesAlert;
       tr.style.display = show ? '' : 'none';
       if (show) msgVisible = true;
     });

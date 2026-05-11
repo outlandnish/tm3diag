@@ -3,17 +3,18 @@
 Usage:
     python compact_to_dbc.py [input.json] [output.dbc]
 
-Defaults to data/Model3_ETH.compact.json -> Model3_ETH.dbc
+Defaults to config.ETH_COMPACT -> Model3_ETH.dbc in the project root.
 """
 
 from __future__ import annotations
 
+import argparse
 import sys
 from pathlib import Path
 
+import config as _cfg
 from decode_bin import load_json
 
-_DEFAULT_IN = Path(__file__).parent / "data" / "Model3_ETH.compact.json"
 _DEFAULT_OUT = Path(__file__).parent / "Model3_ETH.dbc"
 
 
@@ -152,6 +153,11 @@ def convert(src: Path, dst: Path) -> None:
 
 
 if __name__ == "__main__":
-    src = Path(sys.argv[1]) if len(sys.argv) > 1 else _DEFAULT_IN
-    dst = Path(sys.argv[2]) if len(sys.argv) > 2 else _DEFAULT_OUT
+    parser = argparse.ArgumentParser(description="Convert compact JSON to DBC")
+    parser.add_argument("input", nargs="?", type=Path, help="Input compact JSON (default: from config)")
+    parser.add_argument("output", nargs="?", type=Path, help="Output DBC file (default: Model3_ETH.dbc)")
+    args = parser.parse_args()
+
+    src = args.input or _cfg.ETH_COMPACT
+    dst = args.output or _DEFAULT_OUT
     convert(src, dst)

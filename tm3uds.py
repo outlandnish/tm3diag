@@ -7,6 +7,8 @@ Usage examples:
   python tm3uds.py --node PCS --channel vcan0 read-did 0xF180
   python tm3uds.py --node PCS --channel vcan0 write-did 0x0102 deadbeef
   python tm3uds.py --node PCS --channel vcan0 routine 0xFF00 01
+  python tm3uds.py --node PCS --channel vcan0 routine FORCE_COPY_ALL_RAM_To_EEPROM
+  python tm3uds.py --node PCS --channel vcan0 io-control DCDC_HV_LV_Bridge_MFG_IO_CONTROL_ADJUST 01
   python tm3uds.py --node CP  --channel vcan0 security-access
   python tm3uds.py --node PCS --channel vcan0 session programming
   python tm3uds.py --node PCS --channel vcan0 reset
@@ -95,20 +97,70 @@ def cmd_write_did(args: argparse.Namespace) -> None:
     print(f"Wrote {len(data)} bytes to {did_name} (0x{did_id:04X}).")
 
 
-def cmd_routine(args: argparse.Namespace) -> None:
-    try:
-        routine_id = int(args.routine_id, 16)
-    except ValueError:
-        print(
-            f"Error: invalid routine_id: {args.routine_id!r}"
-            "  (expect hex e.g. 0xFF00)"
-        )
+def _resolve_routine(cfg, routine_arg: str) -> tuple[int, str]:
+    """Return (routine_id, routine_name) for a routine specified by name or 0xHEX."""
+    if routine_arg.startswith("0x") or routine_arg.startswith("0X"):
+        routine_id = int(routine_arg, 16)
+        for name, entry in cfg.routines.items():
+            if entry.hex_id == routine_id:
+                return routine_id, name
+        return routine_id, f"0x{routine_id:04X}"
+    if routine_arg not in cfg.routines:
+        print(f"Error: routine {routine_arg!r} not found for node {cfg.name}.")
+        print(f"Known routines: {', '.join(sorted(cfg.routines))}")
         sys.exit(1)
+    entry = cfg.routines[routine_arg]
+    return entry.hex_id, routine_arg
+
+
+def cmd_routine(args: argparse.Namespace) -> None:
+    cfg = _load_config(args.node)
+    routine_id, routine_name = _resolve_routine(cfg, args.routine_id)
     arg_bytes = bytes.fromhex(args.arg) if args.arg else b""
     with _make_session(args.node, args.channel, args.interface) as sess:
         result = sess.routine_control(routine_id, arg_bytes)
     result_str = result.hex() if result else "(empty)"
-    print(f"Routine 0x{routine_id:04X} result: {result_str}")
+    print(f"Routine {routine_name} (0x{routine_id:04X}) result: {result_str}")
+
+
+_IOCP_SUFFIX_MAP = {
+    "_RETURN_TO_ECU": 0x00,
+    "_RESET":         0x01,
+    "_FREEZE":        0x02,
+    "_ADJUST":        0x03,
+}
+
+
+def cmd_io_control(args: argparse.Namespace) -> None:
+    cfg = _load_config(args.node)
+    ctrl_arg = args.control
+    if ctrl_arg.startswith("0x") or ctrl_arg.startswith("0X"):
+        ctrl_id = int(ctrl_arg, 16)
+        ctrl_name = next(
+            (n for n, e in cfg.io_controls.items() if e.hex_id == ctrl_id),
+            f"0x{ctrl_id:04X}",
+        )
+        control_param = 0x03  # default to shortTermAdjustment
+    elif ctrl_arg in cfg.io_controls:
+        ctrl_id = cfg.io_controls[ctrl_arg].hex_id
+        ctrl_name = ctrl_arg
+        control_param = next(
+            (v for sfx, v in _IOCP_SUFFIX_MAP.items() if ctrl_arg.endswith(sfx)),
+            0x03,
+        )
+    else:
+        print(f"Error: io_control {ctrl_arg!r} not found for node {cfg.name}.")
+        print(f"Known io_controls: {', '.join(sorted(cfg.io_controls))}")
+        sys.exit(1)
+    try:
+        data = bytes.fromhex(args.data.replace(" ", "")) if args.data else b""
+    except ValueError:
+        print(f"Error: invalid hex data: {args.data!r}")
+        sys.exit(1)
+    with _make_session(args.node, args.channel, args.interface) as sess:
+        result = sess.io_control(ctrl_id, control_param, data)
+    result_str = result.hex() if result else "(empty)"
+    print(f"IO control {ctrl_name} (0x{ctrl_id:04X}) result: {result_str}")
 
 
 def cmd_security_access(args: argparse.Namespace) -> None:
@@ -205,10 +257,20 @@ def build_parser() -> argparse.ArgumentParser:
         "routine", help="Execute a RoutineControl (0x31 01)",
         parents=[parent_node],
     )
-    p_rc.add_argument("routine_id", help="Routine ID in hex (e.g. 0xFF00)")
+    p_rc.add_argument("routine_id", help="Routine name or 0xHEX id")
     p_rc.add_argument(
         "arg", nargs="?", default="", help="Optional argument hex bytes")
     p_rc.set_defaults(func=cmd_routine)
+
+    # io-control
+    p_ioc = sub.add_parser(
+        "io-control", help="InputOutputControlByIdentifier (0x2F)",
+        parents=[parent_node],
+    )
+    p_ioc.add_argument("control", help="IO control name or 0xHEX id")
+    p_ioc.add_argument(
+        "data", nargs="?", default="", help="Optional hex data bytes")
+    p_ioc.set_defaults(func=cmd_io_control)
 
     # security-access
     p_sa = sub.add_parser(

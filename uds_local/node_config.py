@@ -18,6 +18,27 @@ class OdjEntry:
 
 
 @dataclass
+class RoutineEntry:
+    name: str
+    hex_id: int
+    security_level: int
+    has_start: bool
+    has_stop: bool
+    has_results: bool
+    start_input_size: int | None
+    results_output_size: int | None
+
+
+@dataclass
+class IoControlEntry:
+    name: str
+    hex_id: int
+    security_level: int
+    input_size: int
+    output_size: int
+
+
+@dataclass
 class NodeConfig:
     name: str
     request_can_id: int
@@ -26,6 +47,8 @@ class NodeConfig:
     security_buffer_size: int
     security_kw: dict
     dids: dict[str, OdjEntry] = field(default_factory=dict)
+    routines: dict[str, RoutineEntry] = field(default_factory=dict)
+    io_controls: dict[str, IoControlEntry] = field(default_factory=dict)
 
 
 def _parse_odj(odj_path: Path) -> dict[str, OdjEntry]:
@@ -56,6 +79,43 @@ def _parse_odj(odj_path: Path) -> dict[str, OdjEntry]:
             read_size=read_size,
             write_size=write_size,
             security_level=sec_level,
+        )
+    return entries
+
+
+def _parse_routines(odj_path: Path) -> dict[str, RoutineEntry]:
+    raw = _load_json(odj_path)
+    entries: dict[str, RoutineEntry] = {}
+    for name, spec in raw.get("routines", {}).items():
+        hex_id = int(spec.get("hex_id", "0x0"), 16)
+        start = spec.get("start")
+        stop = spec.get("stop")
+        results = spec.get("results")
+        sl = (start or stop or results or {}).get("security_level", 0)
+        entries[name] = RoutineEntry(
+            name=name,
+            hex_id=hex_id,
+            security_level=sl,
+            has_start=start is not None,
+            has_stop=stop is not None,
+            has_results=results is not None,
+            start_input_size=start.get("input_size") if start else None,
+            results_output_size=results.get("output_size") if results else None,
+        )
+    return entries
+
+
+def _parse_io_controls(odj_path: Path) -> dict[str, IoControlEntry]:
+    raw = _load_json(odj_path)
+    entries: dict[str, IoControlEntry] = {}
+    for name, spec in raw.get("io_controls", {}).items():
+        hex_id = int(spec.get("hex_id", "0x0"), 16)
+        entries[name] = IoControlEntry(
+            name=name,
+            hex_id=hex_id,
+            security_level=spec.get("security_level", 0),
+            input_size=spec.get("input_size", 0),
+            output_size=spec.get("output_size", 0),
         )
     return entries
 
@@ -92,12 +152,15 @@ def load_node_config(
     buffer_size = security.get("buffer_size", 16)
     security_kw = security.get("kw", {})
 
-    # Merge DIDs from all odj_sources
     dids: dict[str, OdjEntry] = {}
+    routines: dict[str, RoutineEntry] = {}
+    io_controls: dict[str, IoControlEntry] = {}
     for odj_name in node_cfg.get("odj_sources", []):
         odj_path = odj_dir / odj_name
         if odj_path.exists():
             dids.update(_parse_odj(odj_path))
+            routines.update(_parse_routines(odj_path))
+            io_controls.update(_parse_io_controls(odj_path))
 
     return NodeConfig(
         name=node_name,
@@ -107,6 +170,8 @@ def load_node_config(
         security_buffer_size=buffer_size,
         security_kw=security_kw,
         dids=dids,
+        routines=routines,
+        io_controls=io_controls,
     )
 
 

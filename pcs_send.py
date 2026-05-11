@@ -125,9 +125,6 @@ def _build_hvp_pcs_control(
 
     control: 'SHUTDOWN' | 'SUPPORT' | 'PRECHARGE' | 'DISCHARGE'
     v: DC link voltage request in volts (default: DEFAULTS['hv_voltage'])
-    HVP_dcLinkVoltageFiltered (bits 20-30, signed 11-bit, scale=1V) is
-    populated from the last PCS_dcdcHvBusVolt reading so PCS sees its own
-    reported voltage echoed back.
     """
     ctrl_map = {"SHUTDOWN": 0, "SUPPORT": 1, "PRECHARGE": 2, "DISCHARGE": 3}
     v_volts = v if v is not None else DEFAULTS["hv_voltage"]
@@ -138,13 +135,6 @@ def _build_hvp_pcs_control(
     word |= int(charge_hw) << 18              # bit 18
     word |= int(dcdc_hw) << 19               # bit 19
     _emit_diag(pcs_en=control != "SHUTDOWN", charge_en=charge_hw, dcdc_en=dcdc_hw)
-    # HVP_dcLinkVoltageFiltered: bits 20-30, signed 11-bit, scale=1V
-    # Only populate once PCS has reported its own DC bus voltage
-    pcs_v = signal_cache.get("PCS_dcdcHvBusVolt")
-    if pcs_v is not None:
-        filtered_raw = max(-1024, min(1023, int(round(pcs_v)))
-                           ) & 0x7FF  # two's complement 11-bit
-        word |= filtered_raw << 20
     return list(word.to_bytes(4, "little"))
 
 

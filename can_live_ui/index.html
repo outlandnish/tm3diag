@@ -142,10 +142,17 @@
     flex-shrink: 0;
   }
 
-  .node-title {
-    font-size: 16px;
+  .node-section-header {
+    font-size: 14px;
     font-weight: 700;
-    flex: 1;
+    color: var(--accent);
+    padding: 16px 0 6px;
+    border-bottom: 2px solid var(--accent-dim);
+    margin-bottom: 4px;
+    position: sticky;
+    top: 0;
+    background: var(--bg);
+    z-index: 2;
   }
 
   #status-dot {
@@ -345,9 +352,8 @@
 
   <div class="main">
     <div class="topbar">
-      <div id="node-title" class="node-title">Select a node</div>
-      <input id="filter-input" class="filter-input" type="text" placeholder="Filter signals…" style="display:none">
-      <button id="alert-filter-btn" style="display:none">Active alerts only</button>
+      <input id="filter-input" class="filter-input" type="text" placeholder="Filter signals…">
+      <button id="alert-filter-btn">Active alerts only</button>
       <div id="fps-counter"></div>
       <div id="status-dot"></div>
       <div id="status-text">disconnected</div>
@@ -403,14 +409,13 @@ document.querySelectorAll('.tab-btn').forEach(btn => {
 const WS_URL = `ws://${location.host}/ws`;
 
 let ws = null;
-let activeNode = null;
-const msgState = new Map();
-const msgDom   = new Map();
+const msgState   = new Map();
+const msgDom     = new Map();
+const nodeOffsets = new Map(); // node name → scrollTop within tableWrap
 let frameCount = 0;
 let lastFpsTs  = performance.now();
 
 const nodeList      = document.getElementById('node-list');
-const nodeTitle     = document.getElementById('node-title');
 const tableWrap     = document.getElementById('table-wrap');
 const placeholder   = document.getElementById('placeholder');
 const filterInput   = document.getElementById('filter-input');
@@ -419,7 +424,7 @@ const statusDot     = document.getElementById('status-dot');
 const statusText    = document.getElementById('status-text');
 const fpsCounter    = document.getElementById('fps-counter');
 
-let alertRe = null;
+const ALERT_RE = /_a\d{3}_/;
 let alertFilterActive = false;
 
 function connect() {
@@ -427,7 +432,7 @@ function connect() {
   ws.onopen = () => {
     statusDot.className = 'connected';
     statusText.textContent = 'connected';
-    if (activeNode) subscribe(activeNode);
+    subscribe('');
   };
   ws.onclose = () => {
     statusDot.className = '';
@@ -440,13 +445,12 @@ function connect() {
   };
   ws.onmessage = (ev) => {
     const msg = JSON.parse(ev.data);
-    if      (msg.type === 'db')     handleDb(msg);
-    else if (msg.type === 'schema') handleSchema(msg);
-    else if (msg.type === 'frame')  handleFrame(msg);
+    if      (msg.type === 'db')    handleDb(msg);
+    else if (msg.type === 'frame') handleFrame(msg);
   };
 }
 
-function handleDb(msg) {
+async function handleDb(msg) {
   nodeList.innerHTML = '';
   msg.nodes.forEach(node => {
     const btn = document.createElement('button');
@@ -455,29 +459,43 @@ function handleDb(msg) {
     btn.addEventListener('click', () => selectNode(node));
     nodeList.appendChild(btn);
   });
-}
 
-function handleSchema(msg) {
-  msgState.clear();
-  msgDom.clear();
-  tableWrap.innerHTML = '';
-  placeholder.style.display = 'none';
-  filterInput.style.display = '';
-  alertFilterActive = false;
-  alertFilterBtn.classList.remove('active');
-  // Build alert regex anchored to the active node name
-  const escapedNode = activeNode.toUpperCase().replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  alertRe = new RegExp(`^${escapedNode}_a\\d{3}_`);
-  const hasAlerts = msg.messages.some(m => m.signals.some(s => alertRe.test(s.signal)));
-  alertFilterBtn.style.display = hasAlerts ? '' : 'none';
-  msg.messages.forEach(m => {
-    msgState.set(m.id, { name: m.name, lastTs: null, cycleTime: m.cycle_time || 0, signals: {} });
-    m.signals.forEach(s => {
-      msgState.get(m.id).signals[s.signal] = { value: '—', label: null, units: s.units };
+  try {
+    const res = await fetch('/api/db');
+    const db = await res.json();
+    msgState.clear();
+    msgDom.clear();
+    nodeOffsets.clear();
+    tableWrap.innerHTML = '';
+
+    msg.nodes.forEach(node => {
+      const messages = db[node];
+      if (!messages || messages.length === 0) return;
+
+      const sectionHeader = document.createElement('div');
+      sectionHeader.className = 'node-section-header';
+      sectionHeader.id = `node-${node}`;
+      sectionHeader.textContent = node;
+      tableWrap.appendChild(sectionHeader);
+      nodeOffsets.set(node, sectionHeader.offsetTop);
+
+      messages.forEach(m => {
+        msgState.set(m.id, { name: m.name, lastTs: null, cycleTime: m.cycle_time || 0, signals: {} });
+        m.signals.forEach(s => {
+          msgState.get(m.id).signals[s.name] = { value: '—', label: null, units: s.units };
+        });
+        buildMsgSection(m);
+      });
     });
-    buildMsgSection(m);
-  });
-  applyFilter();
+
+    const hasAlerts = [...msgState.values()].some(s =>
+      Object.keys(s.signals).some(sig => ALERT_RE.test(sig))
+    );
+    alertFilterBtn.style.display = hasAlerts ? '' : 'none';
+    applyFilter();
+  } catch (e) {
+    tableWrap.innerHTML = `<div class="placeholder"><div>Failed to load DB schema</div></div>`;
+  }
 }
 
 function handleFrame(msg) {
@@ -568,18 +586,19 @@ function buildMsgSection(m) {
   });
 
   m.signals.forEach(s => {
+    const sigName = s.name || s.signal;
     const tr = document.createElement('tr');
-    tr.dataset.signal = s.signal;
-    if (hiddenSigs.has(s.signal)) tr.style.display = 'none';
+    tr.dataset.signal = sigName;
+    if (hiddenSigs.has(sigName)) tr.style.display = 'none';
 
-    const nameTd  = document.createElement('td'); nameTd.className  = 'sig-name';  nameTd.textContent  = s.signal;
+    const nameTd  = document.createElement('td'); nameTd.className  = 'sig-name';  nameTd.textContent  = sigName;
     const valueTd = document.createElement('td'); valueTd.className = 'sig-value'; valueTd.textContent = '—';
     const unitsTd = document.createElement('td'); unitsTd.className = 'sig-units'; unitsTd.textContent = s.units || '';
     const labelTd = document.createElement('td'); labelTd.className = 'sig-label';
 
     tr.append(nameTd, valueTd, unitsTd, labelTd);
     table.appendChild(tr);
-    rows[s.signal] = { tr, valueTd, labelTd };
+    rows[sigName] = { tr, valueTd, labelTd };
   });
 
   section.appendChild(table);
@@ -641,10 +660,10 @@ function applyFilter() {
       const matchesText = terms.length === 0 || terms.some(re => re.test(label));
 
       let matchesAlert = true;
-      if (alertFilterActive && alertRe && alertRe.test(sig) && state) {
+      if (alertFilterActive && ALERT_RE.test(sig) && state) {
         const sigState = state.signals[sig];
         matchesAlert = sigState ? (sigState.value === 1 || sigState.value === '1') : false;
-      } else if (alertFilterActive && alertRe && alertRe.test(sig)) {
+      } else if (alertFilterActive && ALERT_RE.test(sig)) {
         matchesAlert = false;
       }
 
@@ -657,13 +676,12 @@ function applyFilter() {
 }
 
 function selectNode(node) {
-  activeNode = node;
   document.querySelectorAll('#node-list .node-btn').forEach(b => {
     b.classList.toggle('active', b.textContent === node);
   });
-  nodeTitle.textContent = node.toUpperCase();
-  filterInput.value = '';
-  if (ws && ws.readyState === WebSocket.OPEN) subscribe(node);
+  const target = document.getElementById(`node-${node}`);
+  const top = nodeOffsets.get(node);
+  if (top !== undefined) tableWrap.scrollTo({ top, behavior: 'smooth' });
 }
 
 function subscribe(node) {
@@ -673,14 +691,14 @@ function subscribe(node) {
 const CHAR_RE = /^(.+)Char(\d+)$/;
 
 function charGroupsForMessage(signals) {
-  // Returns Map<prefix, sorted signal names>
   const groups = new Map();
   signals.forEach(s => {
-    const m = CHAR_RE.exec(s.signal || s);
+    const sigName = s.name || s.signal || s;
+    const m = CHAR_RE.exec(sigName);
     if (!m) return;
     const prefix = m[1];
     if (!groups.has(prefix)) groups.set(prefix, []);
-    groups.get(prefix).push({ name: s.signal || s, idx: parseInt(m[2], 10) });
+    groups.get(prefix).push({ name: sigName, idx: parseInt(m[2], 10) });
   });
   groups.forEach(arr => arr.sort((a, b) => a.idx - b.idx));
   return groups;

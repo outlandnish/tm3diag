@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 from queue import Full
-import sys
+import logging
 import threading
 import time
 from typing import Any, TextIO
+
+_log = logging.getLogger(__name__)
 
 import can
 from uds.addressing import AddressingType
@@ -662,17 +664,19 @@ class UdsSession:
             # (SID + 0x40) or a negative response (7F <our-SID> <NRC>).
             if resp[0] == 0x7F:
                 if len(resp) < 2 or resp[1] != expected_sid:
-                    print(
-                        f"    [stale] discarding NRC frame for SID"
-                        f" 0x{resp[1]:02X} while waiting for 0x{expected_sid:02X}",
-                        file=sys.stderr,
+                    _log.debug(
+                        "[stale] discarding NRC frame for SID 0x%02X"
+                        " while waiting for 0x%02X",
+                        resp[1] if len(resp) >= 2 else 0xFF,
+                        expected_sid,
                     )
                     continue
             elif resp[0] != positive_sid:
-                print(
-                    f"    [stale] discarding positive response 0x{resp[0]:02X}"
-                    f" while waiting for 0x{positive_sid:02X}",
-                    file=sys.stderr,
+                _log.debug(
+                    "[stale] discarding positive response 0x%02X"
+                    " while waiting for 0x%02X",
+                    resp[0],
+                    positive_sid,
                 )
                 continue
             return resp

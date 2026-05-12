@@ -297,19 +297,6 @@
 
   .exp-msg-section { margin-top: 16px; }
 
-  .exp-msg-header {
-    display: flex;
-    align-items: baseline;
-    gap: 8px;
-    padding: 5px 0 4px;
-    border-bottom: 1px solid var(--border);
-    margin-bottom: 2px;
-    position: sticky;
-    top: 0;
-    background: var(--bg);
-    z-index: 1;
-  }
-
   .exp-node-tag {
     margin-left: auto;
     font-size: 10px;
@@ -391,6 +378,18 @@
 </div>
 
 <script>
+const CONFIG = {
+  WS_URL:              `ws://${location.host}/ws`,
+  API_DB:              '/api/db',
+  RECONNECT_MS:        1500,
+  FPS_INTERVAL_MS:     1000,
+  AGE_INTERVAL_MS:     250,
+  FLASH_MS:            300,
+  STALE_MULTIPLIER:    3,
+  ALERT_RE:            /_a\d{3}_/,
+  CHAR_RE:             /^(.+)Char(\d+)$/,
+};
+
 // ===========================================================
 // Tab switching
 // ===========================================================
@@ -406,8 +405,6 @@ document.querySelectorAll('.tab-btn').forEach(btn => {
 // ===========================================================
 // LIVE TAB
 // ===========================================================
-const WS_URL = `ws://${location.host}/ws`;
-
 let ws = null;
 const msgState   = new Map();
 const msgDom     = new Map();
@@ -424,11 +421,10 @@ const statusDot     = document.getElementById('status-dot');
 const statusText    = document.getElementById('status-text');
 const fpsCounter    = document.getElementById('fps-counter');
 
-const ALERT_RE = /_a\d{3}_/;
 let alertFilterActive = false;
 
 function connect() {
-  ws = new WebSocket(WS_URL);
+  ws = new WebSocket(CONFIG.WS_URL);
   ws.onopen = () => {
     statusDot.className = 'connected';
     statusText.textContent = 'connected';
@@ -437,16 +433,20 @@ function connect() {
   ws.onclose = () => {
     statusDot.className = '';
     statusText.textContent = 'reconnecting…';
-    setTimeout(connect, 1500);
+    setTimeout(connect, CONFIG.RECONNECT_MS);
   };
   ws.onerror = () => {
     statusDot.className = 'error';
     statusText.textContent = 'error';
   };
   ws.onmessage = (ev) => {
-    const msg = JSON.parse(ev.data);
-    if      (msg.type === 'db')    handleDb(msg);
-    else if (msg.type === 'frame') handleFrame(msg);
+    try {
+      const msg = JSON.parse(ev.data);
+      if      (msg.type === 'db')    handleDb(msg);
+      else if (msg.type === 'frame') handleFrame(msg);
+    } catch (e) {
+      console.error('Failed to parse WebSocket message:', e);
+    }
   };
 }
 
@@ -461,7 +461,7 @@ async function handleDb(msg) {
   });
 
   try {
-    const res = await fetch('/api/db');
+    const res = await fetch(CONFIG.API_DB);
     const db = await res.json();
     msgState.clear();
     msgDom.clear();
@@ -489,7 +489,7 @@ async function handleDb(msg) {
     });
 
     const hasAlerts = [...msgState.values()].some(s =>
-      Object.keys(s.signals).some(sig => ALERT_RE.test(sig))
+      Object.keys(s.signals).some(sig => CONFIG.ALERT_RE.test(sig))
     );
     alertFilterBtn.style.display = hasAlerts ? '' : 'none';
     applyFilter();
@@ -522,7 +522,7 @@ function handleFrame(msg) {
     }
     row.labelTd.textContent = (s.label && !s.units) ? '' : (s.label || '');
 
-    const m = CHAR_RE.exec(s.signal);
+    const m = CONFIG.CHAR_RE.exec(s.signal);
     if (m) updatedPrefixes.add(m[1]);
   });
 
@@ -613,10 +613,10 @@ setInterval(() => {
     if (!state || state.lastTs === null) return;
     const age = now - state.lastTs;
     dom.ageEl.textContent = age < 10 ? `${age.toFixed(1)}s` : `${age.toFixed(0)}s`;
-    const staleThreshold = state.cycleTime ? (state.cycleTime * 3) / 1000 : 1.0;
+    const staleThreshold = state.cycleTime ? (state.cycleTime * CONFIG.STALE_MULTIPLIER) / 1000 : 1.0;
     dom.ageEl.className = 'msg-age' + (age > staleThreshold ? ' stale' : '');
   });
-}, 250);
+}, CONFIG.AGE_INTERVAL_MS);
 
 setInterval(() => {
   const now = performance.now();
@@ -624,7 +624,7 @@ setInterval(() => {
   fpsCounter.textContent = `${(frameCount / elapsed).toFixed(0)} fps`;
   frameCount = 0;
   lastFpsTs  = now;
-}, 1000);
+}, CONFIG.FPS_INTERVAL_MS);
 
 filterInput.addEventListener('input', applyFilter);
 
@@ -634,14 +634,17 @@ alertFilterBtn.addEventListener('click', () => {
   applyFilter();
 });
 
+let _filterTermCache = { raw: null, terms: [] };
+
 function makeFilterTerms(raw) {
-  // Split on commas, convert each term's * wildcards to a regex
-  return raw.split(',').map(t => {
+  if (raw === _filterTermCache.raw) return _filterTermCache.terms;
+  const terms = raw.split(',').map(t => {
     const s = t.trim().toLowerCase();
     if (!s) return null;
-    const re = new RegExp(s.split('*').map(p => p.replace(/[.+?^${}()|[\]\\]/g, '\\$&')).join('.*'));
-    return re;
+    return new RegExp(s.split('*').map(p => p.replace(/[.+?^${}()|[\]\\]/g, '\\$&')).join('.*'));
   }).filter(Boolean);
+  _filterTermCache = { raw, terms };
+  return terms;
 }
 
 function applyFilter() {
@@ -649,9 +652,9 @@ function applyFilter() {
   msgDom.forEach((dom, id) => {
     const state = msgState.get(id);
     let msgVisible = false;
-    Object.entries(dom.rows).forEach(([sig, { tr, charGroup }]) => {
+    Object.entries(dom.rows).forEach(([sig, { tr }]) => {
       const isStrRow = sig.startsWith('__str__');
-      const isCharRow = CHAR_RE.test(sig);
+      const isCharRow = CONFIG.CHAR_RE.test(sig);
       if (isCharRow) {
         tr.style.display = 'none';
         return;
@@ -660,10 +663,10 @@ function applyFilter() {
       const matchesText = terms.length === 0 || terms.some(re => re.test(label));
 
       let matchesAlert = true;
-      if (alertFilterActive && ALERT_RE.test(sig) && state) {
+      if (alertFilterActive && CONFIG.ALERT_RE.test(sig) && state) {
         const sigState = state.signals[sig];
         matchesAlert = sigState ? (sigState.value === 1 || sigState.value === '1') : false;
-      } else if (alertFilterActive && ALERT_RE.test(sig)) {
+      } else if (alertFilterActive && CONFIG.ALERT_RE.test(sig)) {
         matchesAlert = false;
       }
 
@@ -688,13 +691,11 @@ function subscribe(node) {
   ws.send(JSON.stringify({ type: 'subscribe', node }));
 }
 
-const CHAR_RE = /^(.+)Char(\d+)$/;
-
 function charGroupsForMessage(signals) {
   const groups = new Map();
   signals.forEach(s => {
     const sigName = s.name || s.signal || s;
-    const m = CHAR_RE.exec(sigName);
+    const m = CONFIG.CHAR_RE.exec(sigName);
     if (!m) return;
     const prefix = m[1];
     if (!groups.has(prefix)) groups.set(prefix, []);
@@ -715,7 +716,7 @@ function assembleString(prefix, signals, state) {
   return chars.join('') || '—';
 }
 
-function formatValue(v) {
+function formatValue(v, _units) {
   if (typeof v === 'number') {
     return Number.isInteger(v) ? String(v) : v.toFixed(4).replace(/\.?0+$/, '');
   }
@@ -726,7 +727,7 @@ function flashCell(td) {
   td.classList.remove('flash');
   void td.offsetWidth;
   td.classList.add('flash');
-  setTimeout(() => td.classList.remove('flash'), 300);
+  setTimeout(() => td.classList.remove('flash'), CONFIG.FLASH_MS);
 }
 
 connect();
@@ -746,7 +747,7 @@ const expCount    = document.getElementById('exp-count');
 async function loadExplorer() {
   expLoaded = true;
   try {
-    const res = await fetch('/api/db');
+    const res = await fetch(CONFIG.API_DB);
     expDb = await res.json();
     buildExpNodeList();
     renderExp();
@@ -810,7 +811,7 @@ function renderExp() {
       section.className = 'exp-msg-section';
 
       const header = document.createElement('div');
-      header.className = 'exp-msg-header';
+      header.className = 'msg-header';
 
       const nameEl = document.createElement('span');
       nameEl.className = 'msg-name';

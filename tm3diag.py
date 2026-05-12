@@ -8,11 +8,17 @@ Usage:
 """
 
 from __future__ import annotations
+
+import logging
+
 from uds_local.client import (
     _SESSION_DEFAULT, _SESSION_PROGRAMMING, _SESSION_EXTENDED, _SESSION_SAFETY,
 )
+from uds_local.resolve import IOCP_SUFFIX_MAP as _IOCP_SUFFIX_MAP
 from decode_bin import load_json as _load_json
 import config as _cfg
+
+_log = logging.getLogger(__name__)
 
 import json
 import readline
@@ -87,6 +93,7 @@ def _load_odj_fields(odj_path: Path) -> dict[str, Any]:
     try:
         return _load_json(odj_path).get("data", {})
     except Exception:
+        _log.warning("Failed to load ODJ fields from %s", odj_path)
         return {}
 
 
@@ -94,6 +101,7 @@ def _load_odj_routines(odj_path: Path) -> dict[str, Any]:
     try:
         return _load_json(odj_path).get("routines", {})
     except Exception:
+        _log.warning("Failed to load ODJ routines from %s", odj_path)
         return {}
 
 
@@ -101,6 +109,7 @@ def _load_odj_io_controls(odj_path: Path) -> dict[str, Any]:
     try:
         return _load_json(odj_path).get("io_controls", {})
     except Exception:
+        _log.warning("Failed to load ODJ io_controls from %s", odj_path)
         return {}
 
 
@@ -503,14 +512,6 @@ def _routine_menu(sess, cfg, odj_routines: dict[str, Any]) -> None:
             print(f"  Result: {result.hex() if result else '(empty)'}")
         except UdsError as e:
             print(f"  Error: {e}")
-
-
-_IOCP_SUFFIX_MAP = {
-    "_RETURN_TO_ECU": (0x00, "returnToECU"),
-    "_RESET":         (0x01, "resetToDefault"),
-    "_FREEZE":        (0x02, "freezeCurrentState"),
-    "_ADJUST":        (0x03, "shortTermAdjustment"),
-}
 
 
 def _io_control_menu(sess, cfg, odj_io_controls: dict[str, Any]) -> None:

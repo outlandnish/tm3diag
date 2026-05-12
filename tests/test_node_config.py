@@ -1,13 +1,12 @@
 """Tests for uds/node_config.py."""
 
 import pytest
-from pathlib import Path
 from uds_local.node_config import OdjEntry, NodeConfig, load_node_config, load_all_nodes
+import config as _cfg
 
-_DATA = Path(__file__).parent.parent / "data"
-_NODES_JSON = _DATA / "nodes.json"
-_ETH_COMPACT = _DATA / "Model3_ETH.compact.json"
-_ODJ_DIR = _DATA / "odj"
+_NODES_JSON  = _cfg.NODES_JSON
+_ETH_COMPACT = _cfg.ETH_COMPACT
+_ODJ_DIR     = _cfg.ODJ_DIR
 
 
 class TestLoadNodeConfig:

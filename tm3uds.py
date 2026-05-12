@@ -23,6 +23,7 @@ import config as _cfg
 from uds_local.client import (
     _SESSION_DEFAULT, _SESSION_PROGRAMMING, _SESSION_EXTENDED, _SESSION_SAFETY,
 )
+from uds_local.resolve import resolve_did, resolve_routine, resolve_io_control
 
 _NODES_JSON  = _cfg.NODES_JSON
 _ETH_COMPACT = _cfg.ETH_COMPACT
@@ -40,24 +41,6 @@ def _make_session(node_name: str, channel: str, interface: str):
     return UdsSession(cfg, channel, interface=interface)
 
 
-def _resolve_did(cfg, did_arg: str) -> tuple[int, str]:
-    """Return (did_id, did_name) for a DID specified by name or 0xHEX."""
-    if did_arg.startswith("0x") or did_arg.startswith("0X"):
-        did_id = int(did_arg, 16)
-        # Try to find a name from the node's ODJ entries
-        for name, entry in cfg.dids.items():
-            if entry.hex_id == did_id:
-                return did_id, name
-        return did_id, f"0x{did_id:04X}"
-    # Lookup by name
-    if did_arg not in cfg.dids:
-        print(f"Error: DID {did_arg!r} not found for node {cfg.name}.")
-        print(f"Known DIDs: {', '.join(sorted(cfg.dids))}")
-        sys.exit(1)
-    entry = cfg.dids[did_arg]
-    return entry.hex_id, did_arg
-
-
 def cmd_scan(args: argparse.Namespace) -> None:
     from uds_local.scanner import scan_network, print_scan_table
     print(f"Scanning {args.channel} ({args.interface})...")
@@ -73,7 +56,7 @@ def cmd_scan(args: argparse.Namespace) -> None:
 
 def cmd_read_did(args: argparse.Namespace) -> None:
     cfg = _load_config(args.node)
-    did_id, did_name = _resolve_did(cfg, args.did)
+    did_id, did_name = resolve_did(cfg, args.did)
     with _make_session(args.node, args.channel, args.interface) as sess:
         data = sess.read_did(did_id)
     print(f"{did_name} (0x{did_id:04X}): {data.hex()}")
@@ -86,7 +69,7 @@ def cmd_read_did(args: argparse.Namespace) -> None:
 
 def cmd_write_did(args: argparse.Namespace) -> None:
     cfg = _load_config(args.node)
-    did_id, did_name = _resolve_did(cfg, args.did)
+    did_id, did_name = resolve_did(cfg, args.did)
     try:
         data = bytes.fromhex(args.data.replace(" ", ""))
     except ValueError:
@@ -97,25 +80,9 @@ def cmd_write_did(args: argparse.Namespace) -> None:
     print(f"Wrote {len(data)} bytes to {did_name} (0x{did_id:04X}).")
 
 
-def _resolve_routine(cfg, routine_arg: str) -> tuple[int, str]:
-    """Return (routine_id, routine_name) for a routine specified by name or 0xHEX."""
-    if routine_arg.startswith("0x") or routine_arg.startswith("0X"):
-        routine_id = int(routine_arg, 16)
-        for name, entry in cfg.routines.items():
-            if entry.hex_id == routine_id:
-                return routine_id, name
-        return routine_id, f"0x{routine_id:04X}"
-    if routine_arg not in cfg.routines:
-        print(f"Error: routine {routine_arg!r} not found for node {cfg.name}.")
-        print(f"Known routines: {', '.join(sorted(cfg.routines))}")
-        sys.exit(1)
-    entry = cfg.routines[routine_arg]
-    return entry.hex_id, routine_arg
-
-
 def cmd_routine(args: argparse.Namespace) -> None:
     cfg = _load_config(args.node)
-    routine_id, routine_name = _resolve_routine(cfg, args.routine_id)
+    routine_id, routine_name = resolve_routine(cfg, args.routine_id)
     arg_bytes = bytes.fromhex(args.arg) if args.arg else b""
     with _make_session(args.node, args.channel, args.interface) as sess:
         result = sess.routine_control(routine_id, arg_bytes)
@@ -123,35 +90,9 @@ def cmd_routine(args: argparse.Namespace) -> None:
     print(f"Routine {routine_name} (0x{routine_id:04X}) result: {result_str}")
 
 
-_IOCP_SUFFIX_MAP = {
-    "_RETURN_TO_ECU": 0x00,
-    "_RESET":         0x01,
-    "_FREEZE":        0x02,
-    "_ADJUST":        0x03,
-}
-
-
 def cmd_io_control(args: argparse.Namespace) -> None:
     cfg = _load_config(args.node)
-    ctrl_arg = args.control
-    if ctrl_arg.startswith("0x") or ctrl_arg.startswith("0X"):
-        ctrl_id = int(ctrl_arg, 16)
-        ctrl_name = next(
-            (n for n, e in cfg.io_controls.items() if e.hex_id == ctrl_id),
-            f"0x{ctrl_id:04X}",
-        )
-        control_param = 0x03  # default to shortTermAdjustment
-    elif ctrl_arg in cfg.io_controls:
-        ctrl_id = cfg.io_controls[ctrl_arg].hex_id
-        ctrl_name = ctrl_arg
-        control_param = next(
-            (v for sfx, v in _IOCP_SUFFIX_MAP.items() if ctrl_arg.endswith(sfx)),
-            0x03,
-        )
-    else:
-        print(f"Error: io_control {ctrl_arg!r} not found for node {cfg.name}.")
-        print(f"Known io_controls: {', '.join(sorted(cfg.io_controls))}")
-        sys.exit(1)
+    ctrl_id, ctrl_name, control_param = resolve_io_control(cfg, args.control)
     try:
         data = bytes.fromhex(args.data.replace(" ", "")) if args.data else b""
     except ValueError:

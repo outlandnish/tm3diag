@@ -71,7 +71,7 @@ def find_dual_cpu_pair(selected: list) -> tuple[object, object] | None:
 
 
 def run_pcs_dual_cpu(
-    sess: "UdsSession",
+    sess: UdsSession,
     primary_bhx: object,
     primary_entry: object,
     secondary_bhx: object,
@@ -100,7 +100,7 @@ def run_pcs_dual_cpu(
     primary_module_byte = get_script(primary_entry.component.lower())[1]
     secondary_module_byte = get_script(secondary_entry.component.lower())[1]
 
-    print(f"  Dual-CPU sequence (prog 1, single auth session):")
+    print("  Dual-CPU sequence (prog 1, single auth session):")
     print(f"    primary   ({primary_entry.dest_name}, ecu_type={primary_entry.component})"
           f"  → moduleToProgram(0x{primary_module_byte:02X})")
     print(f"    secondary ({secondary_entry.dest_name}, ecu_type={secondary_entry.component})"

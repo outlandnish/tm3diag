@@ -1,8 +1,9 @@
 """Tests for uds/node_config.py."""
 
 import pytest
-from uds_local.node_config import OdjEntry, NodeConfig, load_node_config, load_all_nodes
+
 import config as _cfg
+from uds_local.node_config import NodeConfig, OdjEntry, load_all_nodes, load_node_config
 
 _NODES_JSON  = _cfg.NODES_JSON
 _ETH_COMPACT = _cfg.ETH_COMPACT

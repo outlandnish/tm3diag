@@ -7,11 +7,13 @@ for the decoded VM bytecode that each FlashScript mirrors.
 
 from ._context import FlashScript
 from ._steps import (
+    step_board_info,
     step_check_flash_count_0,
     step_check_flash_count_1,
     step_check_flash_count_2,
     step_check_rev,
     step_clear_dtc,
+    step_ecu_reset,
     step_erase,
     step_hard_reset_with_retries,
     step_module_to_program,
@@ -22,16 +24,13 @@ from ._steps import (
     step_sleep_500ms,
     step_sleep_1000ms,
     step_sleep_5000ms,
-    step_ecu_reset,
     step_transfer_loop,
     step_vcright_ota_prep,
     step_vendor_preflight,
     step_verify_comp_fw,
     step_verify_crc,
     step_wait_for_bootloader,
-    step_board_info,
 )
-
 
 # 0x00650fa0 — gtw3: stub only, no flash sequence
 SCRIPT_GTW3 = FlashScript(steps=[])

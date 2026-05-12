@@ -1,6 +1,7 @@
 """Tests for uds/security.py — all algorithm implementations."""
 
 import pytest
+
 from uds_local.security import (
     baolong_hash,
     bitron_hash,

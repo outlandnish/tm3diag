@@ -271,10 +271,10 @@ def _cmd_create(addr_bin_pairs: list[str], out_path: Path) -> None:
     bhx = from_binary_segments(segments)
     build_file(bhx, out_path)
     print(
-        (
+
             f"Wrote {out_path}  "
             f"({out_path.stat().st_size} bytes, {len(segments)} segment(s))"
-        )
+
     )
 
 

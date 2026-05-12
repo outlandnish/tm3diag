@@ -21,9 +21,12 @@ import sys
 
 import config as _cfg
 from uds_local.client import (
-    _SESSION_DEFAULT, _SESSION_PROGRAMMING, _SESSION_EXTENDED, _SESSION_SAFETY,
+    _SESSION_DEFAULT,
+    _SESSION_EXTENDED,
+    _SESSION_PROGRAMMING,
+    _SESSION_SAFETY,
 )
-from uds_local.resolve import resolve_did, resolve_routine, resolve_io_control
+from uds_local.resolve import resolve_did, resolve_io_control, resolve_routine
 
 _NODES_JSON  = _cfg.NODES_JSON
 _ETH_COMPACT = _cfg.ETH_COMPACT
@@ -42,7 +45,7 @@ def _make_session(node_name: str, channel: str, interface: str):
 
 
 def cmd_scan(args: argparse.Namespace) -> None:
-    from uds_local.scanner import scan_network, print_scan_table
+    from uds_local.scanner import print_scan_table, scan_network
     print(f"Scanning {args.channel} ({args.interface})...")
     results = scan_network(
         args.channel, _NODES_JSON, _ETH_COMPACT,

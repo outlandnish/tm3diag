@@ -29,7 +29,6 @@ from ._scripts import (
     SCRIPT_TPMS,
     SCRIPT_VCFRONT,
     SCRIPT_VCLEFT,
-    SCRIPT_VCLEFTRAMAPP,
     SCRIPT_VCRIGHT,
 )
 

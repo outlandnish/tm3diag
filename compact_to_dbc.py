@@ -9,7 +9,6 @@ Defaults to config.ETH_COMPACT -> Model3_ETH.dbc in the project root.
 from __future__ import annotations
 
 import argparse
-import sys
 from pathlib import Path
 
 import config as _cfg

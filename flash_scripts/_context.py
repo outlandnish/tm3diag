@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Callable
+from typing import TYPE_CHECKING
 
 from ._display import StatusDisplay
 
@@ -54,7 +55,7 @@ class FlashScript:
 
     def run(
         self,
-        sess: "UdsSession",
+        sess: UdsSession,
         bhx_file: object,
         entry: object,
         channel: str | None = None,

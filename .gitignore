@@ -10,3 +10,4 @@ seed_artifacts_v2/
 .tm3diag_cache
 .env
 Model3_ETH.dbc
+.vscode/

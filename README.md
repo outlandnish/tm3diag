@@ -43,5 +43,3 @@ Requires Python 3.10+, `python-can`, `python-dotenv`, `aiohttp`, and a SocketCAN
 ```
 pytest tests/ -v
 ```
-
-Tests require the `seed_artifacts_v2` firmware artifact directory. Tests that depend on it are automatically skipped when the path is absent.

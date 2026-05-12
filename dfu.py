@@ -86,7 +86,7 @@ def phase2_firmware_selection(
     display: StatusDisplay,
 ) -> list:
     """Load metadata and return selected FirmwareEntry list."""
-    from uds_local.metadata import load_metadata, find_firmware
+    from uds_local.metadata import find_firmware, load_metadata
 
     display.set_header("[2/4] Firmware Selection")
     display.set_detail("Loading metadata...")
@@ -211,7 +211,7 @@ def _prompt_dual_cpu_choice(selected: list, display: StatusDisplay) -> list:
     labels = [
         f"Primary only   ({primary.dest_name}, ecu_type={primary.component})",
         f"Secondary only ({secondary.dest_name}, ecu_type={secondary.component})",
-        f"Both           — prog 1, single authenticated session",
+        "Both           — prog 1, single authenticated session",
     ]
     choice = prompt_select("Flash which CPU(s)?", labels, default=2, display=display)
     keep_primary   = choice in (0, 2)
@@ -251,7 +251,6 @@ def phase3_preflight(
 
     display.set_header("[3/4] Pre-flight")
 
-    all_ok = True
     for entry in selected:
         src = artifacts_dir / entry.src_path
         if src.suffix.lower() != ".bhx":
@@ -283,7 +282,6 @@ def phase3_preflight(
                 )
 
             if mismatches:
-                all_ok = False
                 display.finalize()
                 for m in mismatches:
                     print(f"  MISMATCH: {m}")
@@ -356,7 +354,7 @@ def phase4_dry_run(artifacts_dir: Path, selected: list, display: StatusDisplay) 
         print(f"    security_level: {script.security_level}")
         print(f"    erase_timeout:  {script.erase_timeout}s")
         print(f"    steps:          {' → '.join(step_names)}")
-        print(f"    segments:")
+        print("    segments:")
         for i, seg in enumerate(bhx_file.segments):
             print(
                 f"      [{i}] addr=0x{seg.start_address:08X}"

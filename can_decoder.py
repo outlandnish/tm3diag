@@ -53,9 +53,8 @@ def _apply_scale(raw: int, sig: dict[str, Any]) -> float:
     signedness = sig.get("signedness", "UNSIGNED")
     width = sig.get("width", 1)
 
-    if signedness == "SIGNED":
-        if raw >= (1 << (width - 1)):
-            raw -= 1 << width
+    if signedness == "SIGNED" and raw >= (1 << (width - 1)):
+        raw -= 1 << width
 
     return raw * scale + offset
 
@@ -118,7 +117,7 @@ class CanDatabase:
             self._by_node.setdefault(node, []).append(mid)
 
     @classmethod
-    def from_dbc(cls, path: Path) -> "CanDatabase":
+    def from_dbc(cls, path: Path) -> CanDatabase:
         import cantools
         ct_db = cantools.database.load_file(str(path))
 

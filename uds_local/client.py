@@ -2,17 +2,15 @@
 
 from __future__ import annotations
 
-from queue import Full
+import contextlib
 import logging
 import threading
 import time
-from typing import Any, TextIO
-
-_log = logging.getLogger(__name__)
+from typing import Any
 
 import can
 from uds.addressing import AddressingType
-from uds.can.addressing import NormalCanAddressingInformation, CanAddressingFormat
+from uds.can.addressing import CanAddressingFormat, NormalCanAddressingInformation
 from uds.can.packet import CanPacket, CanPacketType
 from uds.can.transport_interface import PyCanTransportInterface
 from uds.message import UdsMessage
@@ -20,6 +18,8 @@ from uds.message import UdsMessage
 from .broadcast_config import broadcast_for
 from .node_config import NodeConfig
 from .security import compute_key
+
+_log = logging.getLogger(__name__)
 
 _SESSION_DEFAULT = 0x01
 _SESSION_PROGRAMMING = 0x02
@@ -536,7 +536,7 @@ class UdsSession:
             try:
                 self._send_tp_no_wait()
                 keepalive_count += 1
-            except Exception:
+            except Exception as exc:
                 bus_errors += 1
                 if bus_errors >= 5:
                     # The binary aborts on the first send error; we tolerate
@@ -546,29 +546,29 @@ class UdsSession:
                     raise RuntimeError(
                         f"Phase 1: {bus_errors} consecutive bus send errors — "
                         "bus is probably down; abandoning bootloader handover"
-                    )
+                    ) from exc
             # Early exit on broadcast counter advance (mirrors the binary)
             if watcher is not None and watcher.count != baseline:
                 early_exit_ms = (time.monotonic() - phase1_start) * 1000
                 break
             time.sleep(keepalive_interval_s)
         if early_exit_ms is not None:
-            phase1_summary = (
-                f"    Phase 1: broadcast 0x{watcher.can_id:03X} advanced after"
-                f" {early_exit_ms:.0f} ms ({keepalive_count} keep-alive 3E 80"
-                " frames sent before exit)"
+            _log.debug(
+                "Phase 1: broadcast 0x%03X advanced after %.0f ms"
+                " (%d keep-alive 3E 80 frames sent before exit)",
+                watcher.can_id, early_exit_ms, keepalive_count,
             )
         elif baseline is not None:
-            phase1_summary = (
-                f"    Phase 1: {keepalive_count} keep-alive 3E 80 frames sent"
-                f" over {keepalive_phase_s:.2f}s — broadcast 0x{watcher.can_id:03X}"
-                " never advanced (target may not have rebooted)"
+            _log.debug(
+                "Phase 1: %d keep-alive 3E 80 frames sent over %.2fs"
+                " — broadcast 0x%03X never advanced (target may not have rebooted)",
+                keepalive_count, keepalive_phase_s, watcher.can_id,
             )
         else:
-            phase1_summary = (
-                f"    Phase 1: {keepalive_count} keep-alive 3E 80 frames sent"
-                f" over {keepalive_phase_s:.2f}s"
-                " — no broadcast tracker for this node, fixed wait"
+            _log.debug(
+                "Phase 1: %d keep-alive 3E 80 frames sent over %.2fs"
+                " — no broadcast tracker for this node, fixed wait",
+                keepalive_count, keepalive_phase_s,
             )
         # Inter-phase sleep
         time.sleep(0.010)
@@ -576,7 +576,7 @@ class UdsSession:
         # Phase 2: 14 fast 3E 00 probes (P2 = 40 ms) back-to-back.
         nrc_count = 0
         first_nrc: int | None = None
-        for attempt in range(1, confirm_max_attempts + 1):
+        for _attempt in range(1, confirm_max_attempts + 1):
             resp = self._send_raw([_SID_TP, 0x00], timeout_ms=confirm_p2_ms)
             if resp and resp[0] == 0x7E:
                 return
@@ -698,16 +698,12 @@ class UdsSession:
     # Context manager
     # ------------------------------------------------------------------
 
-    def __enter__(self) -> "UdsSession":
+    def __enter__(self) -> UdsSession:
         return self
 
     def __exit__(self, *_: Any) -> None:
         self.stop_tester_present()
-        try:
+        with contextlib.suppress(Exception):
             self._frame_notifier.stop()
-        except Exception:
-            pass
-        try:
+        with contextlib.suppress(Exception):
             self._bus.shutdown()
-        except Exception:
-            pass

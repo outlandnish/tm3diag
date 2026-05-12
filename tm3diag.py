@@ -9,22 +9,24 @@ Usage:
 
 from __future__ import annotations
 
-import logging
-
-from uds_local.client import (
-    _SESSION_DEFAULT, _SESSION_PROGRAMMING, _SESSION_EXTENDED, _SESSION_SAFETY,
-)
-from uds_local.resolve import IOCP_SUFFIX_MAP as _IOCP_SUFFIX_MAP
-from decode_bin import load_json as _load_json
-import config as _cfg
-
-_log = logging.getLogger(__name__)
-
 import json
+import logging
 import readline
 import warnings
 from pathlib import Path
 from typing import Any
+
+import config as _cfg
+from decode_bin import load_json as _load_json
+from uds_local.client import (
+    _SESSION_DEFAULT,
+    _SESSION_EXTENDED,
+    _SESSION_PROGRAMMING,
+    _SESSION_SAFETY,
+)
+from uds_local.resolve import IOCP_SUFFIX_MAP as _IOCP_SUFFIX_MAP
+
+_log = logging.getLogger(__name__)
 
 warnings.filterwarnings("ignore", category=RuntimeWarning,
                         module=r"uds\.packet\.abstract_packet")
@@ -161,7 +163,7 @@ def _print_did_response(name: str, did_id: int, data: bytes, fields: dict[str, A
 
 def _pre_connection_menu(nodes: dict, channel: str, interface: str) -> str | None:
     """Top-level menu shown before connecting. Returns a node name or None to quit."""
-    from uds_local.scanner import scan_network, print_scan_table
+    from uds_local.scanner import print_scan_table, scan_network
 
     node_names = sorted(nodes.keys())
     _setup_completion(["scan", "connect", "quit"] + node_names)
@@ -623,9 +625,9 @@ def _io_control_menu(sess, cfg, odj_io_controls: dict[str, Any]) -> None:
 # ---------------------------------------------------------------------------
 
 def _dfu_menu(sess, cfg, artifacts_dir: Path | None, force: bool | None = None) -> None:
-    from uds_local.client import UdsError
     from dfu import run_flash
     from flash_scripts._display import StatusDisplay
+    from uds_local.client import UdsError
 
     _hdr(f"Firmware update (DFU) — {cfg.name}")
 
@@ -766,8 +768,9 @@ def _reset_cmd(sess) -> None:
 
 def main() -> int:
     import argparse
-    from uds_local.node_config import load_node_config
+
     from uds_local.client import UdsSession
+    from uds_local.node_config import load_node_config
 
     parser = argparse.ArgumentParser(
         description="Interactive Tesla Model 3 ECU diagnostic terminal")

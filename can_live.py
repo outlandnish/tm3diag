@@ -11,10 +11,9 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import contextlib
 import json
 import logging
-
-import config as _cfg
 import threading
 import webbrowser
 from pathlib import Path
@@ -22,6 +21,7 @@ from pathlib import Path
 import can
 from aiohttp import web
 
+import config as _cfg
 from can_decoder import CanDatabase
 
 _STATIC_DIR = Path(__file__).parent / "can_live_ui"
@@ -147,10 +147,8 @@ async def _start_reader(app: web.Application) -> None:
 async def _stop_reader(app: web.Application) -> None:
     task: asyncio.Task = app["reader_task"]
     task.cancel()
-    try:
+    with contextlib.suppress(asyncio.CancelledError):
         await task
-    except asyncio.CancelledError:
-        pass
     app["bus"].shutdown()
 
 
@@ -232,7 +230,7 @@ def main() -> None:
     app = _build_app(bus)
 
     url = f"http://localhost:{args.port}"
-    in_wsl = "microsoft" in open("/proc/version").read().lower() if Path("/proc/version").exists() else False
+    in_wsl = Path("/proc/version").exists() and "microsoft" in Path("/proc/version").read_text().lower()
     if not args.no_browser and not in_wsl:
         def _open_browser() -> None:
             if not webbrowser.open(url):

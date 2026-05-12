@@ -1,4 +1,5 @@
 cryptography>=41.0.0
+ruff>=0.4.0
 python-can>=4.0.0
 py-uds>=4.0.0
 intelhex>=2.3.0

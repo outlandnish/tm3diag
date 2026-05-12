@@ -408,7 +408,6 @@ document.querySelectorAll('.tab-btn').forEach(btn => {
 let ws = null;
 const msgState   = new Map();
 const msgDom     = new Map();
-const nodeOffsets = new Map(); // node name → scrollTop within tableWrap
 let frameCount = 0;
 let lastFpsTs  = performance.now();
 
@@ -465,7 +464,6 @@ async function handleDb(msg) {
     const db = await res.json();
     msgState.clear();
     msgDom.clear();
-    nodeOffsets.clear();
     tableWrap.innerHTML = '';
 
     msg.nodes.forEach(node => {
@@ -477,7 +475,6 @@ async function handleDb(msg) {
       sectionHeader.id = `node-${node}`;
       sectionHeader.textContent = node;
       tableWrap.appendChild(sectionHeader);
-      nodeOffsets.set(node, sectionHeader.offsetTop);
 
       messages.forEach(m => {
         msgState.set(m.id, { name: m.name, lastTs: null, cycleTime: m.cycle_time || 0, signals: {} });
@@ -683,8 +680,11 @@ function selectNode(node) {
     b.classList.toggle('active', b.textContent === node);
   });
   const target = document.getElementById(`node-${node}`);
-  const top = nodeOffsets.get(node);
-  if (top !== undefined) tableWrap.scrollTo({ top, behavior: 'smooth' });
+  if (target) {
+    const next = target.nextElementSibling;
+    const top = (next ? next.offsetTop : target.offsetTop) - tableWrap.offsetTop - target.getBoundingClientRect().height;
+    tableWrap.scrollTo({ top, behavior: 'smooth' });
+  }
 }
 
 function subscribe(node) {

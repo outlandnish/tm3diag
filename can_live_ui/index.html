@@ -125,6 +125,26 @@
     font-weight: 600;
   }
 
+  .msg-list { display: none; }
+  .msg-list.open { display: block; }
+
+  .msg-btn {
+    display: block;
+    width: 100%;
+    text-align: left;
+    padding: 4px 14px 4px 22px;
+    background: none;
+    border: none;
+    border-left: 3px solid transparent;
+    color: var(--text-dim);
+    cursor: pointer;
+    font: inherit;
+    font-size: 11px;
+    transition: background .1s, color .1s;
+  }
+  .msg-btn:hover { background: rgba(255,255,255,.04); color: var(--text); }
+  .msg-btn .msg-btn-id { color: var(--text-dim); font-size: 10px; margin-left: 4px; }
+
   /* ---- main area ---- */
   .main {
     flex: 1;
@@ -452,11 +472,20 @@ function connect() {
 async function handleDb(msg) {
   nodeList.innerHTML = '';
   msg.nodes.forEach(node => {
+    const item = document.createElement('div');
+
     const btn = document.createElement('button');
     btn.className = 'node-btn';
     btn.textContent = node;
     btn.addEventListener('click', () => selectNode(node));
-    nodeList.appendChild(btn);
+
+    const msgList = document.createElement('div');
+    msgList.className = 'msg-list';
+    msgList.dataset.node = node;
+
+    item.appendChild(btn);
+    item.appendChild(msgList);
+    nodeList.appendChild(item);
   });
 
   try {
@@ -476,12 +505,21 @@ async function handleDb(msg) {
       sectionHeader.textContent = node;
       tableWrap.appendChild(sectionHeader);
 
+      const msgList = nodeList.querySelector(`.msg-list[data-node="${node}"]`);
       messages.forEach(m => {
         msgState.set(m.id, { name: m.name, lastTs: null, cycleTime: m.cycle_time || 0, signals: {} });
         m.signals.forEach(s => {
           msgState.get(m.id).signals[s.name] = { value: '—', label: null, units: s.units };
         });
         buildMsgSection(m);
+
+        if (msgList) {
+          const mb = document.createElement('button');
+          mb.className = 'msg-btn';
+          mb.innerHTML = `${m.name}<span class="msg-btn-id">0x${m.id.toString(16).toUpperCase().padStart(3,'0')}</span>`;
+          mb.addEventListener('click', () => scrollToMsg(m.id));
+          msgList.appendChild(mb);
+        }
       });
     });
 
@@ -679,12 +717,26 @@ function selectNode(node) {
   document.querySelectorAll('#node-list .node-btn').forEach(b => {
     b.classList.toggle('active', b.textContent === node);
   });
+  document.querySelectorAll('#node-list .msg-list').forEach(l => {
+    l.classList.toggle('open', l.dataset.node === node);
+  });
   const target = document.getElementById(`node-${node}`);
   if (target) {
     const next = target.nextElementSibling;
     const top = (next ? next.offsetTop : target.offsetTop) - tableWrap.offsetTop - target.getBoundingClientRect().height;
     tableWrap.scrollTo({ top, behavior: 'smooth' });
   }
+}
+
+function scrollToMsg(msgId) {
+  const dom = msgDom.get(msgId);
+  if (!dom) return;
+  const nodeHeader = dom.section.previousElementSibling?.classList.contains('node-section-header')
+    ? dom.section.previousElementSibling
+    : dom.section.parentElement?.previousElementSibling;
+  const stickyHeight = nodeHeader ? nodeHeader.getBoundingClientRect().height : 0;
+  const top = dom.section.offsetTop - tableWrap.offsetTop - stickyHeight;
+  tableWrap.scrollTo({ top, behavior: 'smooth' });
 }
 
 function subscribe(node) {

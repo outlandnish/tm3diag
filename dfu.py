@@ -9,6 +9,8 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import gzip
+import io
 import sys
 from pathlib import Path
 
@@ -18,6 +20,7 @@ from flash_scripts import (
     find_dual_cpu_pair,
     find_subcomponent_entries,
     get_script,
+    is_bootloader_ecu_type,
     parent_node_for_bootloader,
     parent_node_for_subcomponent,
     run_pcs_dual_cpu,
@@ -311,6 +314,12 @@ def _parse_firmware(src: Path):
         return bhx.parse_file(src)
     if ext == ".hex":
         return ihex.parse_file(src)
+    if ext == ".hgz":
+        try:
+            data = gzip.decompress(src.read_bytes())
+        except OSError as e:
+            _abort(f"gzip decompress failed for {src.name}: {e}")
+        return ihex.parse_file(io.BytesIO(data))
     _abort(f"Unsupported firmware file type: {src.suffix!r} ({src.name})")
 
 
@@ -318,6 +327,9 @@ def phase4_dry_run(artifacts_dir: Path, selected: list, display: StatusDisplay) 
     """Print what would be flashed without sending any UDS frames."""
     display.set_header("[4/4] Dry Run — Flash Plan")
     display.finalize()
+
+    for entry in selected:
+        _check_flash_supported(entry, artifacts_dir / entry.src_path)
 
     pair = find_dual_cpu_pair(selected)
     if pair is not None:
@@ -364,6 +376,26 @@ def phase4_dry_run(artifacts_dir: Path, selected: list, display: StatusDisplay) 
     print("\n  (dry run complete — no frames sent)")
 
 
+_UNTESTED_NOTE = (
+    "flashing this firmware type is currently untested and disabled — "
+    "remove the guard in dfu._check_flash_supported() to override"
+)
+
+
+def _check_flash_supported(entry, src: Path) -> None:
+    """Abort if the entry uses a flash path that hasn't been validated yet."""
+    if src.suffix.lower() == ".hgz":
+        _abort(
+            f"{entry.dest_name} ({src.name}): "
+            f".hgz firmware — {_UNTESTED_NOTE}"
+        )
+    if is_bootloader_ecu_type(entry.component):
+        _abort(
+            f"{entry.dest_name} (component={entry.component}): "
+            f"bootloader (bu/bl) flash — {_UNTESTED_NOTE}"
+        )
+
+
 def phase4_flash(
     sess: UdsSession,
     artifacts_dir: Path,
@@ -373,6 +405,9 @@ def phase4_flash(
     interface: str | None = None,
 ) -> None:
     """Execute the flash sequence for the selected firmware entries."""
+    for entry in selected:
+        _check_flash_supported(entry, artifacts_dir / entry.src_path)
+
     pair = find_dual_cpu_pair(selected)
     if pair is not None:
         primary_entry, secondary_entry = pair

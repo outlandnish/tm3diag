@@ -13,36 +13,28 @@ IOCP_SUFFIX_MAP: dict[str, tuple[int, str]] = {
 }
 
 
+def _resolve_entry(cfg, attr: str, label: str, arg: str) -> tuple[int, str]:
+    """Return (hex_id, name) for an entry in cfg.<attr> by name or 0xHEX."""
+    registry: dict = getattr(cfg, attr)
+    if arg.startswith(("0x", "0X")):
+        hex_id = int(arg, 16)
+        name = next((n for n, e in registry.items() if e.hex_id == hex_id), f"0x{hex_id:04X}")
+        return hex_id, name
+    if arg not in registry:
+        print(f"Error: {label} {arg!r} not found for node {cfg.name}.")
+        print(f"Known {attr}: {', '.join(sorted(registry))}")
+        sys.exit(1)
+    return registry[arg].hex_id, arg
+
+
 def resolve_did(cfg, did_arg: str) -> tuple[int, str]:
     """Return (did_id, did_name) for a DID specified by name or 0xHEX."""
-    if did_arg.startswith("0x") or did_arg.startswith("0X"):
-        did_id = int(did_arg, 16)
-        for name, entry in cfg.dids.items():
-            if entry.hex_id == did_id:
-                return did_id, name
-        return did_id, f"0x{did_id:04X}"
-    if did_arg not in cfg.dids:
-        print(f"Error: DID {did_arg!r} not found for node {cfg.name}.")
-        print(f"Known DIDs: {', '.join(sorted(cfg.dids))}")
-        sys.exit(1)
-    entry = cfg.dids[did_arg]
-    return entry.hex_id, did_arg
+    return _resolve_entry(cfg, "dids", "DID", did_arg)
 
 
 def resolve_routine(cfg, routine_arg: str) -> tuple[int, str]:
     """Return (routine_id, routine_name) for a routine specified by name or 0xHEX."""
-    if routine_arg.startswith("0x") or routine_arg.startswith("0X"):
-        routine_id = int(routine_arg, 16)
-        for name, entry in cfg.routines.items():
-            if entry.hex_id == routine_id:
-                return routine_id, name
-        return routine_id, f"0x{routine_id:04X}"
-    if routine_arg not in cfg.routines:
-        print(f"Error: routine {routine_arg!r} not found for node {cfg.name}.")
-        print(f"Known routines: {', '.join(sorted(cfg.routines))}")
-        sys.exit(1)
-    entry = cfg.routines[routine_arg]
-    return entry.hex_id, routine_arg
+    return _resolve_entry(cfg, "routines", "routine", routine_arg)
 
 
 def resolve_io_control(cfg, ctrl_arg: str) -> tuple[int, str, int]:
@@ -51,18 +43,9 @@ def resolve_io_control(cfg, ctrl_arg: str) -> tuple[int, str, int]:
     control_param is the UDS controlParameter byte inferred from the name suffix,
     defaulting to 0x03 (shortTermAdjustment).
     """
-    if ctrl_arg.startswith("0x") or ctrl_arg.startswith("0X"):
-        ctrl_id = int(ctrl_arg, 16)
-        ctrl_name = next(
-            (n for n, e in cfg.io_controls.items() if e.hex_id == ctrl_id),
-            f"0x{ctrl_id:04X}",
-        )
+    ctrl_id, ctrl_name = _resolve_entry(cfg, "io_controls", "io_control", ctrl_arg)
+    if ctrl_arg.startswith(("0x", "0X")):
         return ctrl_id, ctrl_name, 0x03
-    if ctrl_arg not in cfg.io_controls:
-        print(f"Error: io_control {ctrl_arg!r} not found for node {cfg.name}.")
-        print(f"Known io_controls: {', '.join(sorted(cfg.io_controls))}")
-        sys.exit(1)
-    ctrl_id = cfg.io_controls[ctrl_arg].hex_id
     control_param, _ = next(
         ((v, d) for sfx, (v, d) in IOCP_SUFFIX_MAP.items() if ctrl_arg.endswith(sfx)),
         (0x03, "shortTermAdjustment"),

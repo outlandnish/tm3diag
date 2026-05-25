@@ -2,6 +2,7 @@
 
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import IO
 
 from intelhex import IntelHex
 
@@ -13,9 +14,9 @@ class IHexFile:
     segments: list = field(default_factory=list)
 
 
-def parse_file(path: Path) -> IHexFile:
+def parse_file(src: Path | IO) -> IHexFile:
     ih = IntelHex()
-    ih.loadhex(str(path))
+    ih.loadhex(src if not isinstance(src, Path) else str(src))
     f = IHexFile()
     for start, end in ih.segments():
         data = bytes(ih.tobinarray(start=start, end=end - 1))

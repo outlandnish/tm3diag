@@ -19,32 +19,32 @@ load_dotenv(_PROJECT_DIR / ".env")
 # Data paths — resolved once at import time
 # ---------------------------------------------------------------------------
 
-def _resolve(env_key: str, default: Path) -> Path:
+def _resolve(env_key: str, default: Path | None) -> Path | None:
     val = os.environ.get(env_key)
     return Path(val).expanduser() if val else default
 
-_DEFAULT_DATA_DIR = _PROJECT_DIR / "data"
-
 # TM3_ROOT points to the squashfs-root of a firmware extraction.
 # Individual vars override the derived paths when set explicitly.
-_ROOT = _resolve("TM3_ROOT", _DEFAULT_DATA_DIR)
+_ROOT: Path | None = _resolve("TM3_ROOT", None)
 
-def _resolve_eth_compact(root: Path) -> Path:
+def _resolve_eth_compact(root: Path | None) -> Path | None:
     """Return the ETH compact path, preferring .bin over .json when both exist."""
+    if root is None:
+        return None
     candidate = root / "opt/odin/data/Model3/dej/Model3_ETH.compact.json"
     if not candidate.exists() and candidate.with_suffix(".bin").exists():
         return candidate.with_suffix(".bin")
     return candidate
 
-_DEFAULT_NODES_JSON    = _ROOT / "opt/odin/data/Model3/nodes.json"
+_DEFAULT_NODES_JSON    = _ROOT / "opt/odin/data/Model3/nodes.json" if _ROOT else None
 _DEFAULT_ETH_COMPACT   = _resolve_eth_compact(_ROOT)
-_DEFAULT_ODJ_DIR       = _ROOT / "opt/odin/data/Model3/odj"
-_DEFAULT_ARTIFACTS_DIR = _ROOT / "deploy/seed_artifacts_v2"
+_DEFAULT_ODJ_DIR       = _ROOT / "opt/odin/data/Model3/odj" if _ROOT else None
+_DEFAULT_ARTIFACTS_DIR = _ROOT / "deploy/seed_artifacts_v2" if _ROOT else None
 
-NODES_JSON    = _resolve("TM3_NODES_JSON",    _DEFAULT_NODES_JSON)
-ETH_COMPACT   = _resolve("TM3_ETH_COMPACT",   _DEFAULT_ETH_COMPACT)
-ODJ_DIR       = _resolve("TM3_ODJ_DIR",       _DEFAULT_ODJ_DIR)
-ARTIFACTS_DIR = _resolve("TM3_ARTIFACTS_DIR", _DEFAULT_ARTIFACTS_DIR)
+NODES_JSON:    Path | None = _resolve("TM3_NODES_JSON",    _DEFAULT_NODES_JSON)
+ETH_COMPACT:   Path | None = _resolve("TM3_ETH_COMPACT",   _DEFAULT_ETH_COMPACT)
+ODJ_DIR:       Path | None = _resolve("TM3_ODJ_DIR",       _DEFAULT_ODJ_DIR)
+ARTIFACTS_DIR: Path | None = _resolve("TM3_ARTIFACTS_DIR", _DEFAULT_ARTIFACTS_DIR)
 
 # ---------------------------------------------------------------------------
 # CAN / argparse defaults

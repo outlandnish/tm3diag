@@ -14,6 +14,7 @@ Tesla Model 3 diagnostics tools for CAN
 | [`dfu.py`](docs/dfu.md)                       | Firmware flash CLI — identity discovery, file selection, and ECU-specific flash sequence |
 | [`bhx.py`](docs/bhx.md)                       | BHX firmware image parser and builder                                                    |
 | [`ihex.py`](docs/ihex.md)                     | Intel HEX / `.hgz` parser — decode dual-bank gateway images to canonical Intel HEX       |
+| [`clog.py`](docs/clog.md)                     | Gateway cluster-log parser — decode `CL/DATA/*.CLH`+`*.CLB` signal logs                  |
 | [`compact_to_dbc.py`](docs/compact_to_dbc.md) | Convert `Model3_ETH.compact.json` to DBC                                                 |
 | [`can_live.py`](docs/can_live.md)             | Web-based live CAN signal viewer                                                         |
 

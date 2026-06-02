@@ -64,6 +64,24 @@ def convert(src: Path, dst: Path) -> None:
     lines.append("BS_:")
     lines.append("")
 
+    # ---- Named value tables ----
+    # The compact schema names each enum via `value_table_name`; the same name
+    # always maps to the same value set, so we can emit a shared VAL_TABLE_ for
+    # each and still keep per-signal VAL_ entries below for tool compatibility.
+    value_tables: dict[str, dict] = {}
+    for msg in messages.values():
+        for sig in msg.get("signals", {}).values():
+            name = sig.get("value_table_name")
+            vd = sig.get("value_description")
+            if name and vd:
+                value_tables.setdefault(_sanitize(name), vd)
+
+    for tbl_name, vd in sorted(value_tables.items()):
+        pairs = " ".join(f'{v} "{k}"' for k, v in sorted(vd.items(), key=lambda x: x[1]))
+        lines.append(f"VAL_TABLE_ {tbl_name} {pairs} ;")
+    if value_tables:
+        lines.append("")
+
     # Collect all node names
     nodes: set[str] = set()
     for msg in messages.values():
@@ -154,9 +172,21 @@ def convert(src: Path, dst: Path) -> None:
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Convert compact JSON to DBC")
     parser.add_argument("input", nargs="?", type=Path, help="Input compact JSON (default: from config)")
-    parser.add_argument("output", nargs="?", type=Path, help="Output DBC file (default: Model3_ETH.dbc)")
+    parser.add_argument("output", nargs="?", type=Path, help="Output DBC file (default: <PRODUCT>_<BUS>.dbc)")
+    parser.add_argument(
+        "--all", action="store_true",
+        help="Convert every bus DB for the product (config.COMPACT_DBS) to "
+             "<PRODUCT>_<BUS>.dbc in the project root. Ignores positional args.",
+    )
     args = parser.parse_args()
 
-    src = args.input or _cfg.ETH_COMPACT
-    dst = args.output or _DEFAULT_OUT
-    convert(src, dst)
+    if args.all:
+        if not _cfg.COMPACT_DBS:
+            parser.error("no compact DBs found — is TM3_ROOT (and TM3_PRODUCT) set?")
+        for bus, path in sorted(_cfg.COMPACT_DBS.items()):
+            out = Path(__file__).parent / f"{_cfg.PRODUCT}_{bus}.dbc"
+            convert(path, out)
+    else:
+        src = args.input or _cfg.ETH_COMPACT
+        dst = args.output or _DEFAULT_OUT
+        convert(src, dst)

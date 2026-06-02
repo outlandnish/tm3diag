@@ -157,6 +157,14 @@ def load_node_config(
     io_controls: dict[str, IoControlEntry] = {}
     for odj_name in node_cfg.get("odj_sources", []):
         odj_path = odj_dir / odj_name
+        # Firmware may ship only the encrypted twin (DI.odj.bin); _load_json
+        # decrypts .bin transparently, so fall back to it when the plain .odj
+        # is absent. Without this the ODJ is silently skipped and the node ends
+        # up with no DIDs/routines/io_controls.
+        if not odj_path.exists():
+            bin_twin = odj_path.with_name(odj_path.name + ".bin")
+            if bin_twin.exists():
+                odj_path = bin_twin
         if odj_path.exists():
             dids.update(_parse_odj(odj_path))
             routines.update(_parse_routines(odj_path))

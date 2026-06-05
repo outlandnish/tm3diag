@@ -3,12 +3,31 @@
 from __future__ import annotations
 
 import json
+import warnings
 from pathlib import Path
 from typing import Any
 
 import config as _cfg
 
 _ETH_COMPACT = _cfg.ETH_COMPACT
+
+
+def _warn_extended_mux(msg_name: str, sig_name: str, mux_ids: list) -> None:
+    """Warn when a muxed signal is valid for more than one selector value.
+
+    Both the compact-JSON and DBC decode paths model multiplexing with a single
+    scalar mux_id per signal (decode_frame matches mux_id == muxer_value). Tesla
+    Model 3 firmware only ever uses scalar mux_ids, but Model S/X (or a future
+    build) may use extended/nested multiplexing where one signal spans several
+    selector values. That case would be silently flattened to the first id, so
+    surface it loudly instead of decoding incorrectly.
+    """
+    warnings.warn(
+        f"extended multiplexing not supported: signal {msg_name}.{sig_name} is "
+        f"valid for mux ids {list(mux_ids)}; decoder will only honor the first "
+        f"({mux_ids[0]}). Decoded values for the other slots may be wrong.",
+        stacklevel=2,
+    )
 
 
 def _extract_bits_little(data: bytes, start_bit: int, width: int) -> int:
@@ -116,6 +135,13 @@ class CanDatabase:
             node = msg.get("originNode", "unknown")
             self._by_node.setdefault(node, []).append(mid)
 
+            for sname, sig in msg.get("signals", {}).items():
+                # mux_ids lists a muxer's valid selectors (expected); a non-muxer
+                # carrying >1 id means extended multiplexing we don't model.
+                ids = sig.get("mux_ids")
+                if not sig.get("is_muxer") and isinstance(ids, list) and len(ids) > 1:
+                    _warn_extended_mux(name, sname, ids)
+
     @classmethod
     def from_dbc(cls, path: Path) -> CanDatabase:
         import cantools
@@ -135,6 +161,8 @@ class CanDatabase:
                     # cantools choices: {int_value: "label"} — invert to match
                     # compact JSON convention {label: int_value}
                     vd = {str(label): int(val) for val, label in sig.choices.items()}
+                if not sig.is_multiplexer and sig.multiplexer_ids and len(sig.multiplexer_ids) > 1:
+                    _warn_extended_mux(ct_msg.name, sig.name, sig.multiplexer_ids)
                 signals[sig.name] = {
                     "start_position": sig.start,
                     "width": sig.length,

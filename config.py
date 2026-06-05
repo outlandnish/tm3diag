@@ -27,24 +27,72 @@ def _resolve(env_key: str, default: Path | None) -> Path | None:
 # Individual vars override the derived paths when set explicitly.
 _ROOT: Path | None = _resolve("TM3_ROOT", None)
 
-def _resolve_eth_compact(root: Path | None) -> Path | None:
-    """Return the ETH compact path, preferring .bin over .json when both exist."""
-    if root is None:
-        return None
-    candidate = root / "opt/odin/data/Model3/dej/Model3_ETH.compact.json"
-    if not candidate.exists() and candidate.with_suffix(".bin").exists():
-        return candidate.with_suffix(".bin")
-    return candidate
+# Product selects which odin data tree under opt/odin/data/ to use.
+# Newer firmware ships multiple products (e.g. Model3, ModelY).
+PRODUCT: str = os.environ.get("TM3_PRODUCT", "Model3")
 
-_DEFAULT_NODES_JSON    = _ROOT / "opt/odin/data/Model3/nodes.json" if _ROOT else None
-_DEFAULT_ETH_COMPACT   = _resolve_eth_compact(_ROOT)
-_DEFAULT_ODJ_DIR       = _ROOT / "opt/odin/data/Model3/odj" if _ROOT else None
+_DATA_DIR  = _ROOT / "opt/odin/data" / PRODUCT if _ROOT else None
+_DEJ_DIR   = _DATA_DIR / "dej" if _DATA_DIR else None
+
+
+def _prefer_decrypted(path: Path) -> Path:
+    """Given a .compact.json path, prefer it over its .bin twin when present.
+
+    The encrypted twin appends .bin (Model3_ETH.compact.json.bin), so build it
+    by suffixing rather than Path.with_suffix (which would replace .json).
+    """
+    bin_twin = path.with_name(path.name + ".bin")
+    if not path.exists() and bin_twin.exists():
+        return bin_twin
+    return path
+
+
+def _resolve_compact(bus: str, dej_dir: Path | None = None) -> Path | None:
+    """Return the compact DB path for a given bus, preferring .json over .bin.
+
+    bus is the uppercased bus token in the filename, e.g. "ETH", "VCRIGHTV".
+    """
+    dej_dir = dej_dir if dej_dir is not None else _DEJ_DIR
+    if dej_dir is None:
+        return None
+    return _prefer_decrypted(dej_dir / f"{PRODUCT}_{bus}.compact.json")
+
+
+def compact_dbs(dej_dir: Path | None = None) -> dict[str, Path]:
+    """Discover every compact DB under the product's dej/ dir, keyed by bus.
+
+    Returns {bus_token: path} for each `<PRODUCT>_<BUS>.compact.json[.bin]`,
+    preferring the decrypted .json over the encrypted .bin when both exist.
+    Empty if the dej dir is unknown or absent.
+    """
+    dej_dir = dej_dir if dej_dir is not None else _DEJ_DIR
+    if dej_dir is None or not dej_dir.is_dir():
+        return {}
+    prefix = f"{PRODUCT}_"
+    out: dict[str, Path] = {}
+    for p in dej_dir.iterdir():
+        name = p.name
+        # Strip the .bin envelope suffix so .json and .bin collapse to one key.
+        base = name[:-4] if name.endswith(".bin") else name
+        if not (base.startswith(prefix) and base.endswith(".compact.json")):
+            continue
+        bus = base[len(prefix):-len(".compact.json")]
+        out[bus] = _prefer_decrypted(dej_dir / base)
+    return out
+
+
+_DEFAULT_NODES_JSON    = _DATA_DIR / "nodes.json" if _DATA_DIR else None
+_DEFAULT_ETH_COMPACT   = _resolve_compact("ETH")
+_DEFAULT_ODJ_DIR       = _DATA_DIR / "odj" if _DATA_DIR else None
 _DEFAULT_ARTIFACTS_DIR = _ROOT / "deploy/seed_artifacts_v2" if _ROOT else None
 
 NODES_JSON:    Path | None = _resolve("TM3_NODES_JSON",    _DEFAULT_NODES_JSON)
 ETH_COMPACT:   Path | None = _resolve("TM3_ETH_COMPACT",   _DEFAULT_ETH_COMPACT)
 ODJ_DIR:       Path | None = _resolve("TM3_ODJ_DIR",       _DEFAULT_ODJ_DIR)
 ARTIFACTS_DIR: Path | None = _resolve("TM3_ARTIFACTS_DIR", _DEFAULT_ARTIFACTS_DIR)
+
+# All compact DBs for the selected product, keyed by bus token (ETH, VCRIGHTV, ...).
+COMPACT_DBS: dict[str, Path] = compact_dbs()
 
 # ---------------------------------------------------------------------------
 # CAN / argparse defaults

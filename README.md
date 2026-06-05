@@ -16,6 +16,8 @@ Tesla Model 3 diagnostics tools for CAN
 | [`ihex.py`](docs/ihex.md)                     | Intel HEX / `.hgz` parser — decode dual-bank gateway images to canonical Intel HEX       |
 | [`clog.py`](docs/clog.md)                     | Gateway cluster-log parser — decode `CL/DATA/*.CLH`+`*.CLB` signal logs                  |
 | [`compact_to_dbc.py`](docs/compact_to_dbc.md) | Convert `Model3_ETH.compact.json` to DBC                                                 |
+| [`dump_odin.py`](docs/dump_odin.md)           | Extract + decompile the odin PyInstaller binary from a firmware squashfs                 |
+| [`unsquash_firmware.py`](docs/unsquash_firmware.md) | Unsquash a firmware image and expand its nested `.dirsquashed` parts               |
 | [`can_live.py`](docs/can_live.md)             | Web-based live CAN signal viewer                                                         |
 
 ## Configuration

@@ -11,15 +11,18 @@ Usage:
 """
 
 from __future__ import annotations
-import config as _cfg
-import can
 
 import argparse
 import code
+import contextlib
 import threading
 import time
 import warnings
 from typing import Any
+
+import can
+
+import config as _cfg
 
 warnings.filterwarnings("ignore", category=RuntimeWarning,
                         module=r"uds\.packet\.abstract_packet")
@@ -85,21 +88,18 @@ def _emit_diag(pcs_en: bool, charge_en: bool, dcdc_en: bool) -> None:
     _last_diag = state
     if _bus is None:
         return
-    try:
+    with contextlib.suppress(can.CanOperationError):
         _bus.send(can.Message(arbitration_id=DIAG_ID, data=bytes(state), is_extended_id=True))
-    except can.CanOperationError:
-        pass
 
 
 def _send(can_id: int, data: list[int] | bytes) -> None:
     """Send a CAN frame silently (no output). Used internally for heartbeats."""
     if _bus is None:
         return
-    try:
+    # suppress buffer-full; next tick will retry
+    with contextlib.suppress(can.CanOperationError):
         _bus.send(can.Message(arbitration_id=can_id,
                   data=bytes(data), is_extended_id=False))
-    except can.CanOperationError:
-        pass  # drop frame on buffer-full; next tick will retry
 
 
 def raw(can_id: int, data: list[int] | bytes) -> None:

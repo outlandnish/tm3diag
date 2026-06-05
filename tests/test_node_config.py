@@ -9,6 +9,9 @@ _NODES_JSON  = _cfg.NODES_JSON
 _ETH_COMPACT = _cfg.ETH_COMPACT
 _ODJ_DIR     = _cfg.ODJ_DIR
 
+if _NODES_JSON is None or not _NODES_JSON.exists():
+    pytest.skip("TM3_ROOT firmware data not available — skipping node config tests", allow_module_level=True)
+
 
 class TestLoadNodeConfig:
     def test_cp_can_ids(self):

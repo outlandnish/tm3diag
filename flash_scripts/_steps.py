@@ -154,6 +154,33 @@ def step_verify_comp_fw(sess: UdsSession, ctx: FlashContext) -> None:
     )
 
 
+def step_halt_if_running_boot_updater(sess: UdsSession, ctx: FlashContext) -> None:
+    """`haltIfRunningBootUpdater` guard — the bu script's leading opcode.
+
+    Decoded from update-2020.img: the bu script (0x40035EF2) opens with VM
+    opcode 0x29 = haltIfRunningBootUpdater (device handler 0x400067DE). It reads
+    DID 0x0101 and, if fw_type byte == 0x02 (BOOTLOADER), sets a per-node halt
+    bit so the flow stops — i.e. "don't re-flash the bu agent over an ECU that's
+    already running a bootloader image." On the host side this is a pre-flight
+    guard: abort the bu flash if the ECU already reports fw_type 2 (a malformed
+    or short response is treated as "not a bootloader image" and lets the flash
+    proceed, matching the device handler's `rc == 0 && len == 3` gate).
+    """
+    ctx.display.set_detail("Guard: haltIfRunningBootUpdater (DID 0x0101)...")
+    try:
+        comp_fw = sess.read_did(0x0101)
+    except Exception:
+        return
+    if len(comp_fw) == 3 and comp_fw[1] == 0x02:
+        from uds_local.client import MalformedResponseError
+        raise MalformedResponseError(
+            0x22,
+            "haltIfRunningBootUpdater: ECU already reports fw_type 0x02 "
+            "(bootloader image) — halting bu flash. Re-flash the application "
+            "first if this ECU is stuck running a bootloader/updater image.",
+        )
+
+
 def step_security_access(sess: UdsSession, ctx: FlashContext) -> None:
     """SecurityAccess with seed level chosen from protocol_ver + idx."""
     idx = ctx.security_level

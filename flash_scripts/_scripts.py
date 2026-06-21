@@ -15,6 +15,7 @@ from ._steps import (
     step_clear_dtc,
     step_ecu_reset,
     step_erase,
+    step_halt_if_running_boot_updater,
     step_hard_reset_with_retries,
     step_module_to_program,
     step_programming_session,
@@ -418,15 +419,18 @@ SCRIPT_THS = FlashScript(
 
 # 0x00651300 — bootloader-updater (`*bu` files: parkbu, hvbmsbu, hvpbu)
 # Standard prog-0 flash with fw_type=1 — flashes the update agent into the regular
-# app slot. Decoded from the binary at 0x00651300:
+# app slot. Confirmed against the device firmware: update-2020.img bu script at
+# 0x40035EF2 (the script the `*bu` node entries point to). Decoded bytecode:
+#   haltIfRunningBootUpdater(0)   ← 0x29: abort if ECU already reports fw_type 2
 #   reset(0) + enterBootloader(0)
 #   diagnosticSession(2)  netSetTimeout(3)
 #   varifyCompAndFirmwareType(1)  securityAccess(0)
-#   CALL sub1 [moduleToProgram(0) + erase + transfer + RET]
+#   CALL sub0 [moduleToProgram(0) + initializeEraseModule(0) + transferData(0) + RET]
 #   checkModuleProgrammed  checkCorrectComponentAndRev
 #   reset(0)  halt
 SCRIPT_BL_UPDATER = FlashScript(
     steps=[
+        step_halt_if_running_boot_updater,   # ← 0x29 leading guard (device-confirmed)
         step_ecu_reset,
         step_wait_for_bootloader,
         step_programming_session,
@@ -442,16 +446,20 @@ SCRIPT_BL_UPDATER = FlashScript(
     erase_timeout=3.0,
 )
 
-# 0x00651340 — bootloader image (`*bl` files: parkbl, hvbmsbl, hvpbl)
+# 0x00651340 — bootloader image (`*bl` files: parkbl, hvbmsbl, hvpbl, vcfrontbl)
 # Runs immediately after SCRIPT_BL_UPDATER without an intervening reset/handover —
 # the bu's trailing reset boots the update agent, and step_sleep_1000ms gives it
 # time to come up. Then DSC + verify(fw_type=2) + auth + erase + transfer +
-# verify + reset against the agent. Decoded from binary at 0x00651340:
+# verify + reset against the agent. Confirmed against the device firmware:
+# update-2020.img bl script at 0x40035FE8 (5 `*bl` node entries point to it).
+# Note: the bl script has NO leading haltIfRunningBootUpdater guard and NO
+# reset/enterBootloader preamble — it cannot run standalone, only after bu.
+# Decoded bytecode:
 #   sleep(1000ms)
 #   diagnosticSession(2)
 #   varifyCompAndFirmwareType(2)  ← fw_type = 2 (BOOTLOADER)
 #   securityAccess(0)  netSetTimeout(3)
-#   CALL sub1 [moduleToProgram(0) + erase + transfer + RET]
+#   CALL sub0 [moduleToProgram(0) + initializeEraseModule(0) + transferData(0) + RET]
 #   checkModuleProgrammed  checkCorrectComponentAndRev
 #   reset(0)  halt
 SCRIPT_BL = FlashScript(
@@ -482,6 +490,7 @@ SCRIPT_BL = FlashScript(
 SCRIPT_BL_UPDATER_VCFRONT = FlashScript(
     steps=[
         step_vcright_ota_prep,         # ← sub4 (VCRIGHT detour)
+        step_halt_if_running_boot_updater,   # ← 0x29 leading guard (bu variant)
         step_ecu_reset,
         step_wait_for_bootloader,
         step_programming_session,

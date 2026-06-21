@@ -72,6 +72,7 @@ from ._steps import (  # noqa: F401
     step_clear_dtc,
     step_ecu_reset,
     step_erase,
+    step_halt_if_running_boot_updater,
     step_hard_reset,
     step_hard_reset_with_retries,
     step_module_to_program,

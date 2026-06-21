@@ -20,7 +20,6 @@ from flash_scripts import (
     find_dual_cpu_pair,
     find_subcomponent_entries,
     get_script,
-    is_bootloader_ecu_type,
     parent_node_for_bootloader,
     parent_node_for_subcomponent,
     run_pcs_dual_cpu,

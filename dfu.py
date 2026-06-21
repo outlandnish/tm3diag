@@ -364,24 +364,12 @@ def phase4_dry_run(artifacts_dir: Path, selected: list, display: StatusDisplay) 
     for entry in selected:
         _check_flash_supported(entry, artifacts_dir / entry.src_path)
 
-    pair = find_dual_cpu_pair(selected)
-    if pair is not None:
-        primary_entry, secondary_entry = pair
-        primary_bhx = _parse_firmware(artifacts_dir / primary_entry.src_path)
-        secondary_bhx = _parse_firmware(artifacts_dir / secondary_entry.src_path)
-        print("\n  PCS-family dual-CPU pairing detected — using prog 1 (single auth session)")
-        print(f"    primary   ({primary_entry.dest_name}, ecu_type={primary_entry.component})"
-              f"  → moduleToProgram(0x00)")
-        for i, seg in enumerate(primary_bhx.segments):
-            print(f"      [{i}] addr=0x{seg.start_address:08X}  size={seg.length} bytes")
-        print(f"    secondary ({secondary_entry.dest_name}, ecu_type={secondary_entry.component})"
-              f"  → moduleToProgram(0x04) [flashed first]")
-        for i, seg in enumerate(secondary_bhx.segments):
-            print(f"      [{i}] addr=0x{seg.start_address:08X}  size={seg.length} bytes")
-        print("\n  (dry run complete — no frames sent)")
-        return
+    bus, bls, apps = find_bootloader_entries(selected)
+    ordered = bus + bls + apps
+    pair = find_dual_cpu_pair(apps)
+    single_entries = [e for e in ordered if pair is None or e not in pair]
 
-    for entry in selected:
+    for entry in single_entries:
         ecu_type = entry.component.lower()
         try:
             script, module_byte = get_script(ecu_type)
@@ -408,6 +396,20 @@ def phase4_dry_run(artifacts_dir: Path, selected: list, display: StatusDisplay) 
                 f"  size={seg.length} bytes"
             )
 
+    if pair is not None:
+        primary_entry, secondary_entry = pair
+        primary_bhx = _parse_firmware(artifacts_dir / primary_entry.src_path)
+        secondary_bhx = _parse_firmware(artifacts_dir / secondary_entry.src_path)
+        print("\n  PCS-family dual-CPU pairing detected — using prog 1 (single auth session)")
+        print(f"    primary   ({primary_entry.dest_name}, ecu_type={primary_entry.component})"
+              f"  → moduleToProgram(0x00)")
+        for i, seg in enumerate(primary_bhx.segments):
+            print(f"      [{i}] addr=0x{seg.start_address:08X}  size={seg.length} bytes")
+        print(f"    secondary ({secondary_entry.dest_name}, ecu_type={secondary_entry.component})"
+              f"  → moduleToProgram(0x{get_script(secondary_entry.component.lower())[1]:02X}) [flashed first]")
+        for i, seg in enumerate(secondary_bhx.segments):
+            print(f"      [{i}] addr=0x{seg.start_address:08X}  size={seg.length} bytes")
+
     print("\n  (dry run complete — no frames sent)")
 
 
@@ -432,25 +434,16 @@ def phase4_flash(
     for entry in selected:
         _check_flash_supported(entry, artifacts_dir / entry.src_path)
 
-    pair = find_dual_cpu_pair(selected)
-    if pair is not None:
-        primary_entry, secondary_entry = pair
-        display.set_header(
-            f"[4/4] Flash (dual-CPU) — "
-            f"{primary_entry.dest_name} + {secondary_entry.dest_name}"
-        )
-        primary_bhx = _parse_firmware(artifacts_dir / primary_entry.src_path)
-        secondary_bhx = _parse_firmware(artifacts_dir / secondary_entry.src_path)
-        run_pcs_dual_cpu(
-            sess,
-            primary_bhx, primary_entry,
-            secondary_bhx, secondary_entry,
-        )
-        display.set_detail("Flash complete")
-        display.finalize()
-        return
+    bus, bls, apps = find_bootloader_entries(selected)
+    ordered = bus + bls + apps
 
-    for fw_index, entry in enumerate(selected):
+    # Flash bu/bl/single-CPU entries individually first; only run the dual-CPU
+    # prog-1 path on the app entries after any bootloader flash is done.
+    pair = find_dual_cpu_pair(apps)
+
+    single_entries = [e for e in ordered if pair is None or e not in pair]
+
+    for entry in single_entries:
         display.set_header(f"[4/4] Flash — {entry.dest_name}")
 
         ecu_type = entry.component.lower()
@@ -471,9 +464,22 @@ def phase4_flash(
             fallback_module_byte=secondary_fallback_module_byte(ecu_type),
         )
 
-        if fw_index == len(selected) - 1:
-            display.set_detail("Flash complete")
-            display.finalize()
+    if pair is not None:
+        primary_entry, secondary_entry = pair
+        display.set_header(
+            f"[4/4] Flash (dual-CPU) — "
+            f"{primary_entry.dest_name} + {secondary_entry.dest_name}"
+        )
+        primary_bhx = _parse_firmware(artifacts_dir / primary_entry.src_path)
+        secondary_bhx = _parse_firmware(artifacts_dir / secondary_entry.src_path)
+        run_pcs_dual_cpu(
+            sess,
+            primary_bhx, primary_entry,
+            secondary_bhx, secondary_entry,
+        )
+
+    display.set_detail("Flash complete")
+    display.finalize()
 
 
 def run_flash(

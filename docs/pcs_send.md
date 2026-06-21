@@ -3,8 +3,8 @@
 Interactive Python REPL (IPython if available, otherwise stdlib) for experimenting with Tesla PCS CAN control messages. Runs alongside `can_live.py` on the same interface.
 
 ```
-python pcs_send.py
-python pcs_send.py --channel can0
+python scripts/pcs/pcs_send.py
+python scripts/pcs/pcs_send.py --channel can0
 ```
 
 ## Options

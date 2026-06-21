@@ -12,3 +12,4 @@ seed_artifacts_v2/
 .vscode/
 docs/superpowers
 *.dbc
+immo_keys.json

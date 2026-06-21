@@ -15,14 +15,20 @@ from __future__ import annotations
 import argparse
 import code
 import contextlib
+import sys
 import threading
 import time
 import warnings
+from pathlib import Path
 from typing import Any
 
 import can
 
-import config as _cfg
+# This script lives in scripts/<ecu>/; put the project root on sys.path so the
+# top-level modules (config) import when run directly.
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+
+import config as _cfg  # noqa: E402
 
 warnings.filterwarnings("ignore", category=RuntimeWarning, module=r"uds\.packet\.abstract_packet")
 warnings.filterwarnings(

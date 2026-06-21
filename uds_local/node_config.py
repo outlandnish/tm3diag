@@ -5,7 +5,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from decode_bin import load_json as _load_json  # type: ignore[import-untyped]
-from .odj import OdjEntry, RoutineEntry, IoControlEntry, load_odj
+
+from .odj import IoControlEntry, OdjEntry, RoutineEntry, load_odj
 
 
 @dataclass

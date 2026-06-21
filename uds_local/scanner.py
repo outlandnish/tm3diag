@@ -43,7 +43,18 @@ def scan_network(
                 data=_TESTER_PRESENT_PROBE,
                 is_extended_id=False,
             )
-            bus.send(msg)
+            try:
+                bus.send(msg)
+            except can.CanError as e:
+                # Abort the whole scan on a transmit failure. ENOBUFS (105)
+                # means the tx queue can't drain because nothing on the bus is
+                # ACKing — every subsequent send would fail too, so a full table
+                # of "no" responses would be misleading. Surface the real cause.
+                raise RuntimeError(
+                    f"CAN transmit failed at {name} (tx 0x{tx_id:X}): {e}. "
+                    "No frames are being ACKed — check that the bus is wired, "
+                    "terminated, and another node is present."
+                ) from e
 
             deadline = time.monotonic() + timeout_per_node
             response: can.Message | None = None

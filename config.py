@@ -23,8 +23,8 @@ def _resolve(env_key: str, default: Path | None) -> Path | None:
     val = os.environ.get(env_key)
     return Path(val).expanduser() if val else default
 
-# TM3_ROOT points to the squashfs-root of a firmware extraction.
-# Individual vars override the derived paths when set explicitly.
+# TM3_ROOT points to the squashfs-root of a firmware extraction. All data
+# paths derive from it (and TM3_PRODUCT); there are no per-path overrides.
 _ROOT: Path | None = _resolve("TM3_ROOT", None)
 
 # Product selects which odin data tree under opt/odin/data/ to use.
@@ -47,18 +47,22 @@ def _prefer_decrypted(path: Path) -> Path:
     return path
 
 
-def _resolve_compact(bus: str, dej_dir: Path | None = None) -> Path | None:
+def _resolve_compact(bus: str, dej_dir: Path | None = None,
+                     product: str | None = None) -> Path | None:
     """Return the compact DB path for a given bus, preferring .json over .bin.
 
     bus is the uppercased bus token in the filename, e.g. "ETH", "VCRIGHTV".
+    product defaults to the module-level PRODUCT but is passed explicitly by
+    FwPaths so each product resolves its own `<product>_<bus>.compact.json`.
     """
     dej_dir = dej_dir if dej_dir is not None else _DEJ_DIR
+    product = product if product is not None else PRODUCT
     if dej_dir is None:
         return None
-    return _prefer_decrypted(dej_dir / f"{PRODUCT}_{bus}.compact.json")
+    return _prefer_decrypted(dej_dir / f"{product}_{bus}.compact.json")
 
 
-def compact_dbs(dej_dir: Path | None = None) -> dict[str, Path]:
+def compact_dbs(dej_dir: Path | None = None, product: str | None = None) -> dict[str, Path]:
     """Discover every compact DB under the product's dej/ dir, keyed by bus.
 
     Returns {bus_token: path} for each `<PRODUCT>_<BUS>.compact.json[.bin]`,
@@ -66,9 +70,10 @@ def compact_dbs(dej_dir: Path | None = None) -> dict[str, Path]:
     Empty if the dej dir is unknown or absent.
     """
     dej_dir = dej_dir if dej_dir is not None else _DEJ_DIR
+    product = product if product is not None else PRODUCT
     if dej_dir is None or not dej_dir.is_dir():
         return {}
-    prefix = f"{PRODUCT}_"
+    prefix = f"{product}_"
     out: dict[str, Path] = {}
     for p in dej_dir.iterdir():
         name = p.name
@@ -81,15 +86,50 @@ def compact_dbs(dej_dir: Path | None = None) -> dict[str, Path]:
     return out
 
 
-_DEFAULT_NODES_JSON    = _DATA_DIR / "nodes.json" if _DATA_DIR else None
-_DEFAULT_ETH_COMPACT   = _resolve_compact("ETH")
-_DEFAULT_ODJ_DIR       = _DATA_DIR / "odj" if _DATA_DIR else None
-_DEFAULT_ARTIFACTS_DIR = _ROOT / "deploy/seed_artifacts_v2" if _ROOT else None
+def available_products() -> list[str]:
+    """Return product names available under opt/odin/data/ in the firmware root.
 
-NODES_JSON:    Path | None = _resolve("TM3_NODES_JSON",    _DEFAULT_NODES_JSON)
-ETH_COMPACT:   Path | None = _resolve("TM3_ETH_COMPACT",   _DEFAULT_ETH_COMPACT)
-ODJ_DIR:       Path | None = _resolve("TM3_ODJ_DIR",       _DEFAULT_ODJ_DIR)
-ARTIFACTS_DIR: Path | None = _resolve("TM3_ARTIFACTS_DIR", _DEFAULT_ARTIFACTS_DIR)
+    Each product folder must contain a nodes.json to be considered valid.
+    Returns an empty list if TM3_ROOT is not set or the data dir is absent.
+    """
+    if _ROOT is None:
+        return []
+    data_dir = _ROOT / "opt/odin/data"
+    if not data_dir.is_dir():
+        return []
+    return sorted(
+        p.name for p in data_dir.iterdir()
+        if p.is_dir() and (p / "nodes.json").exists()
+    )
+
+
+class FwPaths:
+    """Resolved firmware data paths for a specific product.
+
+    All paths derive from TM3_ROOT (and the chosen product); there are no
+    per-path env overrides, so each product resolves to its own data tree.
+    """
+    def __init__(self, product: str) -> None:
+        self.product = product
+        data_dir = _ROOT / "opt/odin/data" / product if _ROOT else None
+        dej_dir = data_dir / "dej" if data_dir else None
+        self.nodes_json: Path | None = (
+            data_dir / "nodes.json" if data_dir else None)
+        self.eth_compact: Path | None = _resolve_compact(
+            "ETH", dej_dir, product)
+        self.odj_dir: Path | None = data_dir / "odj" if data_dir else None
+        self.artifacts_dir: Path | None = (
+            _ROOT / "deploy/seed_artifacts_v2" if _ROOT else None)
+        self.compact_dbs: dict[str, Path] = compact_dbs(dej_dir, product)
+
+
+# Module-level paths for the default product. All derive from TM3_ROOT
+# (and TM3_PRODUCT) — there are no per-path env overrides; use FwPaths to
+# resolve a non-default product.
+NODES_JSON:    Path | None = _DATA_DIR / "nodes.json" if _DATA_DIR else None
+ETH_COMPACT:   Path | None = _resolve_compact("ETH")
+ODJ_DIR:       Path | None = _DATA_DIR / "odj" if _DATA_DIR else None
+ARTIFACTS_DIR: Path | None = _ROOT / "deploy/seed_artifacts_v2" if _ROOT else None
 
 # All compact DBs for the selected product, keyed by bus token (ETH, VCRIGHTV, ...).
 COMPACT_DBS: dict[str, Path] = compact_dbs()
@@ -102,7 +142,6 @@ _ENV_MAP = {
     "channel":       ("TM3_CHANNEL",       str,  "vcan0"),
     "interface":     ("TM3_INTERFACE",      str,  "socketcan"),
     "bitrate":       ("TM3_BITRATE",        int,  None),
-    "artifacts":     ("TM3_ARTIFACTS_DIR",  str,  None),
     "force":         ("TM3_DFU_FORCE",      bool, None),
 }
 

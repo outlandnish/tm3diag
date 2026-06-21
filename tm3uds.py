@@ -66,8 +66,9 @@ def cmd_read_did(args: argparse.Namespace) -> None:
 
     # Decode fields from ODJ if name is known
     entry = cfg.dids.get(did_name)
-    if entry and entry.read_size:
-        print(f"  size: {len(data)} bytes (expected {entry.read_size})")
+    expected_size = entry.read.output_size if entry and entry.read else None
+    if expected_size is not None:
+        print(f"  size: {len(data)} bytes (expected {expected_size})")
 
 
 def cmd_write_did(args: argparse.Namespace) -> None:

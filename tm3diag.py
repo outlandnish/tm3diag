@@ -14,16 +14,16 @@ import logging
 import readline
 import warnings
 from pathlib import Path
-from typing import Any
 
 import config as _cfg
-from decode_bin import load_json as _load_json
 from uds_local.client import (
     _SESSION_DEFAULT,
     _SESSION_EXTENDED,
     _SESSION_PROGRAMMING,
     _SESSION_SAFETY,
 )
+from uds_local.node_config import NodeConfig
+from uds_local.odj import FieldSpec, OdjEntry, RoutineEntry, IoControlEntry
 from uds_local.resolve import IOCP_SUFFIX_MAP as _IOCP_SUFFIX_MAP
 
 _log = logging.getLogger(__name__)
@@ -66,13 +66,13 @@ _BOARD_PART_DIDS: list[tuple[int, str]] = [
 # ODJ field decode
 # ---------------------------------------------------------------------------
 
-def _decode_fields(data: bytes, fields: dict[str, Any]) -> list[tuple[str, str]]:
+def _decode_fields(data: bytes, fields: dict[str, FieldSpec]) -> list[tuple[str, str]]:
     """Decode response bytes into (field_name, value_str) pairs using ODJ field specs."""
     results = []
-    for name, spec in sorted(fields.items(), key=lambda x: x[1].get("byte_position", 0)):
-        dtype = spec.get("data_type", "bytes")
-        byte_pos = spec.get("byte_position", 0)
-        bit_len = spec.get("bit_length", 8)
+    for name, spec in sorted(fields.items(), key=lambda x: x[1].byte_position):
+        dtype = spec.data_type
+        byte_pos = spec.byte_position
+        bit_len = spec.bit_length
         byte_len = (bit_len + 7) // 8
         chunk = data[byte_pos:byte_pos + byte_len]
         if not chunk:
@@ -89,30 +89,6 @@ def _decode_fields(data: bytes, fields: dict[str, Any]) -> list[tuple[str, str]]
         else:
             results.append((name, chunk.hex()))
     return results
-
-
-def _load_odj_fields(odj_path: Path) -> dict[str, Any]:
-    try:
-        return _load_json(odj_path).get("data", {})
-    except Exception:
-        _log.warning("Failed to load ODJ fields from %s", odj_path)
-        return {}
-
-
-def _load_odj_routines(odj_path: Path) -> dict[str, Any]:
-    try:
-        return _load_json(odj_path).get("routines", {})
-    except Exception:
-        _log.warning("Failed to load ODJ routines from %s", odj_path)
-        return {}
-
-
-def _load_odj_io_controls(odj_path: Path) -> dict[str, Any]:
-    try:
-        return _load_json(odj_path).get("io_controls", {})
-    except Exception:
-        _log.warning("Failed to load ODJ io_controls from %s", odj_path)
-        return {}
 
 
 # ---------------------------------------------------------------------------
@@ -147,7 +123,7 @@ def _hdr(text: str) -> None:
     print(f"{'─' * 60}")
 
 
-def _print_did_response(name: str, did_id: int, data: bytes, fields: dict[str, Any]) -> None:
+def _print_did_response(name: str, did_id: int, data: bytes, fields: dict[str, FieldSpec]) -> None:
     print(f"\n  {name} (0x{did_id:04X})  [{len(data)} bytes]")
     decoded = _decode_fields(data, fields)
     if decoded:
@@ -222,7 +198,7 @@ def _pre_connection_menu(nodes: dict, channel: str, interface: str) -> str | Non
 # Identity banner (0xF180)
 # ---------------------------------------------------------------------------
 
-def _show_identity(sess, cfg) -> None:
+def _show_identity(sess, cfg: NodeConfig) -> None:
     from uds_local.client import UdsError
     try:
         data = sess.read_did(0xF180)
@@ -232,18 +208,13 @@ def _show_identity(sess, cfg) -> None:
 
     print(f"\n  Connected to {cfg.name}")
 
-    # Load field spec from the node's ODJ
-    f180_fields: dict[str, Any] = {}
-    for odj_name in json.loads(_NODES_JSON.read_text()).get(cfg.name, {}).get("odj_sources", []):
-        odj_data = _load_odj_fields(_ODJ_DIR / odj_name)
-        for did_spec in odj_data.values():
-            if int(did_spec.get("hex_id", "0"), 16) == 0xF180:
-                f180_fields = did_spec.get("read", {}).get("output", {})
-                break
-        if f180_fields:
-            break
-
-    decoded = _decode_fields(data, f180_fields)
+    f180_entry = next(
+        (e for e in cfg.dids.values() if e.hex_id == 0xF180), None
+    )
+    fields: dict[str, FieldSpec] = (
+        f180_entry.read.output if f180_entry and f180_entry.read else {}
+    )
+    decoded = _decode_fields(data, fields)
     if decoded:
         for fname, val in decoded:
             print(f"    {fname:<36} {val}")
@@ -253,14 +224,10 @@ def _show_identity(sess, cfg) -> None:
 # DID menu
 # ---------------------------------------------------------------------------
 
-def _did_menu(sess, cfg, odj_fields: dict[str, Any]) -> None:
+def _did_menu(sess, cfg: NodeConfig, dids: dict[str, OdjEntry]) -> None:
     from uds_local.client import UdsError
 
-    # Build readable DID list
-    readable = {
-        name: spec for name, spec in odj_fields.items()
-        if "read" in spec
-    }
+    readable = {name: entry for name, entry in dids.items() if entry.read is not None}
     if not readable:
         print("  No readable DIDs found for this node.")
         return
@@ -284,41 +251,38 @@ def _did_menu(sess, cfg, odj_fields: dict[str, Any]) -> None:
         if raw.lower() == "list":
             print()
             for n in names:
-                spec = readable[n]
-                did_id = int(spec.get("hex_id", "0"), 16)
-                size = spec.get("read", {}).get("output_size", "?")
-                sl = spec.get("read", {}).get("security_level", 0)
+                entry = readable[n]
+                size = entry.read.output_size if entry.read else "?"
+                sl = entry.read.security_level if entry.read else 0
                 sl_str = f"  sl={sl}" if sl else ""
-                print(f"    0x{did_id:04X}  {n:<40} {size}B{sl_str}")
+                print(f"    0x{entry.hex_id:04X}  {n:<40} {size}B{sl_str}")
             continue
 
         # Resolve name or hex
         if raw in readable:
             name = raw
-            spec = readable[name]
+            entry = readable[name]
         elif raw.lower().startswith("0x"):
             try:
                 did_id = int(raw, 16)
             except ValueError:
                 print(f"  Invalid hex: {raw!r}")
                 continue
-            match = next((n for n, s in readable.items() if int(
-                s.get("hex_id", "0"), 16) == did_id), None)
+            match = next((n for n, e in readable.items() if e.hex_id == did_id), None)
             if match:
-                name, spec = match, readable[match]
+                name, entry = match, readable[match]
             else:
                 print(f"  DID 0x{did_id:04X} not in ODJ — attempting raw read")
-                name, spec = raw, {}
+                name, entry = raw, None
         else:
             print(f"  Unknown DID: {raw!r}  (try 'list' or tab complete)")
             continue
 
-        did_id = int(spec.get("hex_id", "0"), 16) if spec else int(raw, 16)
-        sl = spec.get("read", {}).get("security_level", 0) if spec else 0
+        did_id = entry.hex_id if entry else int(raw, 16)
+        sl = entry.read.security_level if entry and entry.read else 0
 
         if sl:
-            print(
-                f"  DID requires security level {sl} — running security access...")
+            print(f"  DID requires security level {sl} — running security access...")
             try:
                 sess.diagnostic_session(_SESSION_PROGRAMMING)
                 sess.security_access(seed_level=sl)
@@ -328,7 +292,9 @@ def _did_menu(sess, cfg, odj_fields: dict[str, Any]) -> None:
 
         try:
             data = sess.read_did(did_id)
-            fields = spec.get("read", {}).get("output", {}) if spec else {}
+            fields: dict[str, FieldSpec] = (
+                entry.read.output if entry and entry.read else {}
+            )
             _print_did_response(name, did_id, data, fields)
         except UdsError as e:
             print(f"  Error: {e}")
@@ -338,29 +304,27 @@ def _did_menu(sess, cfg, odj_fields: dict[str, Any]) -> None:
 # Routine menu
 # ---------------------------------------------------------------------------
 
-def _prompt_routine_inputs(fields: dict[str, Any]) -> bytes | None:
+def _prompt_routine_inputs(fields: dict[str, FieldSpec]) -> bytes | None:
     """Prompt for each input field and pack into bytes. Returns None on error."""
     if not fields:
         return b""
-    # Determine total byte length from the highest byte_position + ceil(bit_length/8)
     total = max(
-        f["byte_position"] + (f["bit_length"] + 7) // 8
+        f.byte_position + (f.bit_length + 7) // 8
         for f in fields.values()
     )
     buf = bytearray(total)
     for fname, fspec in fields.items():
-        bit_len = fspec["bit_length"]
-        byte_pos = fspec["byte_position"]
-        bit_pos = fspec["bit_position"]
-        dtype = fspec.get("data_type", "uint")
-        enum_map = fspec.get("map", {}).get("enum", {})
+        bit_len = fspec.bit_length
+        byte_pos = fspec.byte_position
+        bit_pos = fspec.bit_position
+        dtype = fspec.data_type
+        enum_map = fspec.enum_map
         if enum_map:
             opts = ", ".join(f"{k}={v}" for k, v in enum_map.items())
             raw = input(f"    {fname} ({opts}): ").strip()
-            rev = {str(v): k for k, v in enum_map.items()}
-            rev.update({k.upper(): v for k, v in enum_map.items()})
-            if raw.upper() in {k.upper(): v for k, v in enum_map.items()}:
-                val = {k.upper(): v for k, v in enum_map.items()}[raw.upper()]
+            upper_map = {k.upper(): v for k, v in enum_map.items()}
+            if raw.upper() in upper_map:
+                val = upper_map[raw.upper()]
             else:
                 try:
                     val = int(raw, 0)
@@ -375,7 +339,6 @@ def _prompt_routine_inputs(fields: dict[str, Any]) -> bytes | None:
             except ValueError:
                 print(f"  Invalid value: {raw!r}")
                 return None
-        # Pack bits into buf
         mask = (1 << bit_len) - 1
         val &= mask
         for i in range(bit_len):
@@ -389,11 +352,11 @@ def _prompt_routine_inputs(fields: dict[str, Any]) -> bytes | None:
     return bytes(buf)
 
 
-def _routine_menu(sess, cfg, odj_routines: dict[str, Any]) -> None:
+def _routine_menu(sess, cfg: NodeConfig, routines: dict[str, RoutineEntry]) -> None:
     from uds_local.client import UdsError
 
     named = list(_NAMED_ROUTINES.keys())
-    odj_names = sorted(odj_routines.keys())
+    odj_names = sorted(routines.keys())
     all_names = named + odj_names
     _setup_completion(all_names + ["back", "list"])
 
@@ -420,40 +383,36 @@ def _routine_menu(sess, cfg, odj_routines: dict[str, Any]) -> None:
             if odj_names:
                 print("  — node ODJ —")
                 for name in odj_names:
-                    spec = odj_routines[name]
-                    rid = int(spec.get("hex_id", "0"), 16)
-                    sl = spec.get("start", {}).get("security_level", 0)
+                    entry = routines[name]
+                    actions = [a for a in ("start", "stop", "results")
+                               if getattr(entry, a) is not None]
+                    sl = entry.start.security_level if entry.start else 0
                     sa_str = f"  [sl={sl}]" if sl else ""
-                    actions = [a for a in (
-                        "start", "stop", "results") if spec.get(a)]
-                    print(
-                        f"    0x{rid:04X}  {name:<40} {', '.join(actions)}{sa_str}")
+                    print(f"    0x{entry.hex_id:04X}  {name:<40} {', '.join(actions)}{sa_str}")
             continue
 
-        # Resolve to (routine_id, needs_sa, sl, odj_spec | None)
-        odj_spec = None
+        # Resolve to (routine_id, needs_sa, sl, entry | None)
+        odj_entry: RoutineEntry | None = None
         needs_sa = False
         sl = 1
-        if raw in odj_routines:
-            odj_spec = odj_routines[raw]
-            routine_id = int(odj_spec.get("hex_id", "0"), 16)
-            sl = odj_spec.get("start", {}).get("security_level", 0)
+        if raw in routines:
+            odj_entry = routines[raw]
+            routine_id = odj_entry.hex_id
+            sl = odj_entry.start.security_level if odj_entry.start else 0
             needs_sa = bool(sl)
             print(f"  → 0x{routine_id:04X}  {raw}")
         elif raw.lower() in _NAMED_ROUTINES:
             routine_id, desc, needs_sa = _NAMED_ROUTINES[raw.lower()]
             print(f"  → 0x{routine_id:04X}  {desc}")
         elif raw.lower().startswith("0x"):
-            # Check odj by hex id
             match = next(
-                (n for n, s in odj_routines.items()
-                 if int(s.get("hex_id", "0"), 16) == int(raw, 16)),
+                (n for n, e in routines.items() if e.hex_id == int(raw, 16)),
                 None,
             )
             if match:
-                odj_spec = odj_routines[match]
-                routine_id = int(odj_spec.get("hex_id", "0"), 16)
-                sl = odj_spec.get("start", {}).get("security_level", 0)
+                odj_entry = routines[match]
+                routine_id = odj_entry.hex_id
+                sl = odj_entry.start.security_level if odj_entry.start else 0
                 needs_sa = bool(sl)
                 print(f"  → 0x{routine_id:04X}  {match}")
             else:
@@ -467,8 +426,7 @@ def _routine_menu(sess, cfg, odj_routines: dict[str, Any]) -> None:
             continue
 
         if needs_sa:
-            print(
-                f"  Routine requires security level {sl} — authenticating...")
+            print(f"  Routine requires security level {sl} — authenticating...")
             try:
                 sess.diagnostic_session(_SESSION_PROGRAMMING)
                 sess.security_access(seed_level=sl)
@@ -476,10 +434,9 @@ def _routine_menu(sess, cfg, odj_routines: dict[str, Any]) -> None:
                 print(f"  Security access failed: {e}")
                 continue
 
-        if odj_spec:
-            # Prompt for action
-            available = [a for a in (
-                "start", "stop", "results") if odj_spec.get(a)]
+        if odj_entry:
+            available = [a for a in ("start", "stop", "results")
+                         if getattr(odj_entry, a) is not None]
             if len(available) == 1:
                 action = available[0]
             else:
@@ -489,8 +446,8 @@ def _routine_menu(sess, cfg, odj_routines: dict[str, Any]) -> None:
                     print(f"  Unknown action: {action_raw!r}")
                     continue
                 action = action_raw
-            sub = odj_spec[action]
-            input_fields = sub.get("input", {})
+            sub = getattr(odj_entry, action)
+            input_fields = sub.input if sub else {}
             if input_fields:
                 print(f"  Inputs for {action}:")
                 arg = _prompt_routine_inputs(input_fields)
@@ -502,8 +459,7 @@ def _routine_menu(sess, cfg, odj_routines: dict[str, Any]) -> None:
         else:
             arg_raw = input("  Arg bytes (hex, empty for none): ").strip()
             try:
-                arg = bytes.fromhex(arg_raw.replace(
-                    " ", "")) if arg_raw else b""
+                arg = bytes.fromhex(arg_raw.replace(" ", "")) if arg_raw else b""
             except ValueError:
                 print(f"  Invalid hex: {arg_raw!r}")
                 continue
@@ -516,10 +472,10 @@ def _routine_menu(sess, cfg, odj_routines: dict[str, Any]) -> None:
             print(f"  Error: {e}")
 
 
-def _io_control_menu(sess, cfg, odj_io_controls: dict[str, Any]) -> None:
+def _io_control_menu(sess, cfg: NodeConfig, io_controls: dict[str, IoControlEntry]) -> None:
     from uds_local.client import UdsError
 
-    names = sorted(odj_io_controls.keys())
+    names = sorted(io_controls.keys())
     _setup_completion(names + ["back", "list"])
 
     _hdr(f"IO control — {cfg.name}")
@@ -538,34 +494,32 @@ def _io_control_menu(sess, cfg, odj_io_controls: dict[str, Any]) -> None:
         if raw.lower() == "list":
             print()
             for name in names:
-                spec = odj_io_controls[name]
-                ctrl_id = int(spec.get("hex_id", "0"), 16)
-                sl = spec.get("security_level", 0)
+                entry = io_controls[name]
+                sl = entry.security_level
                 sa_str = f"  [sl={sl}]" if sl else ""
-                cp, cp_desc = next(
+                _, cp_desc = next(
                     ((v, d) for sfx, (v, d) in _IOCP_SUFFIX_MAP.items() if name.endswith(sfx)),
                     (0x03, "shortTermAdjustment"),
                 )
-                print(f"    0x{ctrl_id:04X}  {name:<52} {cp_desc}{sa_str}")
+                print(f"    0x{entry.hex_id:04X}  {name:<52} {cp_desc}{sa_str}")
             continue
 
-        # Resolve to (ctrl_id, sl, spec)
-        spec = None
-        if raw in odj_io_controls:
-            spec = odj_io_controls[raw]
-            ctrl_id = int(spec.get("hex_id", "0"), 16)
-            sl = spec.get("security_level", 0)
+        # Resolve to (ctrl_id, sl, entry | None)
+        io_entry: IoControlEntry | None = None
+        if raw in io_controls:
+            io_entry = io_controls[raw]
+            ctrl_id = io_entry.hex_id
+            sl = io_entry.security_level
             print(f"  → 0x{ctrl_id:04X}  {raw}")
         elif raw.lower().startswith("0x"):
             match = next(
-                (n for n, s in odj_io_controls.items()
-                 if int(s.get("hex_id", "0"), 16) == int(raw, 16)),
+                (n for n, e in io_controls.items() if e.hex_id == int(raw, 16)),
                 None,
             )
             if match:
-                spec = odj_io_controls[match]
-                ctrl_id = int(spec.get("hex_id", "0"), 16)
-                sl = spec.get("security_level", 0)
+                io_entry = io_controls[match]
+                ctrl_id = io_entry.hex_id
+                sl = io_entry.security_level
                 print(f"  → 0x{ctrl_id:04X}  {match}")
             else:
                 try:
@@ -587,17 +541,14 @@ def _io_control_menu(sess, cfg, odj_io_controls: dict[str, Any]) -> None:
                 print(f"  Security access failed: {e}")
                 continue
 
-        # Determine control parameter from name suffix
-        ctrl_name = raw if spec else f"0x{ctrl_id:04X}"
+        ctrl_name = raw if io_entry else f"0x{ctrl_id:04X}"
         control_param, _ = next(
             ((v, d) for sfx, (v, d) in _IOCP_SUFFIX_MAP.items() if ctrl_name.endswith(sfx)),
             (0x03, "shortTermAdjustment"),
         )
 
-        # Prompt for input data if spec has input fields
-        if spec and spec.get("input"):
-            input_fields = spec["input"]
-            data = _prompt_routine_inputs(input_fields)
+        if io_entry and io_entry.input:
+            data = _prompt_routine_inputs(io_entry.input)
             if data is None:
                 continue
         else:
@@ -610,8 +561,8 @@ def _io_control_menu(sess, cfg, odj_io_controls: dict[str, Any]) -> None:
 
         try:
             result = sess.io_control(ctrl_id, control_param, data)
-            if result and spec and spec.get("output"):
-                decoded = _decode_fields(result, spec["output"])
+            if result and io_entry and io_entry.output:
+                decoded = _decode_fields(result, io_entry.output)
                 for fname, fval in decoded:
                     print(f"  {fname}: {fval}")
             else:
@@ -656,7 +607,7 @@ def _dfu_menu(sess, cfg, artifacts_dir: Path | None, force: bool | None = None) 
 # Main menu
 # ---------------------------------------------------------------------------
 
-def _main_menu(sess, cfg, odj_fields: dict[str, Any], odj_routines: dict[str, Any], odj_io_controls: dict[str, Any], artifacts_dir: Path | None, force: bool = False) -> None:
+def _main_menu(sess, cfg: NodeConfig, artifacts_dir: Path | None, force: bool = False) -> None:
     _setup_completion([
         "dids", "routine", "io-control", "board-parts", "clear-dtc",
         "dfu", "session", "reset", "quit",
@@ -682,11 +633,11 @@ def _main_menu(sess, cfg, odj_fields: dict[str, Any], odj_routines: dict[str, An
         if cmd in ("q", "quit", "exit"):
             break
         elif cmd == "dids":
-            _did_menu(sess, cfg, odj_fields)
+            _did_menu(sess, cfg, cfg.dids)
         elif cmd == "routine":
-            _routine_menu(sess, cfg, odj_routines)
+            _routine_menu(sess, cfg, cfg.routines)
         elif cmd == "io-control":
-            _io_control_menu(sess, cfg, odj_io_controls)
+            _io_control_menu(sess, cfg, cfg.io_controls)
         elif cmd == "board-parts":
             _board_parts_cmd(sess)
         elif cmd == "clear-dtc":
@@ -806,21 +757,12 @@ def main() -> int:
         print(f"Error loading node config: {e}")
         return 1
 
-    odj_fields: dict[str, Any] = {}
-    odj_routines: dict[str, Any] = {}
-    odj_io_controls: dict[str, Any] = {}
-    for odj_name in nodes[node_name].get("odj_sources", []):
-        odj_fields.update(_load_odj_fields(_ODJ_DIR / odj_name))
-        odj_routines.update(_load_odj_routines(_ODJ_DIR / odj_name))
-        odj_io_controls.update(_load_odj_io_controls(_ODJ_DIR / odj_name))
-
     print(f"\nConnecting to {node_name} on {args.channel}...")
 
     try:
         with UdsSession(cfg, args.channel, interface=args.interface) as sess:
             _show_identity(sess, cfg)
-            _main_menu(sess, cfg, odj_fields, odj_routines, odj_io_controls,
-                       artifacts_dir, force=args.force)
+            _main_menu(sess, cfg, artifacts_dir, force=args.force)
     except KeyboardInterrupt:
         pass
     except Exception as e:

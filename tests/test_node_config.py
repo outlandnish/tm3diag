@@ -3,7 +3,8 @@
 import pytest
 
 import config as _cfg
-from uds_local.node_config import NodeConfig, OdjEntry, load_all_nodes, load_node_config
+from uds_local.node_config import NodeConfig, load_all_nodes, load_node_config
+from uds_local.odj import OdjEntry
 
 _NODES_JSON  = _cfg.NODES_JSON
 _ETH_COMPACT = _cfg.ETH_COMPACT
@@ -30,12 +31,12 @@ class TestLoadNodeConfig:
 
     def test_cp_known_did_present(self):
         cfg = load_node_config("CP", _NODES_JSON, _ETH_COMPACT, _ODJ_DIR)
-        assert "Application_CRC" in cfg.dids
+        assert "DTC_TEST_RESULT" in cfg.dids
 
     def test_cp_did_hex_id(self):
         cfg = load_node_config("CP", _NODES_JSON, _ETH_COMPACT, _ODJ_DIR)
-        entry = cfg.dids["Application_CRC"]
-        assert entry.hex_id == 0xF00
+        entry = cfg.dids["DTC_TEST_RESULT"]
+        assert entry.hex_id == 0x4FF
 
     def test_rcm_pektron_algorithm(self):
         cfg = load_node_config("RCM", _NODES_JSON, _ETH_COMPACT, _ODJ_DIR)
@@ -67,11 +68,19 @@ class TestLoadNodeConfig:
         assert cfg.response_can_id != 0
         assert cfg.request_can_id != cfg.response_can_id
 
+    def test_cp_did_write_enum_fields(self):
+        cfg = load_node_config("CP", _NODES_JSON, _ETH_COMPACT, _ODJ_DIR)
+        entry = cfg.dids["DTC_TEST_RESULT"]
+        assert entry.write is not None
+        assert entry.write.input["TEST_RESULT"].enum_map == {
+            "TEST_FAILED": 2, "TEST_PASSED": 1,
+        }
+
 
 class TestLoadAllNodes:
-    def test_returns_28_nodes(self):
+    def test_returns_37_nodes(self):
         nodes = load_all_nodes(_NODES_JSON, _ETH_COMPACT)
-        assert len(nodes) == 28
+        assert len(nodes) == 37
 
     def test_each_entry_is_3_tuple(self):
         nodes = load_all_nodes(_NODES_JSON, _ETH_COMPACT)

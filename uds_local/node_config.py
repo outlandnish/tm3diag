@@ -1,41 +1,11 @@
 """Load ECU node configuration from nodes.json, ETH.compact.json, and ODJ files."""
-
 from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
 
 from decode_bin import load_json as _load_json  # type: ignore[import-untyped]
-
-
-@dataclass
-class OdjEntry:
-    name: str
-    hex_id: int
-    read_size: int | None    # output_size bytes from read section; None if no read
-    write_size: int | None   # input_size bytes from write section; None if no write
-    security_level: int
-
-
-@dataclass
-class RoutineEntry:
-    name: str
-    hex_id: int
-    security_level: int
-    has_start: bool
-    has_stop: bool
-    has_results: bool
-    start_input_size: int | None
-    results_output_size: int | None
-
-
-@dataclass
-class IoControlEntry:
-    name: str
-    hex_id: int
-    security_level: int
-    input_size: int
-    output_size: int
+from .odj import OdjEntry, RoutineEntry, IoControlEntry, load_odj
 
 
 @dataclass
@@ -49,75 +19,6 @@ class NodeConfig:
     dids: dict[str, OdjEntry] = field(default_factory=dict)
     routines: dict[str, RoutineEntry] = field(default_factory=dict)
     io_controls: dict[str, IoControlEntry] = field(default_factory=dict)
-
-
-def _parse_odj(odj_path: Path) -> dict[str, OdjEntry]:
-    raw = _load_json(odj_path)
-    entries: dict[str, OdjEntry] = {}
-    for name, spec in raw.get("data", {}).items():
-        hex_id_str = spec.get("hex_id", "0x0")
-        hex_id = int(hex_id_str, 16)
-        read_sec = spec.get("read")
-        write_sec = spec.get("write")
-        # security_level lives in whichever section exists (read preferred)
-        sec_level = 0
-        read_size = None
-        write_size = None
-        if read_sec:
-            sec_level = read_sec.get("security_level", 0)
-            read_size = read_sec.get("output_size")
-            if read_size is None:
-                # fall back to input_size of the read section
-                read_size = read_sec.get("input_size")
-        if write_sec:
-            if not read_sec:
-                sec_level = write_sec.get("security_level", 0)
-            write_size = write_sec.get("input_size")
-        entries[name] = OdjEntry(
-            name=name,
-            hex_id=hex_id,
-            read_size=read_size,
-            write_size=write_size,
-            security_level=sec_level,
-        )
-    return entries
-
-
-def _parse_routines(odj_path: Path) -> dict[str, RoutineEntry]:
-    raw = _load_json(odj_path)
-    entries: dict[str, RoutineEntry] = {}
-    for name, spec in raw.get("routines", {}).items():
-        hex_id = int(spec.get("hex_id", "0x0"), 16)
-        start = spec.get("start")
-        stop = spec.get("stop")
-        results = spec.get("results")
-        sl = (start or stop or results or {}).get("security_level", 0)
-        entries[name] = RoutineEntry(
-            name=name,
-            hex_id=hex_id,
-            security_level=sl,
-            has_start=start is not None,
-            has_stop=stop is not None,
-            has_results=results is not None,
-            start_input_size=start.get("input_size") if start else None,
-            results_output_size=results.get("output_size") if results else None,
-        )
-    return entries
-
-
-def _parse_io_controls(odj_path: Path) -> dict[str, IoControlEntry]:
-    raw = _load_json(odj_path)
-    entries: dict[str, IoControlEntry] = {}
-    for name, spec in raw.get("io_controls", {}).items():
-        hex_id = int(spec.get("hex_id", "0x0"), 16)
-        entries[name] = IoControlEntry(
-            name=name,
-            hex_id=hex_id,
-            security_level=spec.get("security_level", 0),
-            input_size=spec.get("input_size", 0),
-            output_size=spec.get("output_size", 0),
-        )
-    return entries
 
 
 def load_node_config(
@@ -156,19 +57,10 @@ def load_node_config(
     routines: dict[str, RoutineEntry] = {}
     io_controls: dict[str, IoControlEntry] = {}
     for odj_name in node_cfg.get("odj_sources", []):
-        odj_path = odj_dir / odj_name
-        # Firmware may ship only the encrypted twin (DI.odj.bin); _load_json
-        # decrypts .bin transparently, so fall back to it when the plain .odj
-        # is absent. Without this the ODJ is silently skipped and the node ends
-        # up with no DIDs/routines/io_controls.
-        if not odj_path.exists():
-            bin_twin = odj_path.with_name(odj_path.name + ".bin")
-            if bin_twin.exists():
-                odj_path = bin_twin
-        if odj_path.exists():
-            dids.update(_parse_odj(odj_path))
-            routines.update(_parse_routines(odj_path))
-            io_controls.update(_parse_io_controls(odj_path))
+        d, r, io = load_odj(odj_dir / odj_name)
+        dids.update(d)
+        routines.update(r)
+        io_controls.update(io)
 
     return NodeConfig(
         name=node_name,

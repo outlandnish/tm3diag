@@ -219,3 +219,80 @@ class TestConditionNarrowing:
         # Wildcard entry has no vdcType key → conditions.get("vdcType") is None ≠ "0"
         # Only e0 matches. e_wild is excluded — callers decide whether to re-add wildcards.
         assert result == [e0]
+
+
+class TestPromptConditions:
+    """_prompt_conditions via monkeypatched prompt_select."""
+
+    def _make_entry(self, dest: str, conds: dict) -> "FirmwareEntry":
+        from uds_local.metadata import FirmwareEntry
+        return FirmwareEntry("x:1", f"{dest}.bhx", f"{dest}.bhx", "x", "aa", conds, "sig")
+
+    def test_no_varying_keys_returns_matches_unchanged(self, monkeypatch):
+        import dfu
+        # prompt_select must never be called when there's nothing to decide
+        monkeypatch.setattr("dfu.prompt_select", lambda *a, **kw: (_ for _ in ()).throw(AssertionError("should not prompt")))
+        e0 = self._make_entry("a", {"vdcType": "0"})
+        e1 = self._make_entry("b", {"vdcType": "0"})  # same value — no variation
+        from flash_scripts._display import StatusDisplay
+        result = dfu._prompt_conditions([e0, e1], StatusDisplay())
+        assert result == [e0, e1]
+
+    def test_single_varying_key_prompts_once_and_narrows(self, monkeypatch):
+        import dfu
+        calls = []
+        def fake_select(question, labels, default=0, display=None):
+            calls.append((question, labels))
+            return 1  # always pick second option
+        monkeypatch.setattr("dfu.prompt_select", fake_select)
+
+        e0 = self._make_entry("a", {"vdcType": "0"})
+        e1 = self._make_entry("b", {"vdcType": "1"})
+        from flash_scripts._display import StatusDisplay
+        result = dfu._prompt_conditions([e0, e1], StatusDisplay())
+
+        assert len(calls) == 1
+        assert calls[0][0] == "Select vdcType"
+        assert calls[0][1] == ["vdcType=0", "vdcType=1"]
+        assert result == [e1]
+
+    def test_two_varying_keys_prompts_twice(self, monkeypatch):
+        import dfu
+        calls = []
+        def fake_select(question, labels, default=0, display=None):
+            calls.append(question)
+            return 0  # always pick first option
+        monkeypatch.setattr("dfu.prompt_select", fake_select)
+
+        e00 = self._make_entry("a", {"vdcType": "0", "drivetrainType": "0"})
+        e01 = self._make_entry("b", {"vdcType": "0", "drivetrainType": "1"})
+        e10 = self._make_entry("c", {"vdcType": "1", "drivetrainType": "0"})
+        e11 = self._make_entry("d", {"vdcType": "1", "drivetrainType": "1"})
+        from flash_scripts._display import StatusDisplay
+        result = dfu._prompt_conditions([e00, e01, e10, e11], StatusDisplay())
+
+        assert len(calls) == 2
+        assert set(calls) == {"Select drivetrainType", "Select vdcType"}
+        # After picking first value for each key, exactly one entry survives
+        assert len(result) == 1
+
+    def test_wildcard_entries_pass_through(self, monkeypatch):
+        import dfu
+        monkeypatch.setattr("dfu.prompt_select", lambda *a, **kw: 0)
+        e_wild = self._make_entry("w", {})
+        e0 = self._make_entry("a", {"vdcType": "0"})
+        e1 = self._make_entry("b", {"vdcType": "1"})
+        from flash_scripts._display import StatusDisplay
+        result = dfu._prompt_conditions([e_wild, e0, e1], StatusDisplay())
+        # Wildcard has no vdcType — narrow_by_conditions excludes it from the narrowed set.
+        # Only the matching typed entry survives.
+        assert e_wild not in result
+        assert len(result) == 1
+
+    def test_single_match_no_prompt(self, monkeypatch):
+        import dfu
+        monkeypatch.setattr("dfu.prompt_select", lambda *a, **kw: (_ for _ in ()).throw(AssertionError("should not prompt")))
+        e0 = self._make_entry("a", {"vdcType": "0"})
+        from flash_scripts._display import StatusDisplay
+        result = dfu._prompt_conditions([e0], StatusDisplay())
+        assert result == [e0]

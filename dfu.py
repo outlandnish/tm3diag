@@ -112,12 +112,7 @@ def phase2_firmware_selection(
     display: StatusDisplay,
 ) -> list:
     """Load metadata and return selected FirmwareEntry list."""
-    from uds_local.metadata import (
-        find_firmware,
-        load_metadata,
-        narrow_by_conditions,
-        varying_condition_keys,
-    )
+    from uds_local.metadata import find_firmware, load_metadata
 
     display.set_header("[2/4] Firmware Selection")
     display.set_detail("Loading metadata...")

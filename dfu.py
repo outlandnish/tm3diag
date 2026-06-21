@@ -411,23 +411,12 @@ def phase4_dry_run(artifacts_dir: Path, selected: list, display: StatusDisplay) 
     print("\n  (dry run complete — no frames sent)")
 
 
-_UNTESTED_NOTE = (
-    "flashing this firmware type is currently untested and disabled — "
-    "remove the guard in dfu._check_flash_supported() to override"
-)
-
-
 def _check_flash_supported(entry, src: Path) -> None:
     """Abort if the entry uses a flash path that hasn't been validated yet."""
     if src.suffix.lower() == ".hgz":
         _abort(
             f"{entry.dest_name} ({src.name}): "
-            f".hgz firmware — {_UNTESTED_NOTE}"
-        )
-    if is_bootloader_ecu_type(entry.component):
-        _abort(
-            f"{entry.dest_name} (component={entry.component}): "
-            f"bootloader (bu/bl) flash — {_UNTESTED_NOTE}"
+            f".hgz firmware — flashing .hgz is not yet implemented"
         )
 
 

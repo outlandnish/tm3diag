@@ -19,10 +19,13 @@ def load_condition_labels(compact_path: Path | str | None) -> dict[str, dict[str
     except (OSError, ValueError):
         return {}
     result: dict[str, dict[str, str]] = {}
-    for msg in data.get("messages", {}).values():
-        for sig in msg.get("signals", {}).values():
-            table_name = sig.get("value_table_name")
-            value_desc = sig.get("value_description")
-            if table_name and value_desc:
-                result[table_name] = {str(v): k for k, v in value_desc.items()}
+    try:
+        for msg in data.get("messages", {}).values():
+            for sig in msg.get("signals", {}).values():
+                table_name = sig.get("value_table_name")
+                value_desc = sig.get("value_description")
+                if table_name and value_desc:
+                    result[table_name] = {str(v): k for k, v in value_desc.items()}
+    except (AttributeError, TypeError):
+        return {}
     return result

@@ -221,7 +221,7 @@ class TestConditionNarrowing:
 class TestPromptConditions:
     """_prompt_conditions via monkeypatched prompt_select."""
 
-    def _make_entry(self, dest: str, conds: dict) -> "FirmwareEntry":
+    def _make_entry(self, dest: str, conds: dict) -> FirmwareEntry:
         from uds_local.metadata import FirmwareEntry
         return FirmwareEntry("x:1", f"{dest}.bhx", f"{dest}.bhx", "x", "aa", conds, "sig")
 
@@ -324,6 +324,7 @@ class TestPromptConditions:
         from flash_scripts._display import StatusDisplay
         dfu._prompt_conditions([e0, e1], StatusDisplay(), label_map=None)
 
+        assert len(calls) == 1
         assert calls[0] == ["vdcType=0", "vdcType=1"]
 
     def test_partial_label_map_falls_back_for_unknown_key(self, monkeypatch):
@@ -343,7 +344,7 @@ class TestPromptConditions:
         from flash_scripts._display import StatusDisplay
         dfu._prompt_conditions([e00, e01, e10, e11], StatusDisplay(), label_map=label_map)
 
-        prompted = {q: lbls for q, lbls in calls}
+        prompted = dict(calls)
         # drivetrainType has labels
         assert prompted["Select drivetrainType"] == ["drivetrainType=0 (RWD)", "drivetrainType=1 (AWD)"]
         # unknownKey has no label entry — bare format

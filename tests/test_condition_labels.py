@@ -6,19 +6,17 @@ import json
 import tempfile
 from pathlib import Path
 
-import pytest
-
 from uds_local.condition_labels import load_condition_labels
 
 
 def _write_compact(data: dict) -> Path:
     """Write a compact.json-shaped dict to a temp file and return its path."""
-    f = tempfile.NamedTemporaryFile(
+    with tempfile.NamedTemporaryFile(
         mode="w", suffix=".json", delete=False
-    )
-    json.dump(data, f)
-    f.flush()
-    return Path(f.name)
+    ) as f:
+        json.dump(data, f)
+        name = f.name
+    return Path(name)
 
 
 _MINIMAL_COMPACT = {
@@ -79,8 +77,8 @@ class TestLoadConditionLabels:
     def test_signals_without_value_table_excluded(self):
         p = _write_compact(_MINIMAL_COMPACT)
         result = load_condition_labels(p)
-        # GTW_noTable has no value_table_name — must not appear as a key
-        assert all("." not in k for k in result)
+        # GTW_noTable has no value_table_name — must not appear as a table key
+        assert "GTW_noTable" not in result
         # Only 3 tables defined
         assert len(result) == 3
 
@@ -91,12 +89,12 @@ class TestLoadConditionLabels:
         assert load_condition_labels(Path("/nonexistent/path.json")) == {}
 
     def test_invalid_json_returns_empty(self):
-        f = tempfile.NamedTemporaryFile(
+        with tempfile.NamedTemporaryFile(
             mode="w", suffix=".json", delete=False
-        )
-        f.write("not valid json {{{")
-        f.flush()
-        assert load_condition_labels(Path(f.name)) == {}
+        ) as f:
+            f.write("not valid json {{{")
+            name = f.name
+        assert load_condition_labels(Path(name)) == {}
 
     def test_empty_messages_returns_empty(self):
         p = _write_compact({"messages": {}})

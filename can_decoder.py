@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
-import json
 import warnings
 from pathlib import Path
 from typing import Any
 
 import config as _cfg
+from decode_bin import load_json as _load_json
 
 _ETH_COMPACT = _cfg.ETH_COMPACT
 
@@ -121,8 +121,10 @@ class CanDatabase:
     """Parsed representation of a compact JSON or DBC CAN database."""
 
     def __init__(self, path: Path = _ETH_COMPACT) -> None:
-        with open(path) as f:
-            raw = json.load(f)
+        # Use the same loader as uds_local/node_config.py so an encrypted .bin
+        # twin (Model3_ETH.compact.json.bin) is auto-decrypted instead of being
+        # fed raw to json.load (which fails with a UnicodeDecodeError).
+        raw = _load_json(Path(path))
 
         self.messages: dict[int, dict[str, Any]] = {}  # msg_id -> msg
         self._by_node: dict[str, list[int]] = {}

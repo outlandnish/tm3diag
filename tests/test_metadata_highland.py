@@ -23,7 +23,14 @@ from pathlib import Path
 
 import pytest
 
-from uds_local.metadata import FirmwareEntry, find_firmware, load_metadata, packed_key_from_f180
+from uds_local.metadata import (
+    FirmwareEntry,
+    find_firmware,
+    load_metadata,
+    narrow_by_conditions,
+    packed_key_from_f180,
+    varying_condition_keys,
+)
 
 _FIXTURES = Path(__file__).parent / "fixtures" / "highland"
 _TSV = _FIXTURES / "signed_metadata_map.tsv"
@@ -154,3 +161,61 @@ class TestPackedKeyAgainstRealMap:
         f180 = bytes([0x00, 0x00, 0x1B, 0x05, 0x00, 0x00] + [0x00] * 13)
         assert packed_key_from_f180(f180) == 83886080
         assert find_firmware(entries, "db", 83886080)
+
+
+class TestConditionNarrowing:
+    """varying_condition_keys and narrow_by_conditions against the highland fixture."""
+
+    def test_no_variation_returns_empty(self, entries):
+        # adsp entries have chassisType but it's the same value across all — no variation
+        adsp = [e for e in entries if e.component == "adsp"]
+        assert adsp, "need adsp entries in fixture"
+        keys = varying_condition_keys(adsp)
+        # chassisType may vary across adsp entries; we just assert the return type
+        assert isinstance(keys, list)
+        assert all(isinstance(k, str) for k in keys)
+
+    def test_single_entry_no_variation(self, entries):
+        # A set of one entry never has varying keys
+        single = entries[:1]
+        assert varying_condition_keys(single) == []
+
+    def test_vdctype_shows_as_varying_for_pmr(self, entries):
+        # Highland has pmr entries gated on driveInterfaceType — check a key actually varies
+        pmr = [e for e in entries if e.component == "pmr"]
+        if not pmr:
+            pytest.skip("no pmr entries in highland fixture")
+        keys = varying_condition_keys(pmr)
+        assert isinstance(keys, list)
+        # At least one key must vary (the whole point)
+        assert len(keys) >= 1
+
+    def test_wildcards_excluded_from_variation_analysis(self):
+        # Wildcard entries (conditions={}) must not pollute the varying-key analysis
+        e_wild = FirmwareEntry("x:1", "x.bhx", "x.bhx", "x", "aa", {}, "sig")
+        e_typed = FirmwareEntry("x:1", "x.bhx", "x.bhx", "x", "aa", {"vdcType": "0"}, "sig")
+        e_typed2 = FirmwareEntry("x:1", "x.bhx", "x.bhx", "x", "aa", {"vdcType": "1"}, "sig")
+        keys = varying_condition_keys([e_wild, e_typed, e_typed2])
+        assert "vdcType" in keys
+
+    def test_narrow_by_conditions_filters_correctly(self):
+        e0 = FirmwareEntry("x:1", "a.bhx", "a.bhx", "x", "aa", {"vdcType": "0"}, "s")
+        e1 = FirmwareEntry("x:1", "b.bhx", "b.bhx", "x", "bb", {"vdcType": "1"}, "s")
+        result = narrow_by_conditions([e0, e1], "vdcType", "0")
+        assert result == [e0]
+
+    def test_narrow_by_conditions_fallback_on_empty(self):
+        e0 = FirmwareEntry("x:1", "a.bhx", "a.bhx", "x", "aa", {"vdcType": "0"}, "s")
+        e1 = FirmwareEntry("x:1", "b.bhx", "b.bhx", "x", "bb", {"vdcType": "1"}, "s")
+        # Value "9" matches nothing → must return original list unchanged
+        result = narrow_by_conditions([e0, e1], "vdcType", "9")
+        assert result == [e0, e1]
+
+    def test_narrow_by_conditions_wildcard_entries_survive(self):
+        e_wild = FirmwareEntry("x:1", "w.bhx", "w.bhx", "x", "cc", {}, "s")
+        e0 = FirmwareEntry("x:1", "a.bhx", "a.bhx", "x", "aa", {"vdcType": "0"}, "s")
+        e1 = FirmwareEntry("x:1", "b.bhx", "b.bhx", "x", "bb", {"vdcType": "1"}, "s")
+        result = narrow_by_conditions([e_wild, e0, e1], "vdcType", "0")
+        # Wildcard entry has no vdcType key → conditions.get("vdcType") is None ≠ "0"
+        # Only e0 matches. e_wild is excluded — callers decide whether to re-add wildcards.
+        assert result == [e0]

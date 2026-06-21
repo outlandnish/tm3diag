@@ -74,6 +74,37 @@ def find_firmware(
     return matches
 
 
+def varying_condition_keys(matches: list[FirmwareEntry]) -> list[str]:
+    """Return sorted condition key names whose values differ across *matches*.
+
+    Wildcard entries (conditions == {}) are excluded from the analysis but
+    do not prevent other entries from being analysed.
+    """
+    typed = [e for e in matches if e.conditions]
+    if len(typed) <= 1:
+        return []
+    all_keys: set[str] = set()
+    for e in typed:
+        all_keys.update(e.conditions)
+    return sorted(
+        k for k in all_keys
+        if len({e.conditions.get(k) for e in typed}) > 1
+    )
+
+
+def narrow_by_conditions(
+    matches: list[FirmwareEntry],
+    key: str,
+    value: str,
+) -> list[FirmwareEntry]:
+    """Return entries from *matches* where conditions[key] == value.
+
+    Falls back to *matches* unchanged if the filter would produce an empty list.
+    """
+    filtered = [e for e in matches if e.conditions.get(key) == value]
+    return filtered if filtered else matches
+
+
 def packed_key_from_f180(f180: bytes) -> int:
     """
     Derive the version_map packed key from the 19-byte BOOTLOADER_VERSION DID (0xF180).

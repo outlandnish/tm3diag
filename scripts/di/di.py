@@ -36,6 +36,7 @@ from __future__ import annotations
 
 import argparse
 import sys
+import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
@@ -58,6 +59,19 @@ PRND_GEARS = {"P": 8, "PARK": 8, "R": 2, "REVERSE": 2,
               "N": 1, "NEUTRAL": 1, "D": 4, "DRIVE": 4}
 DRIVE_MODES = {"chill": 0, "sport": 1}
 STOPPING_MODES = {"standard": 0, "creep": 1, "hold": 2}
+
+# --- DI_systemStatus (0x118) — the DI's own report, RX-decoded into the cache ---
+# Used to confirm what the inverter is actually doing. Enum maps are from the
+# Tesla compact DB (DI internal encoding, distinct from PRND_command above).
+DI_STATUS_ID = 0x118
+DI_GEAR_LABELS = {0: "INVALID", 1: "P", 2: "R", 3: "N", 4: "D", 7: "SNA"}
+DI_IMMO_LABELS = {
+    0: "INIT_SNA", 1: "REQUEST", 2: "AUTHENTICATING", 3: "DISARMED",
+    4: "IDLE", 5: "RESET", 6: "FAULT",
+}
+DI_SYS_LABELS = {
+    0: "UNAVAILABLE", 1: "IDLE", 2: "STANDBY", 3: "FAULT", 4: "ABORT", 5: "ENABLE",
+}
 
 # --- 0x54 System_for_control --------------------------------------------------
 #   System_mode @ bit16 w8 LITTLE (off=0 Drive=1 Charge=2)
@@ -174,18 +188,47 @@ def _make_controls(state: BenchState) -> dict:
         state.set("regen_max_pct", max(0.0, min(100.0, float(pct))))
         print(f"  regen max -> {state.get('regen_max_pct')}%")
 
+    def _di_report() -> str:
+        """One-line view of what the DI reports on 0x118 (from the RX cache)."""
+        immo = state.signal("DI_immobilizerState")
+        sysst = state.signal("DI_systemState")
+        di_gear = state.signal("DI_gear")
+        pedal = state.signal("DI_accelPedalPos")
+        brake = state.signal("DI_brakePedalState")
+        if immo is None and sysst is None:
+            return "  DI report: (no 0x118 seen yet — is the DU powered + on the bus?)"
+        def lbl(table, v):
+            return table.get(int(v), f"?{v}") if v is not None else "—"
+        return (f"  DI report: immo={lbl(DI_IMMO_LABELS, immo)} "
+                f"sys={lbl(DI_SYS_LABELS, sysst)} gear={lbl(DI_GEAR_LABELS, di_gear)} "
+                f"pedal={pedal if pedal is not None else '—'}% "
+                f"brake={'ON' if brake == 1 else 'OFF' if brake == 0 else '—'}")
+
     def status() -> None:
-        """Show current commanded state + decode the DI's last 0x118 if seen."""
+        """Show commanded state + what the DI reports back on 0x118."""
         inv = {v: k for k, v in PRND_GEARS.items() if len(k) == 1}
         sysinv = {v: k for k, v in SYSTEM_MODES.items()}
-        print(f"  gear={inv.get(state.get('gear', 8), '?')} "
+        print(f"  commanded: gear={inv.get(state.get('gear', 8), '?')} "
               f"system={sysinv.get(state.get('system_mode', 0), '?')} "
               f"drive_mode={state.get('drive_mode', 0)} "
               f"regen={state.get('regen_max_pct', 100)}%")
+        print(_di_report())
+
+    def watch(seconds: float = 10.0) -> None:
+        """watch(seconds) — live-print the DI's 0x118 report; useful to see the
+        immobilizer handshake (REQUEST -> AUTHENTICATING -> DISARMED)."""
+        end = time.monotonic() + seconds
+        last = None
+        while time.monotonic() < end:
+            line = _di_report()
+            if line != last:
+                print(line)
+                last = line
+            time.sleep(0.1)
 
     return {
         "gear": gear, "system": system, "drivemode": drivemode,
-        "stopping": stopping, "regen": regen, "status": status,
+        "stopping": stopping, "regen": regen, "status": status, "watch": watch,
     }
 
 

@@ -166,22 +166,19 @@ class TestPackedKeyAgainstRealMap:
 class TestConditionNarrowing:
     """varying_condition_keys and narrow_by_conditions against the highland fixture."""
 
-    def test_no_variation_returns_empty(self, entries):
-        # adsp entries have chassisType but it's the same value across all — no variation
-        adsp = [e for e in entries if e.component == "adsp"]
-        assert adsp, "need adsp entries in fixture"
-        keys = varying_condition_keys(adsp)
-        # chassisType may vary across adsp entries; we just assert the return type
-        assert isinstance(keys, list)
-        assert all(isinstance(k, str) for k in keys)
+    def test_no_variation_returns_empty(self):
+        from uds_local.metadata import FirmwareEntry
+        e0 = FirmwareEntry("x:1", "a.bhx", "a.bhx", "x", "aa", {"vdcType": "0"}, "s")
+        e1 = FirmwareEntry("x:1", "b.bhx", "b.bhx", "x", "bb", {"vdcType": "0"}, "s")
+        assert varying_condition_keys([e0, e1]) == []
 
     def test_single_entry_no_variation(self, entries):
         # A set of one entry never has varying keys
         single = entries[:1]
         assert varying_condition_keys(single) == []
 
-    def test_vdctype_shows_as_varying_for_pmr(self, entries):
-        # Highland has pmr entries gated on driveInterfaceType — check a key actually varies
+    def test_varying_keys_returned_for_component_with_multiple_conditions(self, entries):
+        # pmr entries vary on drivetrainType (and possibly others) in the highland fixture
         pmr = [e for e in entries if e.component == "pmr"]
         if not pmr:
             pytest.skip("no pmr entries in highland fixture")
@@ -211,7 +208,7 @@ class TestConditionNarrowing:
         result = narrow_by_conditions([e0, e1], "vdcType", "9")
         assert result == [e0, e1]
 
-    def test_narrow_by_conditions_wildcard_entries_survive(self):
+    def test_narrow_by_conditions_wildcard_entries_excluded(self):
         e_wild = FirmwareEntry("x:1", "w.bhx", "w.bhx", "x", "cc", {}, "s")
         e0 = FirmwareEntry("x:1", "a.bhx", "a.bhx", "x", "aa", {"vdcType": "0"}, "s")
         e1 = FirmwareEntry("x:1", "b.bhx", "b.bhx", "x", "bb", {"vdcType": "1"}, "s")

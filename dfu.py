@@ -91,8 +91,7 @@ def _prompt_conditions(
 
     keys = varying_condition_keys(matches)
     for key in keys:
-        typed = [e for e in matches if e.conditions]
-        values = sorted({e.conditions[key] for e in typed if key in e.conditions})
+        values = sorted({e.conditions[key] for e in matches if key in e.conditions})
         if len(values) <= 1:
             continue
         choice = prompt_select(

@@ -84,7 +84,7 @@ def varying_condition_keys(matches: list[FirmwareEntry]) -> list[str]:
         all_keys.update(e.conditions)
     return sorted(
         k for k in all_keys
-        if len({e.conditions.get(k) for e in typed}) > 1
+        if len({e.conditions[k] for e in typed if k in e.conditions}) > 1
     )
 
 

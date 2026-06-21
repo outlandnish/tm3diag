@@ -78,6 +78,49 @@ def _apply_scale(raw: int, sig: dict[str, Any]) -> float:
     return raw * scale + offset
 
 
+def _phys_to_raw(phys: float | int, sig: dict[str, Any]) -> int:
+    """Inverse of _apply_scale: physical value -> raw integer field."""
+    scale = sig.get("scale", 1) or 1
+    offset = sig.get("offset", 0)
+    width = sig.get("width", 1)
+    signedness = sig.get("signedness", "UNSIGNED")
+
+    raw = round((phys - offset) / scale)
+    if signedness == "SIGNED" and raw < 0:
+        raw += 1 << width
+    return raw & ((1 << width) - 1)
+
+
+def _pack_bits(raw: int, sig: dict[str, Any], length: int) -> int:
+    """Place ``raw`` into a little-endian integer view of a ``length``-byte frame.
+
+    Mirrors _extract_bits_little / _extract_bits_big so encode round-trips decode.
+    """
+    start = sig["start_position"]
+    width = sig["width"]
+    endian = sig.get("endianness", "LITTLE")
+    raw &= (1 << width) - 1
+
+    if endian == "LITTLE":
+        return raw << start
+
+    # Big-endian (Motorola): walk bits MSB-first from (byte, bit) like the
+    # decoder, setting each bit in the little-endian frame integer.
+    out = 0
+    b = start // 8
+    bit = start % 8
+    remaining = width
+    while remaining > 0:
+        bits_this_byte = min(bit + 1, remaining)
+        shift = bit + 1 - bits_this_byte
+        chunk = (raw >> (remaining - bits_this_byte)) & ((1 << bits_this_byte) - 1)
+        out |= chunk << (b * 8 + shift)
+        remaining -= bits_this_byte
+        b += 1
+        bit = 7
+    return out
+
+
 def _is_hex_signal(sig: dict[str, Any], name: str) -> bool:
     lower = name.lower()
     return sig.get("width", 0) % 8 == 0 and ("hash" in lower or "crc" in lower)
@@ -192,6 +235,49 @@ class CanDatabase:
             obj._by_node.setdefault(sender, []).append(ct_msg.frame_id)
 
         return obj
+
+    def message_by_name(self, name: str) -> dict[str, Any] | None:
+        for msg in self.messages.values():
+            if msg.get("name") == name:
+                return msg
+        return None
+
+    def encode_frame(
+        self,
+        msg: int | str,
+        signal_values: dict[str, float | int],
+        *,
+        strict: bool = True,
+    ) -> bytes:
+        """Encode named signal values into a raw CAN payload (inverse of decode).
+
+        ``msg`` is a message id or name. ``signal_values`` maps signal name ->
+        physical value; unspecified signals are left at 0. Returns the frame
+        bytes (length from the DB's ``length_bytes``, default 8).
+
+        With ``strict`` (default), an unknown signal name raises KeyError so a
+        typo doesn't silently no-op. A muxer signal value selects the slot.
+        """
+        m = self.messages.get(msg) if isinstance(msg, int) else self.message_by_name(msg)
+        if m is None:
+            raise KeyError(f"message {msg!r} not in database")
+
+        length = m.get("length_bytes", 8)
+        value = 0  # little-endian integer view of the whole frame
+        signals = m.get("signals", {})
+
+        if strict:
+            unknown = set(signal_values) - set(signals)
+            if unknown:
+                raise KeyError(f"unknown signal(s) for {m.get('name', msg)}: {sorted(unknown)}")
+
+        for sname, sig in signals.items():
+            if sname not in signal_values:
+                continue
+            raw = _phys_to_raw(signal_values[sname], sig)
+            value |= _pack_bits(raw, sig, length)
+
+        return value.to_bytes(length, "little")
 
     def nodes(self) -> list[str]:
         return sorted(self._by_node.keys())

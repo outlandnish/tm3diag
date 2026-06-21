@@ -1,10 +1,10 @@
-# pcs_send.py — Interactive PCS CAN scripting shell
+# pcs.py — Interactive PCS CAN scripting shell
 
-Interactive Python REPL (IPython if available, otherwise stdlib) for experimenting with Tesla PCS CAN control messages. Runs alongside `can_live.py` on the same interface.
+Interactive Python REPL (IPython if available, otherwise stdlib) for experimenting with Tesla PCS CAN control messages. Runs alongside `can_live.py` on the same interface. Built on the shared `ecu_bench` core (formerly `pcs_send.py`).
 
 ```
-python pcs_send.py
-python pcs_send.py --channel can0
+python scripts/pcs/pcs.py
+python scripts/pcs/pcs.py --channel can0
 ```
 
 ## Options

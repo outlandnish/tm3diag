@@ -1,6 +1,6 @@
 # PCS Operating Modes
 
-Reference for entering each PCS operating mode via `pcs_send.py`. Covers what
+Reference for entering each PCS operating mode via `scripts/pcs/pcs.py`. Covers what
 we transmit, what the PCS and surrounding ECUs report back, and what confirms
 the mode is active.
 

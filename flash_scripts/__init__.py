@@ -26,6 +26,7 @@ from ._context import FlashScript as FlashScript
 from ._context import StepFn as StepFn
 from ._dual_cpu import find_dual_cpu_pair as find_dual_cpu_pair
 from ._dual_cpu import run_pcs_dual_cpu as run_pcs_dual_cpu
+from ._dual_cpu import secondary_fallback_module_byte as secondary_fallback_module_byte
 from ._ecu_map import ECU_SCRIPT_MAP as ECU_SCRIPT_MAP
 from ._ecu_map import get_script as get_script
 from ._groups import (  # noqa: F401

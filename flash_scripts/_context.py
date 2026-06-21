@@ -61,11 +61,13 @@ class FlashScript:
         channel: str | None = None,
         interface: str | None = None,
         display: StatusDisplay | None = None,
+        fallback_module_byte: int | None = None,
     ) -> None:
         ctx = FlashContext(
             bhx_file=bhx_file,
             entry=entry,
             module_byte=self.module_byte,
+            fallback_module_byte=fallback_module_byte,
             erase_timeout=self.erase_timeout,
             security_level=self.security_level,
             expected_fw_type=self.expected_fw_type,

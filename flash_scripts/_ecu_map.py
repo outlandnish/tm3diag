@@ -75,21 +75,28 @@ ECU_SCRIPT_MAP: dict[str, _Entry] = {
     # vcleft (0x00651050)
     "vcleft": (SCRIPT_VCLEFT, 0x00),
 
-    # pcs/pcscpu2/di/dis/pm/pms (0x00651070)
+    # pcs/pcscpu2/di/dis/pm/pms/pmr/pmrs/dir/dirs (0x00651070)
     #
     # Module bytes for primary/secondary CPU selection (DID 0x0102):
     #
     # di/dis have their own dedicated CAN nodes (0x606/0x605) — the 0x04 wire
     # byte is confirmed for those nodes.
+    # pmr/pmrs are the rear equivalent of pm/pms (rear power management).
+    # dir/dirs are the rear equivalent of di/dis (rear drive inverter).
     "pcs":     (SCRIPT_PCS, 0x00),  # primary / CPU1 — verified via PM log
     "pm":      (SCRIPT_PCS, 0x00),  # primary / CPU1 — verified via PM log
     "pms":     (SCRIPT_PCS, 0x00),  # primary / CPU1
+    "pmr":     (SCRIPT_PCS, 0x00),  # primary / CPU1 — rear motor
+    "pmrs":    (SCRIPT_PCS, 0x00),  # primary / CPU1 — rear motor (signed)
     # secondary / CPU2 — shared PCS node; sim value, unverified
     "pcscpu2": (SCRIPT_PCS, 0x0C),
     # secondary / CPU2 — verified via DI log (separate node)
     "di":      (SCRIPT_PCS, 0x0C),
     # secondary / CPU2 — separate node, assumed same as di
     "dis":     (SCRIPT_PCS, 0x0C),
+    # secondary / CPU2 — rear drive inverter, assumed same as di/dis
+    "dir":     (SCRIPT_PCS, 0x0C),
+    "dirs":    (SCRIPT_PCS, 0x0C),
 
     # park (0x006510d0)
     "park": (SCRIPT_PARK, 0x00),

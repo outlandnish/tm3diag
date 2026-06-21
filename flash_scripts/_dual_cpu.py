@@ -38,16 +38,26 @@ if TYPE_CHECKING:
 
 
 # ecu_type → role in PCS-family dual-CPU pairings
-_PCS_PRIMARY_TYPES = frozenset({"pcs", "pm", "pms"})
-_PCS_SECONDARY_TYPES = frozenset({"pcscpu2", "di", "dis"})
+_PCS_PRIMARY_TYPES = frozenset({"pcs", "pm", "pms", "pmr", "pmrs"})
+_PCS_SECONDARY_TYPES = frozenset({"pcscpu2", "di", "dis", "dir", "dirs"})
 
 # Fallback module bytes for secondary CPUs — tried if the primary byte gets
 # NRC 0x10/0x31. Newer firmware uses 0x04; older firmware uses 0x0C.
+# Also used as the prog-0 standalone module byte for secondaries on their own
+# CAN endpoint (di/dis/dir/dirs): the ECU map holds 0x0C (prog-1 value) and
+# this fallback holds the confirmed prog-0 wire value.
 _SECONDARY_MODULE_FALLBACK: dict[str, int] = {
     "pcscpu2": 0x04,
     "di":      0x04,
     "dis":     0x04,
+    "dir":     0x04,
+    "dirs":    0x04,
 }
+
+
+def secondary_fallback_module_byte(ecu_type: str) -> int | None:
+    """Return the fallback module byte for a secondary CPU ecu_type, or None."""
+    return _SECONDARY_MODULE_FALLBACK.get(ecu_type.lower())
 
 
 def find_dual_cpu_pair(selected: list) -> tuple[object, object] | None:

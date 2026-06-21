@@ -24,6 +24,7 @@ from flash_scripts import (
     parent_node_for_bootloader,
     parent_node_for_subcomponent,
     run_pcs_dual_cpu,
+    secondary_fallback_module_byte,
 )
 from flash_scripts._display import StatusDisplay
 from flash_scripts._prompt import prompt_confirm, prompt_select
@@ -391,10 +392,12 @@ def phase4_dry_run(artifacts_dir: Path, selected: list, display: StatusDisplay) 
         src = artifacts_dir / entry.src_path
         bhx_file = _parse_firmware(src)
 
+        fallback = secondary_fallback_module_byte(ecu_type)
         step_names = [s.__name__ for s in script.steps]
         print(f"\n  {entry.dest_name}  ({entry.src_path})")
         print(f"    ecu_type:       {ecu_type}")
-        print(f"    module_byte:    0x{module_byte:02X}")
+        print(f"    module_byte:    0x{module_byte:02X}"
+              + (f"  (fallback: 0x{fallback:02X})" if fallback is not None else ""))
         print(f"    security_level: {script.security_level}")
         print(f"    erase_timeout:  {script.erase_timeout}s")
         print(f"    steps:          {' → '.join(step_names)}")
@@ -473,7 +476,11 @@ def phase4_flash(
         bhx_file = _parse_firmware(src)
 
         script.module_byte = module_byte
-        script.run(sess, bhx_file, entry, channel=channel, interface=interface, display=display)
+        script.run(
+            sess, bhx_file, entry,
+            channel=channel, interface=interface, display=display,
+            fallback_module_byte=secondary_fallback_module_byte(ecu_type),
+        )
 
         if fw_index == len(selected) - 1:
             display.set_detail("Flash complete")

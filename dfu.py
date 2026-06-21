@@ -85,18 +85,25 @@ def phase1_identity(sess: UdsSession, node_name: str, display: StatusDisplay) ->
 def _prompt_conditions(
     matches: list,
     display: StatusDisplay,
+    label_map: dict[str, dict[str, str]] | None = None,
 ) -> list:
     """Narrow *matches* by prompting for each varying condition key in turn."""
     from uds_local.metadata import narrow_by_conditions, varying_condition_keys
 
+    label_map = label_map or {}
     keys = varying_condition_keys(matches)
     for key in keys:
         values = sorted({e.conditions[key] for e in matches if key in e.conditions})
         if len(values) <= 1:
             continue
+        table = label_map.get(key, {})
+        labels = [
+            f"{key}={v} ({table[v]})" if v in table else f"{key}={v}"
+            for v in values
+        ]
         choice = prompt_select(
             f"Select {key}",
-            [f"{key}={v}" for v in values],
+            labels,
             default=0,
             display=display,
         )
@@ -111,6 +118,7 @@ def phase2_firmware_selection(
     display: StatusDisplay,
 ) -> list:
     """Load metadata and return selected FirmwareEntry list."""
+    from uds_local.condition_labels import load_condition_labels
     from uds_local.metadata import find_firmware, load_metadata
 
     display.set_header("[2/4] Firmware Selection")
@@ -133,7 +141,8 @@ def phase2_firmware_selection(
     if len(matches) == 1:
         selected = matches
     else:
-        matches = _prompt_conditions(matches, display)
+        label_map = load_condition_labels(_cfg.ETH_COMPACT)
+        matches = _prompt_conditions(matches, display, label_map=label_map)
         dest_names = {e.dest_name for e in matches}
         if len(dest_names) == len(matches):
             selected = matches

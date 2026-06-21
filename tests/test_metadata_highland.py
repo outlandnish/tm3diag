@@ -293,3 +293,74 @@ class TestPromptConditions:
         from flash_scripts._display import StatusDisplay
         result = dfu._prompt_conditions([e0], StatusDisplay())
         assert result == [e0]
+
+    def test_label_map_annotates_prompt_options(self, monkeypatch):
+        import dfu
+        calls = []
+        def fake_select(question, labels, default=0, display=None):
+            calls.append(labels)
+            return 0
+        monkeypatch.setattr("dfu.prompt_select", fake_select)
+
+        e0 = self._make_entry("a", {"vdcType": "0"})
+        e1 = self._make_entry("b", {"vdcType": "1"})
+        label_map = {"vdcType": {"0": "BOSCH_VDC", "1": "TESLA_VDC"}}
+        from flash_scripts._display import StatusDisplay
+        dfu._prompt_conditions([e0, e1], StatusDisplay(), label_map=label_map)
+
+        assert len(calls) == 1
+        assert calls[0] == ["vdcType=0 (BOSCH_VDC)", "vdcType=1 (TESLA_VDC)"]
+
+    def test_no_label_map_falls_back_to_bare(self, monkeypatch):
+        import dfu
+        calls = []
+        def fake_select(question, labels, default=0, display=None):
+            calls.append(labels)
+            return 0
+        monkeypatch.setattr("dfu.prompt_select", fake_select)
+
+        e0 = self._make_entry("a", {"vdcType": "0"})
+        e1 = self._make_entry("b", {"vdcType": "1"})
+        from flash_scripts._display import StatusDisplay
+        dfu._prompt_conditions([e0, e1], StatusDisplay(), label_map=None)
+
+        assert calls[0] == ["vdcType=0", "vdcType=1"]
+
+    def test_partial_label_map_falls_back_for_unknown_key(self, monkeypatch):
+        import dfu
+        calls = []
+        def fake_select(question, labels, default=0, display=None):
+            calls.append((question, labels))
+            return 0
+        monkeypatch.setattr("dfu.prompt_select", fake_select)
+
+        # 4 entries so both keys vary independently after narrowing on either one.
+        e00 = self._make_entry("a", {"drivetrainType": "0", "unknownKey": "0"})
+        e01 = self._make_entry("b", {"drivetrainType": "0", "unknownKey": "1"})
+        e10 = self._make_entry("c", {"drivetrainType": "1", "unknownKey": "0"})
+        e11 = self._make_entry("d", {"drivetrainType": "1", "unknownKey": "1"})
+        label_map = {"drivetrainType": {"0": "RWD", "1": "AWD"}}
+        from flash_scripts._display import StatusDisplay
+        dfu._prompt_conditions([e00, e01, e10, e11], StatusDisplay(), label_map=label_map)
+
+        prompted = {q: lbls for q, lbls in calls}
+        # drivetrainType has labels
+        assert prompted["Select drivetrainType"] == ["drivetrainType=0 (RWD)", "drivetrainType=1 (AWD)"]
+        # unknownKey has no label entry — bare format
+        assert prompted["Select unknownKey"] == ["unknownKey=0", "unknownKey=1"]
+
+    def test_label_map_missing_value_falls_back_to_bare(self, monkeypatch):
+        import dfu
+        calls = []
+        def fake_select(question, labels, default=0, display=None):
+            calls.append(labels)
+            return 0
+        monkeypatch.setattr("dfu.prompt_select", fake_select)
+
+        e0 = self._make_entry("a", {"vdcType": "0"})
+        e1 = self._make_entry("b", {"vdcType": "99"})  # 99 not in label map
+        label_map = {"vdcType": {"0": "BOSCH_VDC", "1": "TESLA_VDC"}}
+        from flash_scripts._display import StatusDisplay
+        dfu._prompt_conditions([e0, e1], StatusDisplay(), label_map=label_map)
+
+        assert calls[0] == ["vdcType=0 (BOSCH_VDC)", "vdcType=99"]

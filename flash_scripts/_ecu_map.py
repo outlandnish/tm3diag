@@ -175,23 +175,89 @@ ECU_SCRIPT_MAP: dict[str, _Entry] = {
     "bleepleft":  (SCRIPT_THS, 0x0F),
     "bleepright": (SCRIPT_THS, 0x0F),
 
-    # Bootloader-updater pairs (`*bu` first, then `*bl`) — see _BL_PARENT_NODE
-    # in flash_scripts._groups. They use the parent ECU's CAN IDs; nothing
-    # extra to set up at the transport layer. Module byte at +0x20 in the
-    # binary is 0x00 for all of these. Scripts: bu uses 0x00651300, bl uses
-    # 0x00651340. (The byte at +0x1C is the parent ECU's node_id, not the
-    # module byte.)
-    "parkbu":    (SCRIPT_BL_UPDATER,         0x00),
-    "parkbl":    (SCRIPT_BL,                 0x00),
-    "hvbmsbu":   (SCRIPT_BL_UPDATER,         0x00),
-    "hvbmsbl":   (SCRIPT_BL,                 0x00),
-    "hvpbu":     (SCRIPT_BL_UPDATER,         0x00),
-    "hvpbl":     (SCRIPT_BL,                 0x00),
-    "vcfrontbu": (SCRIPT_BL_UPDATER_VCFRONT, 0x00),
-    "vcfrontbl": (SCRIPT_BL,                 0x00),
-    "pcsbu":     (SCRIPT_BL_UPDATER,         0x00),
-    "pcsbl":     (SCRIPT_BL,                 0x00),
+    # Bootloader-updater pairs are added programmatically below (see
+    # BL_PARENT_ECUS / _add_bootloader_entries) so the *bu/*bl set stays in
+    # one place and _groups.py can share it.
 }
+
+
+# ---------------------------------------------------------------------------
+# Bootloader-updater (`*bu`) + bootloader-image (`*bl`) pairs
+# ---------------------------------------------------------------------------
+#
+# For every parent ECU that ships a bootloader update, the metadata map carries
+# a `<parent>bu` (updater agent) and `<parent>bl` (bootloader image) ecu_type.
+# They flash via the parent ECU's CAN IDs (nothing extra at the transport
+# layer) and the module byte at +0x20 is 0x00 for all of them. The `bu` runs
+# script 0x00651300 (SCRIPT_BL_UPDATER), the `bl` runs 0x00651340 (SCRIPT_BL);
+# bu→bl→app order is mandatory. (The non-zero byte at +0x1C is the parent's
+# node_id, not the module byte.)
+#
+# `vcfront` is the one exception: its updater needs the VCRIGHT OTA preamble,
+# so `vcfrontbu` uses SCRIPT_BL_UPDATER_VCFRONT instead of SCRIPT_BL_UPDATER.
+#
+# This is the authoritative list of parent ECU node names with bootloader
+# artifacts, sourced from `signed_metadata_map.tsv` across the firmware sets.
+#
+# IMPORTANT: each entry is a *parent app* name; the bu/bl children are derived
+# as `<parent>bu`/`<parent>bl`. `epbl` (EPB-left) and `epbr` (EPB-right) are
+# themselves real app ECUs that happen to end in "bl"/"br" — they are parents
+# here, so their children are `epblbu`/`epblbl` and `epbrbu`/`epbrbl`. The
+# parents `epbl`/`epbr` are NOT in the derived child set (_BL_PARENT_NODE), so
+# they stay classified as apps. Driving bu/bl detection off this explicit set
+# — rather than an `endswith('bl')` string test — is what keeps `epbl` from
+# being misread as a bootloader image.
+BL_PARENT_ECUS: tuple[str, ...] = (
+    "bleepcradle",
+    "cp",
+    "dpb",
+    "epas3p",
+    "epas3s",
+    "epbl",      # EPB-left app; children epblbu/epblbl
+    "epbr",      # EPB-right app; children epbrbu/epbrbl
+    "esp",
+    "hvbms",
+    "hvp",
+    "ibst",
+    "icr",
+    "idb",
+    "ocs1p",
+    "park",
+    "pcs",
+    "pcscpu2",
+    "plg",
+    "pm",
+    "pmf",
+    "pmr",
+    "rcu",
+    "trcm",
+    "vcbatt",
+    "vcfront",
+    "vcleft",
+    "vcright",
+    "vcseat2l",
+    "vcseat2r",
+    "vcsec",
+    "wpc",
+)
+
+# A few parents only ship a bootloader image (`*bl`) with no matching updater
+# (`*bu`) in the observed artifact set, or vice versa. Listing both keys is
+# harmless — get_script is only called for ecu_types that actually appear in a
+# plan — so we generate the full pair for every parent and rely on the planner
+# to request only the files that exist.
+
+
+def _add_bootloader_entries(table: dict[str, _Entry]) -> None:
+    for parent in BL_PARENT_ECUS:
+        updater = (
+            SCRIPT_BL_UPDATER_VCFRONT if parent == "vcfront" else SCRIPT_BL_UPDATER
+        )
+        table[f"{parent}bu"] = (updater, 0x00)
+        table[f"{parent}bl"] = (SCRIPT_BL, 0x00)
+
+
+_add_bootloader_entries(ECU_SCRIPT_MAP)
 
 
 def get_script(ecu_type: str) -> _Entry:

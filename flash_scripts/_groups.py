@@ -14,29 +14,31 @@ prompts and reorder the selected entry list:
 # Bootloader pairs
 # ---------------------------------------------------------------------------
 
-# Suffix → parent ECU node name for bootloader nodes. Used by phase 2 to
-# verify that the user's --node argument can drive the bootloader flash, and
-# by display logic to group bu+bl with the parent app entry.
-_BL_PARENT_NODE: dict[str, str] = {
-    "parkbu":     "park",
-    "parkbl":     "park",
-    "hvbmsbu":    "hvbms",
-    "hvbmsbl":    "hvbms",
-    "hvpbu":      "hvp",
-    "hvpbl":      "hvp",
-    "vcfrontbu":  "vcfront",
-    "vcfrontbl":  "vcfront",
-    "pcsbu":      "pcs",
-    "pcsbl":      "pcs",
-    "pcscpu2bu":  "pcs",
-    "pcscpu2bl":  "pcs",
-}
+from ._ecu_map import BL_PARENT_ECUS
+
+# ecu_type → parent ECU node name, for both the updater (`<parent>bu`) and the
+# image (`<parent>bl`). Built from the authoritative BL_PARENT_ECUS list in
+# _ecu_map so the set of recognised bootloader types stays in one place.
+#
+# Detection is driven off this explicit dict — NOT an `endswith('bl')` string
+# test — because some real app ECUs end in "bl" (e.g. `epbl`, the EPB-left
+# app). `epbl` is a parent here, so its *children* `epblbu`/`epblbl` are
+# recognised as bootloaders while `epbl` itself maps to nothing and is
+# correctly treated as a regular app.
+_BL_PARENT_NODE: dict[str, str] = {}
+for _parent in BL_PARENT_ECUS:
+    _BL_PARENT_NODE[f"{_parent}bu"] = _parent
+    _BL_PARENT_NODE[f"{_parent}bl"] = _parent
+del _parent
 
 
 def is_bootloader_ecu_type(ecu_type: str) -> bool:
-    """True if ecu_type names a bootloader updater/image (bu/bl)."""
-    t = ecu_type.lower()
-    return t.endswith("bu") or t.endswith("bl")
+    """True if ecu_type names a known bootloader updater/image (`*bu`/`*bl`).
+
+    Recognised via the explicit BL_PARENT_ECUS-derived set, so app ecu_types
+    that happen to end in "bl" (e.g. `epbl`) are NOT misclassified.
+    """
+    return ecu_type.lower() in _BL_PARENT_NODE
 
 
 def parent_node_for_bootloader(ecu_type: str) -> str | None:
@@ -49,17 +51,19 @@ def find_bootloader_entries(selected: list) -> tuple[list, list, list]:
 
     `bu` and `bl` lists hold the bootloader-update entries; `app_entries`
     is everything else (regular firmware, ramapp, etc.). Order within each
-    list preserves the input order.
+    list preserves the input order. Only ecu_types in the recognised
+    bootloader set (see `is_bootloader_ecu_type`) are routed to bu/bl —
+    real apps ending in "bl" (e.g. `epbl`) stay in `app_entries`.
     """
     bus, bls, apps = [], [], []
     for e in selected:
         ecu_type = e.component.lower()
-        if ecu_type.endswith("bu"):
-            bus.append(e)
-        elif ecu_type.endswith("bl"):
-            bls.append(e)
-        else:
+        if ecu_type not in _BL_PARENT_NODE:
             apps.append(e)
+        elif ecu_type.endswith("bu"):
+            bus.append(e)
+        else:  # endswith("bl"), and known
+            bls.append(e)
     return bus, bls, apps
 
 

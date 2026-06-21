@@ -23,7 +23,7 @@ from uds_local.client import (
     _SESSION_SAFETY,
 )
 from uds_local.node_config import NodeConfig
-from uds_local.odj import FieldSpec, OdjEntry, RoutineEntry, IoControlEntry
+from uds_local.odj import FieldSpec, IoControlEntry, OdjEntry, RoutineEntry
 from uds_local.resolve import IOCP_SUFFIX_MAP as _IOCP_SUFFIX_MAP
 
 _log = logging.getLogger(__name__)
@@ -31,14 +31,67 @@ _log = logging.getLogger(__name__)
 warnings.filterwarnings("ignore", category=RuntimeWarning,
                         module=r"uds\.packet\.abstract_packet")
 warnings.filterwarnings(
-    "ignore", message="A CAN packet that does not start UDS message transmission")
+    "ignore",
+    message="A CAN packet that does not start UDS message transmission")
 warnings.filterwarnings(
     "ignore", module=r"uds\.can\.transport_interface\.common")
+# Silence all warnings from the uds python_can transport (e.g. the Notifier
+# timeout UserWarning) and from the python-can library itself.
+warnings.filterwarnings(
+    "ignore", module=r"uds\.can\.transport_interface\.python_can")
+warnings.filterwarnings("ignore", module=r"can(\..*)?")
 
 
-_NODES_JSON = _cfg.NODES_JSON
-_ETH_COMPACT = _cfg.ETH_COMPACT
-_ODJ_DIR = _cfg.ODJ_DIR
+# ---------------------------------------------------------------------------
+# Product selection
+# ---------------------------------------------------------------------------
+
+def _select_product() -> _cfg.FwPaths:
+    """Prompt the user to choose a device/product when multiple are available.
+
+    Returns a FwPaths for the chosen product. Falls back to the default
+    (TM3_PRODUCT env var, or the first available product) without prompting
+    when there is only one choice or TM3_PRODUCT is explicitly set.
+    """
+    products = _cfg.available_products()
+
+    import os
+    explicit = os.environ.get("TM3_PRODUCT")
+
+    if explicit:
+        return _cfg.FwPaths(explicit)
+
+    if len(products) <= 1:
+        product = products[0] if products else _cfg.PRODUCT
+        return _cfg.FwPaths(product)
+
+    _hdr("Select device")
+    for i, name in enumerate(products, 1):
+        print(f"  {i}.  {name}")
+    print()
+
+    _setup_completion(products)
+    while True:
+        try:
+            raw = input("  Device> ").strip()
+        except (EOFError, KeyboardInterrupt):
+            raise SystemExit(0) from None
+        if not raw:
+            continue
+        # Accept a number or the name directly
+        if raw.isdigit():
+            idx = int(raw) - 1
+            if 0 <= idx < len(products):
+                return _cfg.FwPaths(products[idx])
+            print(f"  Enter a number between 1 and {len(products)}")
+        elif raw in products:
+            return _cfg.FwPaths(raw)
+        else:
+            print(
+                f"  Unknown product {raw!r}. "
+                f"Choose from: {', '.join(products)}"
+            )
+
 
 _NAMED_ROUTINES: dict[str, tuple[int, str, bool]] = {
     "erase":              (0xFF00, "initializeEraseModule — EraseMemory", True),
@@ -137,7 +190,7 @@ def _print_did_response(name: str, did_id: int, data: bytes, fields: dict[str, F
 # Node selection
 # ---------------------------------------------------------------------------
 
-def _pre_connection_menu(nodes: dict, channel: str, interface: str) -> str | None:
+def _pre_connection_menu(nodes: dict, channel: str, interface: str, fw: _cfg.FwPaths) -> str | None:
     """Top-level menu shown before connecting. Returns a node name or None to quit."""
     from uds_local.scanner import print_scan_table, scan_network
 
@@ -145,7 +198,7 @@ def _pre_connection_menu(nodes: dict, channel: str, interface: str) -> str | Non
     _setup_completion(["scan", "connect", "quit"] + node_names)
 
     while True:
-        _hdr("tm3diag  —  not connected")
+        _hdr(f"tm3diag  —  not connected  [{fw.product}]")
         print("  scan            Probe all known nodes on the bus")
         print("  connect <node>  Connect to a node by name")
         print("  quit            Exit")
@@ -168,7 +221,7 @@ def _pre_connection_menu(nodes: dict, channel: str, interface: str) -> str | Non
             print(f"\n  Scanning on {channel}...")
             try:
                 results = scan_network(
-                    channel, _NODES_JSON, _ETH_COMPACT, interface=interface)
+                    channel, fw.nodes_json, fw.eth_compact, interface=interface)
                 print()
                 print_scan_table(results)
                 print()
@@ -198,13 +251,18 @@ def _pre_connection_menu(nodes: dict, channel: str, interface: str) -> str | Non
 # Identity banner (0xF180)
 # ---------------------------------------------------------------------------
 
-def _show_identity(sess, cfg: NodeConfig) -> None:
+def _show_identity(sess, cfg: NodeConfig) -> bool:
+    """Read the identity DID (0xF180) to confirm the ECU is responding.
+
+    Returns True if the ECU answered (we're really connected), False if the
+    read failed — in which case the caller should not proceed to the menu.
+    """
     from uds_local.client import UdsError
     try:
         data = sess.read_did(0xF180)
     except UdsError as e:
         print(f"  Could not read 0xF180: {e}")
-        return
+        return False
 
     print(f"\n  Connected to {cfg.name}")
 
@@ -218,6 +276,7 @@ def _show_identity(sess, cfg: NodeConfig) -> None:
     if decoded:
         for fname, val in decoded:
             print(f"    {fname:<36} {val}")
+    return True
 
 
 # ---------------------------------------------------------------------------
@@ -582,10 +641,7 @@ def _dfu_menu(sess, cfg, artifacts_dir: Path | None, force: bool | None = None) 
 
     _hdr(f"Firmware update (DFU) — {cfg.name}")
 
-    if artifacts_dir is None:
-        artifacts_dir = _cfg.ARTIFACTS_DIR
-
-    if not artifacts_dir.is_dir():
+    if artifacts_dir is None or not artifacts_dir.is_dir():
         print(f"  Artifacts directory not found: {artifacts_dir}")
         print("  Set TM3_ARTIFACTS_DIR in .env or pass --artifacts")
         return
@@ -736,7 +792,9 @@ def main() -> int:
     _cfg.apply_defaults(parser)
     args = parser.parse_args()
 
-    nodes = json.loads(_NODES_JSON.read_text())
+    fw = _select_product()
+
+    nodes = json.loads(fw.nodes_json.read_text())
 
     node_name = args.node.upper() if args.node else None
     if node_name and node_name not in nodes:
@@ -746,31 +804,63 @@ def main() -> int:
     artifacts_dir = Path(args.artifacts).expanduser(
     ).resolve() if args.artifacts else None
 
-    if not node_name:
-        node_name = _pre_connection_menu(nodes, args.channel, args.interface)
-    if not node_name:
-        return 0
+    # Interactive: chosen from the pre-connection menu, so a failed connect
+    # returns there. --node: a single attempt that exits with the result code.
+    interactive = node_name is None
 
-    try:
-        cfg = load_node_config(node_name, _NODES_JSON, _ETH_COMPACT, _ODJ_DIR)
-    except Exception as e:
-        print(f"Error loading node config: {e}")
-        return 1
+    while True:
+        if interactive:
+            node_name = _pre_connection_menu(nodes, args.channel, args.interface, fw)
+            if not node_name:
+                return 0
 
+        try:
+            cfg = load_node_config(node_name, fw.nodes_json, fw.eth_compact, fw.odj_dir)
+        except Exception as e:
+            print(f"Error loading node config: {e}")
+            if interactive:
+                continue
+            return 1
+
+        connected = _connect_and_run(
+            cfg, node_name, args, artifacts_dir, fw=fw, UdsSession=UdsSession
+        )
+        # Interactive: only a failed connect returns to the node menu; a session
+        # the user quit ("Disconnect and exit") ends the program as advertised.
+        if interactive and not connected:
+            continue
+        return 0 if connected else 1
+
+
+def _connect_and_run(cfg, node_name, args, artifacts_dir, *, fw, UdsSession) -> bool:
+    """Connect to one node and run the menu. Returns False if the connect failed.
+
+    A failed connect (no 0xF180 response, or a session-level error) returns
+    False so an interactive caller can drop back to the node menu instead of
+    showing the main menu as if we were connected. Returns True once we've had
+    a live session, whether the user quit or hit Ctrl-C.
+    """
+    effective_artifacts = artifacts_dir or fw.artifacts_dir
     print(f"\nConnecting to {node_name} on {args.channel}...")
 
     try:
         with UdsSession(cfg, args.channel, interface=args.interface) as sess:
-            _show_identity(sess, cfg)
-            _main_menu(sess, cfg, artifacts_dir, force=args.force)
+            if not _show_identity(sess, cfg):
+                print(
+                    f"\n  No response from {node_name} on {args.channel}. "
+                    "Check that the ECU is powered, on the bus, and that the "
+                    "channel/interface are correct."
+                )
+                return False
+            _main_menu(sess, cfg, effective_artifacts, force=args.force)
     except KeyboardInterrupt:
         pass
     except Exception as e:
         print(f"\nError: {e}")
-        return 1
+        return False
 
     print("\nDisconnected.")
-    return 0
+    return True
 
 
 if __name__ == "__main__":

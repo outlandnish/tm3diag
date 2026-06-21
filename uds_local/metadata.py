@@ -75,11 +75,7 @@ def find_firmware(
 
 
 def varying_condition_keys(matches: list[FirmwareEntry]) -> list[str]:
-    """Return sorted condition key names whose values differ across *matches*.
-
-    Wildcard entries (conditions == {}) are excluded from the analysis but
-    do not prevent other entries from being analysed.
-    """
+    """Return sorted condition key names whose values differ across matches."""
     typed = [e for e in matches if e.conditions]
     if len(typed) <= 1:
         return []
@@ -97,10 +93,7 @@ def narrow_by_conditions(
     key: str,
     value: str,
 ) -> list[FirmwareEntry]:
-    """Return entries from *matches* where conditions[key] == value.
-
-    Falls back to *matches* unchanged if the filter would produce an empty list.
-    """
+    """Return entries where conditions[key] == value; falls back to matches if empty."""
     filtered = [e for e in matches if e.conditions.get(key) == value]
     return filtered if filtered else matches
 

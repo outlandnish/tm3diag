@@ -82,6 +82,12 @@ class BenchSpec:
     immo: ImmoSpec | None = None
     db_path: str | None = None     # override CAN DB path (else config default)
     on_init: Callable[[BenchState], dict[str, Callable[..., Any]] | None] | None = None
+    # When True, run an RX listener that decodes every inbound frame via the CAN
+    # DB into state.signals (for closed-loop control like precharge).
+    listen: bool = True
+    # Optional hook for non-DB raw frames (e.g. IVT-S 0x521-0x523 int32 fields):
+    # rx_hook(state, can_id, data) -> may write into state.signals directly.
+    rx_hook: Callable[[BenchState, int, bytes], None] | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -100,6 +106,10 @@ class BenchState:
         self.bus = bus
         self.db = db
         self.vars: dict[str, Any] = {}
+        # Latest decoded value per signal name, populated by the RX listener.
+        # Builders/controls read this for closed-loop behavior (e.g. precharge
+        # waiting on a measured voltage, watching DI_immobilizerState).
+        self.signals: dict[str, float | int] = {}
         self._lock = threading.Lock()
 
     def set(self, key: str, value: Any) -> None:
@@ -109,6 +119,11 @@ class BenchState:
     def get(self, key: str, default: Any = None) -> Any:
         with self._lock:
             return self.vars.get(key, default)
+
+    def signal(self, name: str, default: Any = None) -> Any:
+        """Latest RX-decoded value for a signal name (None until first seen)."""
+        with self._lock:
+            return self.signals.get(name, default)
 
     def encode(self, msg: int | str, **signals: float | int) -> bytes:
         return self.db.encode_frame(msg, signals)
@@ -214,6 +229,38 @@ class _ImmoResponder(can.Listener):
 
 
 # ---------------------------------------------------------------------------
+# RX listener — decode inbound frames into state.signals
+# ---------------------------------------------------------------------------
+
+class _RxCacheListener(can.Listener):
+    """Decode every inbound frame via the CAN DB into ``state.signals``.
+
+    Runs an optional ``rx_hook`` first for raw/non-DB frames. Closed-loop control
+    verbs (e.g. precharge waiting on a measured voltage) read state.signals.
+    """
+
+    def __init__(self, state: BenchState,
+                 rx_hook: Callable[[BenchState, int, bytes], None] | None) -> None:
+        self._state = state
+        self._rx_hook = rx_hook
+
+    def on_message_received(self, msg: can.Message) -> None:
+        if msg.is_error_frame or msg.is_remote_frame:
+            return
+        data = bytes(msg.data)
+        if self._rx_hook is not None:
+            self._rx_hook(self._state, msg.arbitration_id, data)
+        decoded = self._state.db.decode_frame(msg.arbitration_id, data)
+        if decoded:
+            with self._state._lock:
+                for s in decoded:
+                    self._state.signals[s["signal"]] = s["value"]
+
+    def stop(self) -> None:
+        pass
+
+
+# ---------------------------------------------------------------------------
 # Interactive shell
 # ---------------------------------------------------------------------------
 
@@ -225,6 +272,7 @@ def _make_shell_namespace(state: BenchState, spec: BenchSpec,
         "db": state.db,
         "send": state.send,
         "encode": state.encode,
+        "signals": state.signals,   # live RX-decoded cache
         "frames": spec.frames,
         "scheduler": sched,
     }
@@ -269,6 +317,9 @@ def run(spec: BenchSpec, channel: str, interface: str = "socketcan",
         extra_controls = spec.on_init(state)
         if extra_controls:
             spec.controls.update(extra_controls)
+
+    if spec.listen:
+        notifier.add_listener(_RxCacheListener(state, spec.rx_hook))
 
     immo = None
     if spec.immo is not None:

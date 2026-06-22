@@ -6,6 +6,7 @@ import contextlib
 import logging
 import threading
 import time
+import warnings
 from typing import Any
 
 import can
@@ -18,6 +19,16 @@ from uds.message import UdsMessage
 from .broadcast_config import broadcast_for
 from .node_config import NodeConfig
 from .security import compute_key
+
+# The py-uds library emits two routine warnings on every session:
+#   - PyCanTransportInterface adjusts its notifier timeout to 0.001 s
+#   - UnexpectedPacketReceptionWarning for non-UDS CAN frames on a live bus
+# Both are expected on a shared vehicle CAN bus and add no diagnostic value.
+warnings.filterwarnings("ignore", message="Notifier's timeout value was changed",
+                        module=r"uds\..*")
+warnings.filterwarnings("ignore", category=RuntimeWarning,
+                        message="A CAN packet that does not start UDS message",
+                        module=r"uds\..*")
 
 _log = logging.getLogger(__name__)
 

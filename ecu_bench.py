@@ -60,7 +60,7 @@ class Frame:
 @dataclass
 class ImmoSpec:
     """Immobilizer responder config: answer ``challenge_id`` with ``response_id``."""
-    node: str                      # keystore node name (e.g. "DIR")
+    node_config: Any               # NodeConfig — used to open a UDS session for board S/N lookup
     challenge_id: int = 0x276
     response_id: int = 0x3D9
     keystore_path: str | None = None
@@ -199,21 +199,29 @@ class Scheduler:
 class _ImmoResponder(can.Listener):
     """Answers 0x276 with 0x3D9 = the paired immobilizer response."""
 
-    def __init__(self, state: BenchState, spec: ImmoSpec) -> None:
+    def __init__(self, state: BenchState, spec: ImmoSpec,
+                 channel: str, interface: str) -> None:
+        from uds_local.client import UdsSession
         from uds_local.immobilizer import Keystore, challenge_response
         self._state = state
         self._spec = spec
         self._challenge_response = challenge_response
+
+        with UdsSession(spec.node_config, channel, interface=interface) as sess:
+            raw_sn = sess.read_did(0xF013)
+        board_sn = raw_sn.decode("ascii", errors="replace").rstrip("\x00").strip()
+        print(f"  Board S/N: {board_sn}")
+
         ks = Keystore(spec.keystore_path) if spec.keystore_path else Keystore()
-        entry = ks.get(spec.node)
+        entry = ks.get(board_sn)
         if entry is None:
             raise SystemExit(
-                f"No stored immobilizer key for node {spec.node} in {ks.path}. "
+                f"No stored immobilizer key for board {board_sn!r} in {ks.path}. "
                 f"Pair first: scripts/di/immobilizer_handshake.py pair"
             )
         self._key = entry.key_bytes
         self.challenges = 0
-        print(f"  Immobilizer: keyed for {spec.node}, "
+        print(f"  Immobilizer: keyed for {board_sn}, "
               f"answering 0x{spec.challenge_id:03X} -> 0x{spec.response_id:03X}")
 
     def on_message_received(self, msg: can.Message) -> None:
@@ -323,7 +331,7 @@ def run(spec: BenchSpec, channel: str, interface: str = "socketcan",
 
     immo = None
     if spec.immo is not None:
-        immo = _ImmoResponder(state, spec.immo)
+        immo = _ImmoResponder(state, spec.immo, channel, interface)
         notifier.add_listener(immo)
 
     sched = Scheduler(state, spec.frames)

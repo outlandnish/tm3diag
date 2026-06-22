@@ -8,7 +8,7 @@ Tesla Model 3 diagnostics tools for CAN
 ## Requirements
 
 - Python 3.10 or later
-- A CAN interface connected to the vehicle's ETH bus — either a real USB adapter (e.g. PEAK, Kvaser, CANable) or a virtual interface (`vcan`) for offline testing
+- A CAN interface connected to any of the Tesla ECUs — either a real USB adapter (e.g. PEAK, Kvaser, CANable) or a virtual interface (`vcan`) for offline testing
 - Linux is recommended; SocketCAN is the default interface driver
 
 ## Setup

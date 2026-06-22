@@ -11,12 +11,6 @@ Tesla Model 3 diagnostics tools for CAN
 - A CAN interface connected to the vehicle's ETH bus — either a real USB adapter (e.g. PEAK, Kvaser, CANable) or a virtual interface (`vcan`) for offline testing
 - Linux is recommended; SocketCAN is the default interface driver
 
-Install Python dependencies:
-
-```
-pip install -r requirements.txt
-```
-
 ## Setup
 
 ### 1. Clone and install dependencies
@@ -24,7 +18,15 @@ pip install -r requirements.txt
 ```bash
 git clone https://github.com/outlandnish/tm3diag.git
 cd tm3diag
+python3 -m venv .venv
+source .venv/bin/activate
 pip install -r requirements.txt
+```
+
+The `source` line activates the virtual environment. You'll need to run it again in each new terminal session before using any of the tools:
+
+```bash
+source .venv/bin/activate
 ```
 
 ### 2. Configure your CAN interface
@@ -96,6 +98,7 @@ If your firmware's `.compact.json` and ODJ files are encrypted `.bin` files, you
 
 ## Tests
 
-```
+```bash
+source .venv/bin/activate
 pytest tests/ -v
 ```

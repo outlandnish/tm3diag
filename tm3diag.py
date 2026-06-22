@@ -792,7 +792,23 @@ def main() -> int:
     _cfg.apply_defaults(parser)
     args = parser.parse_args()
 
+    if _cfg._ROOT is None:
+        print(
+            "Error: TM3_ROOT is not set. Point it at the squashfs-root of a "
+            "firmware extraction (export TM3_ROOT=... or add it to .env)."
+        )
+        return 1
+
     fw = _select_product()
+
+    if fw.nodes_json is None or not fw.nodes_json.exists():
+        print(
+            f"Error: nodes.json not found for product {fw.product!r} under "
+            f"{_cfg._ROOT}. Check TM3_ROOT and TM3_PRODUCT."
+        )
+        if fw.nodes_json is not None:
+            print(f"  Looked for: {fw.nodes_json}")
+        return 1
 
     nodes = json.loads(fw.nodes_json.read_text())
 

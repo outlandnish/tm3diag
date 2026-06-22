@@ -44,6 +44,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 import config as _cfg  # noqa: E402
 import ecu_bench  # noqa: E402
 from ecu_bench import BenchSpec, BenchState, Frame, ImmoSpec  # noqa: E402
+from uds_local.node_config import load_node_config  # noqa: E402
 
 # --- 0x64 PRND_command_for_control --------------------------------------------
 # Bit layout from the Ingenext DBC (Motorola/BIG where noted):
@@ -244,16 +245,14 @@ def main() -> None:
     )
     p.add_argument("--channel", default=None)
     p.add_argument("--interface", default=None)
-    p.add_argument("--node", default="DIR", help="keystore node for the immobilizer key")
+    p.add_argument("--node", default="DIR", help="DI node name in nodes.json (default DIR)")
     p.add_argument("--no-immo", action="store_true", help="don't answer the 0x276 challenge")
     p.add_argument("--no-interactive", action="store_true", help="run headless until Ctrl-C")
     _cfg.apply_defaults(p)
     args = p.parse_args()
 
-    # Build state up front so controls + frame builders share it. ecu_bench
-    # creates its own BenchState internally, so we register a factory instead:
-    # controls need the live state, so we pass a builder that ecu_bench calls.
-    immo = None if args.no_immo else ImmoSpec(node=args.node)
+    cfg = load_node_config(args.node, _cfg.NODES_JSON, _cfg.ETH_COMPACT, _cfg.ODJ_DIR)
+    immo = None if args.no_immo else ImmoSpec(node_config=cfg)
 
     def on_init(state: BenchState) -> dict:
         # Seed safe defaults, then bind the control verbs to this live state.

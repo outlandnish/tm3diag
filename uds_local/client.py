@@ -138,6 +138,20 @@ class MalformedResponseError(UdsError):
         self.detail = detail
 
 
+class BusUnavailableError(Exception):
+    """Raised when the CAN interface can't be opened or has gone down.
+
+    Covers both connect-time failures (interface missing / not up) and a bus
+    that drops mid-session (``Network is down``). Carries the channel so the
+    CLI can print an actionable hint (e.g. ``ip link set <channel> up``).
+    """
+
+    def __init__(self, channel: str, cause: Exception):
+        self.channel = channel
+        self.cause = cause
+        super().__init__(f"CAN bus {channel!r} is unavailable: {cause}")
+
+
 class _BroadcastWatcher(can.Listener):
     """Counts inbound frames matching a single broadcast (heartbeat) CAN ID.
 
@@ -177,6 +191,36 @@ class _BroadcastWatcher(can.Listener):
         pass
 
 
+class _BusErrorListener(can.Listener):
+    """Swallows fatal errors from the Notifier RX thread instead of crashing it.
+
+    python-can's ``Notifier._rx_thread`` re-raises any exception from
+    ``bus.recv()`` (e.g. ``CanOperationError: Network is down`` when the CAN
+    interface drops) unless a listener implements ``on_error``. Without this,
+    the RX thread dies and dumps a full traceback to stderr — noise the user
+    can't act on, and which our main-thread try/except can't catch.
+
+    We record the first error so the session can report a clean message
+    (``bus_error``) and so callers can tell a dead bus from a silent ECU.
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.error: Exception | None = None
+
+    def on_message_received(self, msg: can.Message) -> None:
+        pass
+
+    def on_error(self, exc: Exception) -> None:
+        # First error wins; later ones are almost always the same cause.
+        if self.error is None:
+            self.error = exc
+            _log.warning("CAN bus error in notifier thread: %s", exc)
+
+    def stop(self) -> None:
+        pass
+
+
 class FlashCountError(Exception):
     """Raised when the ECU's flash count is at or over its per-ECU limit."""
 
@@ -195,7 +239,10 @@ class UdsSession:
         channel: str,
         interface: str = "socketcan",
     ):
-        self._bus = can.Bus(interface=interface, channel=channel)
+        try:
+            self._bus = can.Bus(interface=interface, channel=channel)
+        except Exception as exc:
+            raise BusUnavailableError(channel, exc) from exc
         # Pre-create one shared Notifier and hand it to the transport so there
         # is never more than one active Notifier on the bus. The transport's
         # notifier starts as None and gets set lazily on first send/receive —
@@ -203,6 +250,11 @@ class UdsSession:
         # would raise "A bus can not be added to multiple active Notifier
         # instances".
         self._frame_notifier = can.Notifier(self._bus, [])
+        # Always install an error listener so a mid-session bus drop (interface
+        # goes down, cable pulled) is recorded and suppressed instead of
+        # crashing the Notifier RX thread with a stderr traceback.
+        self._bus_error_listener = _BusErrorListener()
+        self._install_listener(self._bus_error_listener)
         addressing = NormalCanAddressingInformation(
             rx_physical_params={"can_id": node.response_can_id},
             tx_physical_params={"can_id": node.request_can_id},
@@ -255,7 +307,16 @@ class UdsSession:
             payload=[_SID_TP, 0x80],
         )
         while not self._tp_stop.wait(0.5):
-            self._transport.send_packet(tp_packet)
+            try:
+                self._transport.send_packet(tp_packet)
+            except Exception as exc:
+                # Bus dropped out from under the keep-alive thread. Record it
+                # (so the main thread can report it) and exit quietly instead
+                # of letting the daemon thread crash with a stderr traceback.
+                if self._is_bus_down_error(exc):
+                    self._bus_error_listener.on_error(exc)
+                    return
+                raise
 
     # ------------------------------------------------------------------
     # UDS services
@@ -652,6 +713,9 @@ class UdsSession:
                     f"sudo ip link set {getattr(self._bus, 'channel', '?')} "
                     "txqueuelen 1000"
                 ) from exc
+            if self._is_bus_down_error(exc):
+                raise BusUnavailableError(
+                    getattr(self._bus, "channel", "?"), exc) from exc
             raise
         expected_sid = payload[0]
         positive_sid = expected_sid + 0x40
@@ -662,6 +726,14 @@ class UdsSession:
                     start_timeout=deadline_ms, end_timeout=deadline_ms
                 )
             except Exception:
+                # An empty receive is the normal "no response" signal, but if
+                # the notifier thread recorded a bus-down error the bus is
+                # really gone — surface it rather than masquerading as a silent
+                # ECU (which would just look like a timeout to the caller).
+                bus_err = self.bus_error
+                if bus_err is not None:
+                    raise BusUnavailableError(
+                        getattr(self._bus, "channel", "?"), bus_err) from bus_err
                 return []
             resp = list(record.payload)
             if not resp:
@@ -691,6 +763,29 @@ class UdsSession:
                 )
                 continue
             return resp
+
+    @property
+    def bus_error(self) -> Exception | None:
+        """The first fatal error the notifier RX thread saw, or None.
+
+        Set when the CAN interface drops mid-session (e.g. ``Network is
+        down``). Lets callers distinguish a dead bus from a silent ECU.
+        """
+        return self._bus_error_listener.error
+
+    @staticmethod
+    def _is_bus_down_error(exc: Exception) -> bool:
+        """True if ``exc`` looks like the CAN interface going down.
+
+        Matches errno 100 (ENETDOWN) / 19 (ENODEV) and their text, so both
+        ``CanOperationError`` and bare ``OSError`` from python-can are caught.
+        """
+        if isinstance(exc, OSError) and exc.errno in (100, 19):
+            return True
+        if getattr(exc, "error_code", None) in (100, 19):
+            return True
+        text = str(exc).lower()
+        return "network is down" in text or "no such device" in text
 
     @staticmethod
     def _check_positive(resp: list[int], expected_sid: int) -> None:

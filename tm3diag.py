@@ -21,6 +21,7 @@ from uds_local.client import (
     _SESSION_EXTENDED,
     _SESSION_PROGRAMMING,
     _SESSION_SAFETY,
+    BusUnavailableError,
 )
 from uds_local.node_config import NodeConfig
 from uds_local.odj import FieldSpec, IoControlEntry, OdjEntry, RoutineEntry
@@ -871,6 +872,13 @@ def _connect_and_run(cfg, node_name, args, artifacts_dir, *, fw, UdsSession) -> 
             _main_menu(sess, cfg, effective_artifacts, force=args.force)
     except KeyboardInterrupt:
         pass
+    except BusUnavailableError as e:
+        print(
+            f"\nError: CAN bus {e.channel!r} is down or unavailable. "
+            f"Bring it up, e.g.:\n"
+            f"  sudo ip link set {e.channel} up type can bitrate 500000"
+        )
+        return False
     except Exception as e:
         print(f"\nError: {e}")
         return False

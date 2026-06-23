@@ -8,6 +8,7 @@ from pathlib import Path
 
 import can
 
+from . import colors as _c
 from .node_config import load_all_nodes
 
 # ISO-TP single frame: PCI=0x02 (SF, length 2), UDS=3E 00, padded to 8 bytes
@@ -88,13 +89,16 @@ def scan_network(
 
 def print_scan_table(results: list[ScanResult]) -> None:
     header = f"{'Node':<16} {'TX ID':>8} {'RX ID':>8}  {'Responded':<12} {'Positive':<10} Response"
-    print(header)
-    print("-" * len(header))
+    print(_c.bold(header))
+    print(_c.dim("-" * len(header)))
     for r in results:
         resp_hex = r.response_data.hex() if r.response_data else "-"
-        print(
+        # Nodes that never answered are the uninteresting majority — dim them
+        # so the responders (the rows you actually care about) stand out.
+        responded = f"{'yes' if r.responded else 'no':<12}"
+        positive = f"{'yes' if r.is_positive else ('no' if r.responded else '-'):<10}"
+        row = (
             f"{r.node:<16} {r.tx_id:#010x} {r.rx_id:#010x}"
-            f"  {'yes' if r.responded else 'no':<12}"
-            f" {'yes' if r.is_positive else ('no' if r.responded else '-'):<10}"
-            f" {resp_hex}"
+            f"  {responded} {positive} {resp_hex}"
         )
+        print(row if r.responded else _c.dim(row))

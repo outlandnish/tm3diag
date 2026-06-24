@@ -93,9 +93,10 @@ def byteswap(path: Path, out: Path) -> None:
     its instruction-stream prologue `b2bd aabd a2bd` occurs 0x in the Tesla images
     read as LE16 but 67/329/161x (PMR2019/DIR2019/PMR2026) read byte-swapped.
 
-    Note: the 0x0900-headered *bootloader package* (pmrbl/pmrbu) is a different
-    artifact (signed flash-programming container, see PMRBL-PACKAGE-FORMAT.md) — it
-    is NOT flat code and swapping it does not produce a runnable image.
+    Note: the 0x0900-headered *bootloader* artifacts (pmrbl/pmrbu) are different —
+    byte-swapping does NOT yield coherent flat code from them the way it does for the
+    PMR/DIR app bodies. What they actually are is undetermined (they carry the 0x0900
+    header but are not the flat app body); don't assume this swap makes them runnable.
     """
     d = path.read_bytes()
     sw = bytearray(len(d))

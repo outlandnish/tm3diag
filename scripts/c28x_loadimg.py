@@ -75,16 +75,56 @@ def analyze(path: Path, load_addr: int, nrecs: int) -> None:
               f"  w[{' '.join('%04x'%x for x in wds)}]")
 
 
+def byteswap(path: Path, out: Path) -> None:
+    """Byte-swap every 16-bit word of a Tesla C28x flash image so it matches the
+    C28x instruction stream Ghidra expects.
+
+    KEY FINDING (2026-06-23): Tesla TMS320F28377D flash images are stored with each
+    16-bit word's two bytes REVERSED relative to how the C28x core fetches them. This
+    is a property of the F28377D flash format, NOT of a particular ECU — it applies to
+    EVERY F28377D-based device's image: PM/DI (inverter), PCS, and any other module on
+    that part. Covers all eras and both BHX-extracted payloads and the raw 2026 .bins.
+    Reading them as native little-endian words desyncs disassembly into valid-but-
+    incoherent garbage (this is why earlier linear sweeps failed). Swapping the bytes
+    of every word yields coherent code: real function prologues (MOVL *SP++ ×3 = b2bd
+    aabd a2bd, then ADDB SP,#N), LCR/LC call graphs, Q-math, and LRETR at ~7/KB.
+
+    Validated against OpenInverter (real F28377D code built with TI CGT 25.11.1):
+    its instruction-stream prologue `b2bd aabd a2bd` occurs 0x in the Tesla images
+    read as LE16 but 67/329/161x (PMR2019/DIR2019/PMR2026) read byte-swapped.
+
+    Note: the 0x0900-headered *bootloader package* (pmrbl/pmrbu) is a different
+    artifact (signed flash-programming container, see PMRBL-PACKAGE-FORMAT.md) — it
+    is NOT flat code and swapping it does not produce a runnable image.
+    """
+    d = path.read_bytes()
+    sw = bytearray(len(d))
+    for o in range(0, len(d) - 1, 2):
+        sw[o] = d[o + 1]
+        sw[o + 1] = d[o]
+    if len(d) & 1:
+        sw[-1] = d[-1]
+    out.write_bytes(sw)
+    print(f"byte-swapped {len(d)} bytes ({len(d)//2} words): {path.name} -> {out}")
+    print("Import in Ghidra as TMS320C28x:LE:32:default; set image base to the load "
+          "address; seed disassembly at a MOVL*SP++ prologue (search 'bd b2 bd aa bd a2').")
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("image", type=Path)
-    ap.add_argument("--load", type=lambda s: int(s, 0), required=True,
+    ap.add_argument("--load", type=lambda s: int(s, 0), default=0,
                     help="load address from the filename (e.g. 0xc000)")
-    ap.add_argument("--mode", choices=["analyze", "build"], default="analyze")
+    ap.add_argument("--mode", choices=["analyze", "build", "swap"], default="analyze")
     ap.add_argument("--rows", type=int, default=16, help="record rows to dump in analyze")
+    ap.add_argument("--out", type=Path,
+                    help="output path for swap mode (default: <image>.swapped.bin)")
     a = ap.parse_args()
     if a.mode == "analyze":
         analyze(a.image, a.load, a.rows)
+    elif a.mode == "swap":
+        out = a.out or a.image.with_suffix(a.image.suffix + ".swapped.bin")
+        byteswap(a.image, out)
     else:
         print("build mode not implemented yet — record format still being reversed",
               file=sys.stderr)

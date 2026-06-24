@@ -15,9 +15,12 @@ Control frames (from the Ingenext single-motor controller DBC; both @ 100 ms):
     drive mode, regen, rolling counter + checksum.
   * 0x54 System_for_control      — System_mode (off=0 Drive=1 Charge=2).
 
-Immobilizer: answers the DI's 0x276 challenge with 0x3D9 using a key paired via
+Immobilizer: handles the runtime handshake on **0x3D9** using a key paired via
 ``scripts/di/immobilizer_handshake.py pair`` (stored in immo_keys.json). Watch
 ``DI_immobilizerState`` on 0x118 go REQUEST -> AUTHENTICATING -> DISARMED.
+(Firmware-corrected: the old forum 0x276 ID is refuted; the inverter VERIFIES
+locally so the exact sequence is provisional pending a bus sniff — see
+immobilizer_handshake.py and CAN-FINDINGS.md.)
 
 CAVEAT: the control-frame layout is from the aftermarket DBC and is a strong
 starting point, but the full set of gating frames the DU requires before it will
@@ -246,7 +249,7 @@ def main() -> None:
     p.add_argument("--channel", default=None)
     p.add_argument("--interface", default=None)
     p.add_argument("--node", default="DIR", help="DI node name in nodes.json (default DIR)")
-    p.add_argument("--no-immo", action="store_true", help="don't answer the 0x276 challenge")
+    p.add_argument("--no-immo", action="store_true", help="don't run the 0x3D9 immobilizer handshake")
     p.add_argument("--no-interactive", action="store_true", help="run headless until Ctrl-C")
     _cfg.apply_defaults(p)
     args = p.parse_args()

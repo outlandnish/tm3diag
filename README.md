@@ -95,6 +95,7 @@ If your firmware's `.compact.json` and ODJ files are encrypted `.bin` files, you
 - [unsquash_firmware.md](docs/unsquash_firmware.md) — How to extract a firmware blob to a `squashfs-root` directory
 - [immobilizer_handshake.md](docs/immobilizer_handshake.md) — Immobilizer pairing and runtime handshake guide
 - [FIRMWARE_UPDATE.md](docs/FIRMWARE_UPDATE.md) — UDS flash protocol, script map, frame-by-frame reference
+- [ghidra_c28x_loading.md](docs/ghidra_c28x_loading.md) — Load a TMS320 firmware image (inverter DIR/PMR, PCS) into Ghidra for reverse engineering
 
 ## Tests
 

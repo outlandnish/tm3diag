@@ -28,12 +28,11 @@ from flash_scripts import (
 from flash_scripts._display import StatusDisplay
 from flash_scripts._prompt import prompt_confirm, prompt_select
 from uds_local.client import UdsSession
+from uds_local.identity import parse_f180
 
 _NODES_JSON  = _cfg.NODES_JSON
 _ETH_COMPACT = _cfg.ETH_COMPACT
 _ODJ_DIR     = _cfg.ODJ_DIR
-
-_DID_BOOTLOADER_VERSION = 0xF180
 
 
 def _abort(msg: str) -> None:
@@ -46,40 +45,18 @@ def phase1_identity(sess: UdsSession, node_name: str, display: StatusDisplay) ->
     display.set_header("[1/4] Identity")
     display.set_detail("Reading DID 0xF180...")
 
-    f180 = sess.read_did(_DID_BOOTLOADER_VERSION)
-    if len(f180) < 7:
-        _abort(
-            f"DID 0xF180 response too short "
-            f"({len(f180)} bytes, expected >=7)"
-        )
-
-    # Layout: [MODULES:1][COMPONENT_ID:2][PCBA_ID:1][ASSEMBLY_ID:1][USAGE_ID:2]
-    component_id = (f180[1] << 8) | f180[2]
-    pcba_id = f180[3]
-    assembly_id = f180[4]
-    usage_id = (f180[5] << 8) | f180[6]
-
-    # version_map packed key: PPAA00UU
-    packed = (pcba_id << 24) | (assembly_id << 16) | (usage_id & 0xFF)
-    lookup_key = f"{node_name.lower()}:{packed}"
-
-    identity = {
-        "f180_raw": f180.hex(),
-        "component_id": component_id,
-        "pcba_id": pcba_id,
-        "assembly_id": assembly_id,
-        "usage_id": usage_id,
-        "packed_key": packed,
-        "lookup_key": lookup_key,
-    }
+    try:
+        ident = parse_f180(sess.read_did(0xF180), node_name)
+    except ValueError as e:
+        _abort(str(e))
 
     display.set_detail(
-        f"Node: {node_name}  COMPONENT_ID: 0x{component_id:04X}"
-        f"  PCBA_ID: {pcba_id}  ASSEMBLY_ID: {assembly_id}"
-        f"  USAGE_ID: {usage_id}  key: {lookup_key}"
+        f"Node: {node_name}  COMPONENT_ID: 0x{ident.component_id:04X}"
+        f"  PCBA_ID: {ident.pcba_id}  ASSEMBLY_ID: {ident.assembly_id}"
+        f"  USAGE_ID: {ident.usage_id}  key: {ident.lookup_key}"
     )
     display.finalize()
-    return identity
+    return ident.as_dict()
 
 
 def _prompt_conditions(
@@ -549,6 +526,7 @@ def main() -> int:
 
     try:
         if args.packed_key is not None:
+            from uds_local.identity import lookup_key_for
             identity = {
                 "f180_raw": "(offline)",
                 "component_id": 0,
@@ -556,7 +534,7 @@ def main() -> int:
                 "assembly_id": (args.packed_key >> 16) & 0xFF,
                 "usage_id": args.packed_key & 0xFF,
                 "packed_key": args.packed_key,
-                "lookup_key": f"{args.node.lower()}:{args.packed_key}",
+                "lookup_key": lookup_key_for(args.node, args.packed_key),
             }
             display.set_header("[1/4] Identity (offline)")
             display.set_detail(

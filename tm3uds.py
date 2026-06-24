@@ -3,6 +3,8 @@
 
 Usage examples:
   python tm3uds.py scan --channel vcan0
+  python tm3uds.py --node PCS --channel vcan0 identity
+  python tm3uds.py --node PCS --channel vcan0 identity --key-only
   python tm3uds.py --node PCS --channel vcan0 read-did BOOTLOADER_VERSION
   python tm3uds.py --node PCS --channel vcan0 read-did 0xF180
   python tm3uds.py --node PCS --channel vcan0 write-did 0x0102 deadbeef
@@ -55,6 +57,23 @@ def cmd_scan(args: argparse.Namespace) -> None:
     print_scan_table(results)
     responding = sum(1 for r in results if r.responded)
     print(f"\n{responding}/{len(results)} nodes responded.")
+
+
+def cmd_identity(args: argparse.Namespace) -> None:
+    from uds_local.identity import read_identity
+    with _make_session(args.node, args.channel, args.interface) as sess:
+        ident = read_identity(sess, args.node)
+    if args.key_only:
+        print(ident.lookup_key)
+        return
+    print(f"Node:         {ident.node}")
+    print(f"F180 raw:     {ident.f180_raw}")
+    print(f"COMPONENT_ID: 0x{ident.component_id:04X}")
+    print(f"PCBA_ID:      {ident.pcba_id}")
+    print(f"ASSEMBLY_ID:  {ident.assembly_id}")
+    print(f"USAGE_ID:     {ident.usage_id}")
+    print(f"packed_key:   {ident.packed_key}  (0x{ident.packed_key:08X})")
+    print(f"lookup_key:   {ident.lookup_key}")
 
 
 def cmd_read_did(args: argparse.Namespace) -> None:
@@ -179,6 +198,18 @@ def build_parser() -> argparse.ArgumentParser:
     p_scan.add_argument(
         "--timeout", type=float, default=0.1, help="Per-node timeout (s)")
     p_scan.set_defaults(func=cmd_scan)
+
+    # identity
+    p_id = sub.add_parser(
+        "identity",
+        help="Read DID 0xF180 and report the firmware lookup key",
+        parents=[parent_node],
+    )
+    p_id.add_argument(
+        "--key-only", action="store_true",
+        help="Print only the lookup key (scriptable)",
+    )
+    p_id.set_defaults(func=cmd_identity)
 
     # read-did
     p_rdid = sub.add_parser(

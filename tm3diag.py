@@ -281,6 +281,7 @@ def _show_identity(sess, cfg: NodeConfig) -> bool:
     read failed — in which case the caller should not proceed to the menu.
     """
     from uds_local.client import UdsError
+    from uds_local.identity import parse_f180
     try:
         data = sess.read_did(0xF180)
     except UdsError as e:
@@ -299,6 +300,14 @@ def _show_identity(sess, cfg: NodeConfig) -> bool:
     if decoded:
         for fname, val in decoded:
             print(f"    {fname:<36} {val}")
+
+    # The firmware lookup key (the same one dfu.py / tm3uds.py identity report)
+    try:
+        ident = parse_f180(data, cfg.name)
+    except ValueError:
+        pass
+    else:
+        print(f"    {'lookup_key':<36} {ident.lookup_key}")
     return True
 
 

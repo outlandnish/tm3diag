@@ -93,10 +93,17 @@ def byteswap(path: Path, out: Path) -> None:
     its instruction-stream prologue `b2bd aabd a2bd` occurs 0x in the Tesla images
     read as LE16 but 67/329/161x (PMR2019/DIR2019/PMR2026) read byte-swapped.
 
-    Note: the 0x0900-headered *bootloader* artifacts (pmrbl/pmrbu) are different —
-    byte-swapping does NOT yield coherent flat code from them the way it does for the
-    PMR/DIR app bodies. What they actually are is undetermined (they carry the 0x0900
-    header but are not the flat app body); don't assume this swap makes them runnable.
+    UPDATE 2026-06-25 (validated): the earlier note that pmrbl/pmrbu artifacts are
+    "different / undetermined / not the flat app body" was WRONG. The bu .bhx
+    (PM_PCBA_28_UP-…) is a SINGLE flat segment @0x88000 (49152 bytes / 0x6000 words),
+    and swap16(bhx_payload) == the coherent Ghidra image byte-for-byte (49152/49152).
+    The bl (PM_PCBA_28-…) is the same: a flat @0x82000 image. So byte-swapping DOES
+    yield coherent, decompilable flat C28x code for these bootloader artifacts — the
+    full UDS/flash handlers decompile cleanly. The chain is simply:
+        bhx segment payload  <--byteswap (this fn, its own inverse)-->  loadable/Ghidra
+    To rebuild a flashable artifact after patching the loadable image: byteswap it back
+    and use the result as the .bhx segment payload. (Their function prologues vary; not
+    every fn starts with the b2bd/aabd/a2bd triple — that pattern is one of several.)
     """
     d = path.read_bytes()
     sw = bytearray(len(d))

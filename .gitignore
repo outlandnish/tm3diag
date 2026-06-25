@@ -14,3 +14,8 @@ docs/superpowers
 *.dbc
 immo_keys.json
 docs/private/
+
+# Local test scaffolding — not for check-in
+_flash_*_oneoff.py
+_flash_dir_0x04.py
+scripts/c28x/patch/

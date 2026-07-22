@@ -394,7 +394,7 @@ def step_verify_crc(sess: UdsSession, ctx: FlashContext) -> None:
         ctx.display.set_detail("CRC check: status=0x00 (MATCH)")
     else:
         # non-fatal: surface it loudly but don't abort the (still-being-validated) pipeline
-        msg = (f"CRC check: status={'0x%02X' % status if status is not None else 'EMPTY'} "
+        msg = (f"CRC check: status={f'0x{status:02X}' if status is not None else 'EMPTY'} "
                f"(0x04=MISMATCH; expected 0x00). raw={resp.hex() if resp else '<none>'}")
         ctx.display.set_detail(msg)
         _log.warning("step_verify_crc: %s", msg)
@@ -414,7 +414,7 @@ def step_check_rev(sess: UdsSession, ctx: FlashContext) -> None:
     if status == 0x00:
         ctx.display.set_detail("Revision check: status=0x00 (OK)")
     else:
-        msg = (f"Revision check: status={'0x%02X' % status if status is not None else 'EMPTY'} "
+        msg = (f"Revision check: status={f'0x{status:02X}' if status is not None else 'EMPTY'} "
                f"(1-4=field mismatch; expected 0x00). raw={resp.hex() if resp else '<none>'}")
         ctx.display.set_detail(msg)
         _log.warning("step_check_rev: %s", msg)

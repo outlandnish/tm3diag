@@ -28,7 +28,10 @@ Header format (reverse-engineered; see docs/private/.../tesla_0x0900_header.md):
   u32[9..] signature/hash block
 """
 from __future__ import annotations
-import argparse, struct, sys
+
+import argparse
+import struct
+import sys
 from pathlib import Path
 
 
@@ -72,7 +75,7 @@ def analyze(path: Path, load_addr: int, nrecs: int) -> None:
         dws = [u32(d, o + i * 4) for i in range(4)]
         wds = [u16(d, o + i * 2) for i in range(8)]
         print(f"    0x{o:04x}: dw[{dws[0]:08x} {dws[1]:08x} {dws[2]:08x} {dws[3]:08x}]"
-              f"  w[{' '.join('%04x'%x for x in wds)}]")
+              f"  w[{' '.join(f'{x:04x}' for x in wds)}]")
 
 
 def byteswap(path: Path, out: Path) -> None:

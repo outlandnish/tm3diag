@@ -32,8 +32,15 @@ def load_node_config(
     eth = _load_json(Path(eth_compact_path))
     odj_dir = Path(odj_dir)
 
-    if node_name not in nodes:
+    # Node names are matched case-insensitively: callers may pass "pmr", "PMR",
+    # or "Pmr" and all resolve to the canonical key in nodes.json (which is
+    # uppercase). Build a case-folded index so we don't depend on the JSON
+    # keys being any particular case either.
+    by_upper = {str(k).upper(): k for k in nodes}
+    canonical = by_upper.get(node_name.upper())
+    if canonical is None:
         raise KeyError(f"Node {node_name!r} not found in nodes.json")
+    node_name = canonical
 
     node_cfg = nodes[node_name]
     messages = eth["messages"]

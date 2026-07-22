@@ -19,3 +19,5 @@ docs/private/
 _flash_*_oneoff.py
 _flash_dir_0x04.py
 scripts/c28x/patch/
+_bl_work
+.claude

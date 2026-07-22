@@ -14,6 +14,14 @@ Pipeline:
 Builds differ: older odin is Python 3.6, newer is 3.10. pycdc spans both;
 uncompyle6 only reaches ~3.8, so it is a fallback for the old builds only.
 
+The .bin decryption key (TM3_BIN_KEY in .env) is the base64 constant ``C`` in
+    <out>/src/.../odin/platforms/binary_metadata_utils.py
+Decode of ``binary_metadata_reader`` there: salt = first 16 bytes of the file,
+key = PBKDF2-HMAC-SHA256(base64decode(C), salt, 123456 iters, 32 bytes) then
+Fernet-decrypt + ``pickle.loads``. To validate a build / refresh the key:
+    grep -rn "^C = " <out>/src/.../odin/platforms/binary_metadata_utils.py
+and compare against TM3_BIN_KEY in .env (see .env.example).
+
 Usage:
   python dump_odin.py <firmware_root> [--out DIR] [--tools DIR] [--no-decompile]
 
@@ -248,6 +256,8 @@ def main() -> None:
     print(f"\nDone. Output under {out}")
     print("Grep the decompiled tree for signal/interface defs, e.g.:")
     print(f"  grep -rl 'accelPedal\\|DIR_torque\\|vcPcsDCDC' {out}/src")
+    print("The .bin decryption key (TM3_BIN_KEY in .env) is constant C in:")
+    print(f"  grep -rn '^C = ' {out}/src/*/odin/platforms/binary_metadata_utils.py")
 
 
 if __name__ == "__main__":

@@ -41,17 +41,22 @@ if TYPE_CHECKING:
 _PCS_PRIMARY_TYPES = frozenset({"pcs", "pm", "pms", "pmr", "pmrs"})
 _PCS_SECONDARY_TYPES = frozenset({"pcscpu2", "di", "dis", "dir", "dirs"})
 
-# Fallback module bytes for secondary CPUs — tried if the primary byte gets
-# NRC 0x10/0x31. Newer firmware uses 0x04; older firmware uses 0x0C.
-# Also used as the prog-0 standalone module byte for secondaries on their own
-# CAN endpoint (di/dis/dir/dirs): the ECU map holds 0x0C (prog-1 value) and
-# this fallback holds the confirmed prog-0 wire value.
+# Fallback module bytes for secondary-CPU / secondary-region flashes — tried if
+# the primary byte gets NRC 0x10/0x31/0x22. The two known secondary-select bytes
+# are 0x0C (the EcuNodeEntry+0x20 / node-table value) and 0x04; which one a given bootloader accepts is firmware-dependent, so
+# we lead with one and fall back to the other.
 _SECONDARY_MODULE_FALLBACK: dict[str, int] = {
     "pcscpu2": 0x04,
-    "di":      0x04,
-    "dis":     0x04,
-    "dir":     0x04,
-    "dirs":    0x04,
+    "di": 0x04,
+    "dis": 0x04,
+    "dir": 0x04,
+    "dirs": 0x04,
+    # PCS/PM-family bootloader images (secondary-region writes)
+    "pcsbl": 0x04,
+    "pcscpu2bl": 0x04,
+    "pmbl": 0x04,
+    "pmfbl": 0x04,
+    "pmrbl": 0x04,
 }
 
 
@@ -111,18 +116,20 @@ def run_pcs_dual_cpu(
     secondary_module_byte = get_script(secondary_entry.component.lower())[1]
 
     print("  Dual-CPU sequence (prog 1, single auth session):")
-    print(f"    primary   ({primary_entry.dest_name}, ecu_type={primary_entry.component})"
-          f"  → moduleToProgram(0x{primary_module_byte:02X})")
-    print(f"    secondary ({secondary_entry.dest_name}, ecu_type={secondary_entry.component})"
-          f"  → moduleToProgram(0x{secondary_module_byte:02X}) [flashed first]")
+    print(
+        f"    primary   ({primary_entry.dest_name}, ecu_type={primary_entry.component})"
+        f"  → moduleToProgram(0x{primary_module_byte:02X})"
+    )
+    print(
+        f"    secondary ({secondary_entry.dest_name}, ecu_type={secondary_entry.component})"
+        f"  → moduleToProgram(0x{secondary_module_byte:02X}) [flashed first]"
+    )
 
     ctx = FlashContext(
         bhx_file=secondary_bhx,
         entry=secondary_entry,
         module_byte=secondary_module_byte,
-        fallback_module_byte=_SECONDARY_MODULE_FALLBACK.get(
-            secondary_entry.component.lower()
-        ),
+        fallback_module_byte=_SECONDARY_MODULE_FALLBACK.get(secondary_entry.component.lower()),
         erase_timeout=SCRIPT_PCS.erase_timeout,
         security_level=SCRIPT_PCS.security_level,
         expected_fw_type=SCRIPT_PCS.expected_fw_type,
@@ -132,7 +139,7 @@ def run_pcs_dual_cpu(
     step_ecu_reset(sess, ctx)
     step_wait_for_bootloader(sess, ctx)
     step_programming_session(sess, ctx)
-    step_verify_comp_fw(sess, ctx)      # sets ctx.protocol_ver for step_security_access
+    step_verify_comp_fw(sess, ctx)  # sets ctx.protocol_ver for step_security_access
     step_security_access(sess, ctx)
 
     # ---- CPU2 / secondary first ----

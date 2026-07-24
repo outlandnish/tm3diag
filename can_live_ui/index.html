@@ -337,6 +337,260 @@
   ::-webkit-scrollbar { width: 6px; height: 6px; }
   ::-webkit-scrollbar-track { background: transparent; }
   ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+
+  /* ---- raw frames tab ---- */
+  #tab-raw {
+    flex-direction: row;
+  }
+
+  #raw-topbar {
+    padding: 10px 16px;
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex-shrink: 0;
+    background: var(--panel);
+  }
+
+  #raw-id-filter {
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 4px 8px;
+    color: var(--text);
+    font: inherit;
+    width: 140px;
+  }
+  #raw-id-filter:focus { outline: none; border-color: var(--accent-dim); }
+
+  #raw-id-filter::placeholder { color: var(--text-dim); }
+
+  .raw-btn {
+    background: none;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 4px 12px;
+    color: var(--text-dim);
+    font: inherit;
+    font-size: 11px;
+    cursor: pointer;
+    transition: background .1s, color .1s, border-color .1s;
+  }
+  .raw-btn:hover { color: var(--text); border-color: var(--accent-dim); }
+  .raw-btn.active {
+    background: rgba(227,25,55,.15);
+    border-color: var(--accent);
+    color: var(--accent);
+  }
+
+  #raw-status {
+    margin-left: auto;
+    font-size: 11px;
+    color: var(--text-dim);
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+
+  #raw-status-dot {
+    width: 7px; height: 7px;
+    border-radius: 50%;
+    background: #444;
+    flex-shrink: 0;
+  }
+  #raw-status-dot.connected { background: var(--green); }
+  #raw-status-dot.error     { background: var(--accent); }
+
+  #raw-body {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+
+  #raw-cards-wrap {
+    flex: 1;
+    overflow-y: auto;
+    padding: 14px 16px 20px;
+  }
+
+  /* grid of cards */
+  #raw-cards-grid {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px;
+    align-content: flex-start;
+  }
+
+  .raw-card {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 10px 12px;
+    min-width: 260px;
+    flex: 0 0 auto;
+  }
+
+  .raw-card-header {
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+    margin-bottom: 8px;
+  }
+
+  .raw-card-id {
+    font-weight: 700;
+    font-size: 13px;
+    color: var(--text);
+    letter-spacing: .04em;
+  }
+
+  .raw-card-name {
+    font-size: 11px;
+    color: var(--text-dim);
+    flex: 1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .raw-card-rate {
+    font-size: 11px;
+    color: var(--text-dim);
+    white-space: nowrap;
+  }
+
+  .raw-bytes-row {
+    display: flex;
+    gap: 4px;
+  }
+
+  .raw-byte-box {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 3px;
+    padding: 5px 4px 4px;
+    border-radius: 4px;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    min-width: 28px;
+    transition: background 0.2s ease;
+  }
+
+  .raw-byte-box.byte-flash {
+    background: var(--yellow) !important;
+    transition: background 0s;
+  }
+
+  .raw-byte-hex {
+    font-size: 12px;
+    font-weight: 700;
+    color: var(--text);
+    letter-spacing: .04em;
+    line-height: 1;
+  }
+
+  .raw-bits-row {
+    display: flex;
+    gap: 2px;
+  }
+
+  .raw-bit {
+    width: 8px;
+    height: 8px;
+    border-radius: 1px;
+    background: var(--border);
+    transition: background 0.2s ease;
+  }
+  .raw-bit.on { background: var(--accent); }
+  .raw-bit.bit-flash { background: var(--green) !important; transition: background 0s; }
+
+  /* ---- raw sidebar ---- */
+  #raw-sidebar {
+    width: 160px;
+    min-width: 140px;
+    background: var(--panel);
+    border-right: 1px solid var(--border);
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    flex-shrink: 0;
+  }
+
+  #raw-sidebar-header {
+    padding: 10px 12px 8px;
+    border-bottom: 1px solid var(--border);
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: .08em;
+    color: var(--text-dim);
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    flex-shrink: 0;
+  }
+
+  #raw-sidebar-actions {
+    display: flex;
+    gap: 6px;
+  }
+
+  .raw-sidebar-action {
+    background: none;
+    border: none;
+    color: var(--text-dim);
+    font: inherit;
+    font-size: 10px;
+    cursor: pointer;
+    padding: 0;
+    text-decoration: underline;
+  }
+  .raw-sidebar-action:hover { color: var(--text); }
+
+  #raw-id-list {
+    overflow-y: auto;
+    flex: 1;
+    padding: 4px 0;
+  }
+
+  .raw-id-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 4px 12px;
+    cursor: pointer;
+    user-select: none;
+  }
+  .raw-id-row:hover { background: rgba(255,255,255,.04); }
+
+  .raw-id-row input[type=checkbox] {
+    accent-color: var(--accent);
+    cursor: pointer;
+    flex-shrink: 0;
+  }
+
+  .raw-id-row-label {
+    font-size: 12px;
+    color: var(--text);
+    flex: 1;
+    font-family: inherit;
+  }
+
+  .raw-id-row-rate {
+    font-size: 10px;
+    color: var(--text-dim);
+    min-width: 28px;
+    text-align: right;
+  }
+
+  #raw-body {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
 </style>
 </head>
 <body>
@@ -345,6 +599,7 @@
 <div id="tab-bar">
   <button class="tab-btn active" data-tab="live">Live</button>
   <button class="tab-btn" data-tab="explorer">DB Explorer</button>
+  <button class="tab-btn" data-tab="raw">Raw Frames</button>
 </div>
 
 <!-- ===================== LIVE TAB ===================== -->
@@ -369,6 +624,34 @@
       <div id="placeholder" class="placeholder">
         <div>Choose an ECU node from the sidebar</div>
       </div>
+    </div>
+  </div>
+</div>
+
+<!-- ===================== RAW FRAMES TAB ===================== -->
+<div id="tab-raw" class="tab-view">
+  <div id="raw-sidebar">
+    <div id="raw-sidebar-header">
+      IDs
+      <div id="raw-sidebar-actions">
+        <button class="raw-sidebar-action" id="raw-show-all">all</button>
+        <button class="raw-sidebar-action" id="raw-hide-all">none</button>
+      </div>
+    </div>
+    <div id="raw-id-list"></div>
+  </div>
+  <div id="raw-body">
+    <div id="raw-topbar">
+      <input id="raw-id-filter" type="text" placeholder="Filter by ID (hex)…">
+      <button id="raw-clear-btn" class="raw-btn">Clear</button>
+      <button id="raw-freeze-btn" class="raw-btn">Freeze</button>
+      <div id="raw-status">
+        <div id="raw-status-dot"></div>
+        <span id="raw-status-text">disconnected</span>
+      </div>
+    </div>
+    <div id="raw-cards-wrap">
+      <div id="raw-cards-grid"></div>
     </div>
   </div>
 </div>
@@ -915,6 +1198,307 @@ function renderExp() {
       : `${totalSigs.toLocaleString()} signals`;
   }
 }
+
+// ===========================================================
+// RAW FRAMES TAB
+// ===========================================================
+(function () {
+  const WS_RAW_URL     = `ws://${location.host}/ws-raw`;
+  const RECONNECT_MS   = 1500;
+  const BYTE_FLASH_MS  = 200;
+  const BIT_FLASH_MS   = 200;
+  const RATE_WINDOW_MS = 1000; // rolling window for rate calc
+
+  const rawIdFilter    = document.getElementById('raw-id-filter');
+  const rawClearBtn    = document.getElementById('raw-clear-btn');
+  const rawFreezeBtn   = document.getElementById('raw-freeze-btn');
+  const rawCardsGrid   = document.getElementById('raw-cards-grid');
+  const rawStatusDot   = document.getElementById('raw-status-dot');
+  const rawStatusText  = document.getElementById('raw-status-text');
+  const rawIdList      = document.getElementById('raw-id-list');
+  const rawShowAll     = document.getElementById('raw-show-all');
+  const rawHideAll     = document.getElementById('raw-hide-all');
+
+  let rawWs        = null;
+  let frozen       = false;
+  let filterText   = '';
+  const hiddenIds  = new Set();  // CAN IDs the user has unchecked
+
+  // Map: CAN ID (number) -> { card dom, prevData, timestamps[] for rate, byteEls[], bitEls[][] }
+  const rawCards = new Map();
+
+  // ---- WebSocket connection ----
+  function connectRaw() {
+    rawWs = new WebSocket(WS_RAW_URL);
+    rawWs.onopen = () => {
+      rawStatusDot.className = 'connected';
+      rawStatusText.textContent = 'connected';
+    };
+    rawWs.onclose = () => {
+      rawStatusDot.className = '';
+      rawStatusText.textContent = 'reconnecting…';
+      setTimeout(connectRaw, RECONNECT_MS);
+    };
+    rawWs.onerror = () => {
+      rawStatusDot.className = 'error';
+      rawStatusText.textContent = 'error';
+    };
+    rawWs.onmessage = (ev) => {
+      if (frozen) return;
+      let frame;
+      try { frame = JSON.parse(ev.data); } catch { return; }
+      handleRawFrame(frame);
+    };
+  }
+
+  // ---- Frame handling ----
+  function handleRawFrame(frame) {
+    const { id, data, ts } = frame;
+    if (!rawCards.has(id)) {
+      createCard(id, data);
+    }
+    updateCard(id, data);
+  }
+
+  // ---- Card creation ----
+  function createCard(id, data) {
+    const idHex = '0x' + id.toString(16).toUpperCase().padStart(3, '0');
+
+    const card = document.createElement('div');
+    card.className = 'raw-card';
+    card.dataset.rawId = id;
+
+    const header = document.createElement('div');
+    header.className = 'raw-card-header';
+
+    const idEl = document.createElement('span');
+    idEl.className = 'raw-card-id';
+    idEl.textContent = idHex;
+
+    const nameEl = document.createElement('span');
+    nameEl.className = 'raw-card-name';
+    // Leave name blank — backend sends no name on raw channel
+    nameEl.textContent = '';
+
+    const rateEl = document.createElement('span');
+    rateEl.className = 'raw-card-rate';
+    rateEl.textContent = '—';
+
+    header.append(idEl, nameEl, rateEl);
+    card.appendChild(header);
+
+    const bytesRow = document.createElement('div');
+    bytesRow.className = 'raw-bytes-row';
+
+    const byteEls = [];
+    const bitEls  = [];
+
+    const len = data ? data.length : 8;
+    for (let b = 0; b < len; b++) {
+      const byteBox = document.createElement('div');
+      byteBox.className = 'raw-byte-box';
+
+      const hexEl = document.createElement('div');
+      hexEl.className = 'raw-byte-hex';
+      hexEl.textContent = '--';
+
+      const bitsRow = document.createElement('div');
+      bitsRow.className = 'raw-bits-row';
+
+      const bits = [];
+      for (let bit = 7; bit >= 0; bit--) {
+        const sq = document.createElement('div');
+        sq.className = 'raw-bit';
+        bitsRow.appendChild(sq);
+        bits.push(sq);
+      }
+
+      byteBox.append(hexEl, bitsRow);
+      bytesRow.appendChild(byteBox);
+      byteEls.push({ box: byteBox, hexEl });
+      bitEls.push(bits); // bits[0] = MSB (bit 7), bits[7] = LSB (bit 0)
+    }
+
+    card.appendChild(bytesRow);
+
+    // Insert card in sorted order by CAN ID
+    const existing = [...rawCardsGrid.querySelectorAll('.raw-card')];
+    let inserted = false;
+    for (const el of existing) {
+      if (parseInt(el.dataset.rawId, 10) > id) {
+        rawCardsGrid.insertBefore(card, el);
+        inserted = true;
+        break;
+      }
+    }
+    if (!inserted) rawCardsGrid.appendChild(card);
+
+    // Sidebar entry
+    const row = document.createElement('div');
+    row.className = 'raw-id-row';
+
+    const cb = document.createElement('input');
+    cb.type = 'checkbox';
+    cb.checked = true;
+    cb.addEventListener('change', () => {
+      if (cb.checked) hiddenIds.delete(id);
+      else hiddenIds.add(id);
+      applyRawFilter();
+    });
+
+    const lbl = document.createElement('span');
+    lbl.className = 'raw-id-row-label';
+    lbl.textContent = idHex;
+
+    const sidebarRate = document.createElement('span');
+    sidebarRate.className = 'raw-id-row-rate';
+    sidebarRate.textContent = '';
+
+    row.append(cb, lbl, sidebarRate);
+    row.addEventListener('click', (e) => {
+      if (e.target === cb) return;
+      cb.checked = !cb.checked;
+      cb.dispatchEvent(new Event('change'));
+    });
+
+    // Insert in sorted order
+    const existingRows = [...rawIdList.querySelectorAll('.raw-id-row')];
+    let rowInserted = false;
+    for (const el of existingRows) {
+      if (parseInt(el.dataset.rawId, 10) > id) {
+        rawIdList.insertBefore(row, el);
+        rowInserted = true;
+        break;
+      }
+    }
+    if (!rowInserted) rawIdList.appendChild(row);
+    row.dataset.rawId = id;
+
+    rawCards.set(id, {
+      card,
+      rateEl,
+      sidebarRate,
+      byteEls,
+      bitEls,
+      prevData: null,
+      timestamps: [],
+    });
+
+    applyRawFilter();
+  }
+
+  // ---- Card update ----
+  function updateCard(id, data) {
+    const state = rawCards.get(id);
+    if (!state) return;
+
+    // Rate tracking
+    const now = performance.now();
+    state.timestamps.push(now);
+    // Prune old timestamps outside the window
+    const cutoff = now - RATE_WINDOW_MS;
+    while (state.timestamps.length && state.timestamps[0] < cutoff) {
+      state.timestamps.shift();
+    }
+    const rate = state.timestamps.length;
+    state.rateEl.textContent = `${rate}/s`;
+    state.sidebarRate.textContent = `${rate}/s`;
+
+    const prev = state.prevData;
+
+    for (let b = 0; b < data.length; b++) {
+      const val = data[b];
+      const prevVal = prev ? prev[b] : null;
+      const byteChanged = prevVal === null || val !== prevVal;
+
+      const { box, hexEl } = state.byteEls[b];
+      hexEl.textContent = val.toString(16).toUpperCase().padStart(2, '0');
+
+      if (byteChanged) {
+        // Flash byte box yellow
+        box.classList.remove('byte-flash');
+        void box.offsetWidth; // reflow to restart animation
+        box.classList.add('byte-flash');
+        setTimeout(() => box.classList.remove('byte-flash'), BYTE_FLASH_MS);
+      }
+
+      // Update bits (MSB = bit 7 = index 0 in our array)
+      const bits = state.bitEls[b];
+      for (let bit = 7; bit >= 0; bit--) {
+        const bitIdx = 7 - bit; // 0 = MSB
+        const sq = bits[bitIdx];
+        const isOn = (val >> bit) & 1;
+        const wasOn = prev ? (prev[b] >> bit) & 1 : -1;
+        const bitChanged = wasOn !== isOn;
+
+        sq.classList.toggle('on', !!isOn);
+
+        if (bitChanged) {
+          sq.classList.remove('bit-flash');
+          void sq.offsetWidth;
+          sq.classList.add('bit-flash');
+          setTimeout(() => sq.classList.remove('bit-flash'), BIT_FLASH_MS);
+        }
+      }
+    }
+
+    state.prevData = data.slice();
+  }
+
+  // ---- Filter ----
+  function applyRawFilter() {
+    const f = filterText.trim().toLowerCase().replace(/^0x/, '');
+    rawCards.forEach((state, id) => {
+      const idHex = id.toString(16).toLowerCase();
+      const matchesText = !f || idHex.includes(f);
+      const show = matchesText && !hiddenIds.has(id);
+      state.card.style.display = show ? '' : 'none';
+    });
+  }
+
+  rawIdFilter.addEventListener('input', () => {
+    filterText = rawIdFilter.value;
+    applyRawFilter();
+  });
+
+  rawClearBtn.addEventListener('click', () => {
+    rawCards.clear();
+    hiddenIds.clear();
+    rawCardsGrid.innerHTML = '';
+    rawIdList.innerHTML = '';
+  });
+
+  rawShowAll.addEventListener('click', () => {
+    hiddenIds.clear();
+    rawIdList.querySelectorAll('input[type=checkbox]').forEach(cb => cb.checked = true);
+    applyRawFilter();
+  });
+
+  rawHideAll.addEventListener('click', () => {
+    rawCards.forEach((_, id) => hiddenIds.add(id));
+    rawIdList.querySelectorAll('input[type=checkbox]').forEach(cb => cb.checked = false);
+    applyRawFilter();
+  });
+
+  rawFreezeBtn.addEventListener('click', () => {
+    frozen = !frozen;
+    rawFreezeBtn.classList.toggle('active', frozen);
+    rawFreezeBtn.textContent = frozen ? 'Unfreeze' : 'Freeze';
+  });
+
+  // Connect when the Raw tab is first activated (lazy), but also connect eagerly
+  // so rate data starts accumulating. We connect on first tab activation.
+  let rawConnected = false;
+
+  document.querySelectorAll('.tab-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      if (btn.dataset.tab === 'raw' && !rawConnected) {
+        rawConnected = true;
+        connectRaw();
+      }
+    });
+  });
+})();
 </script>
 </body>
 </html>

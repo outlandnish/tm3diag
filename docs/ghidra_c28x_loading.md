@@ -41,7 +41,7 @@ skip to [Step 1](#step-1--get-a-flat-bin-payload).
   `docs/BUILDING.machine-specific.md`. Verify it's live: in the language picker you should see
   **`TMS320C28x:LE:32:default`**. (Quick smoke test: disassemble bytes `01 00` → `ABORTI`,
   `21 76` → `IDLE`.)
-- **`scripts/c28x_loadimg.py`** (in this repo) — the byte-swapper.
+- **`scripts/c28x/c28x_loadimg.py`** (in this repo) — the byte-swapper.
 - **`bhx.py`** (in this repo) — to extract a `.bin` payload from a `.bhx` container, if you're
   starting from an OTA file. See [bhx.md](bhx.md).
 - **The two Ghidra scripts** from the module repo (`ghidra-tms320c28x/ghidra_scripts/`):
@@ -151,17 +151,20 @@ python bhx.py extract PMR_32-67-0_..._crc_lithium-signed.bhx out/
 inverter halves and PCS it is typically one of the values in the table below; trust what `bhx
 info` reports for your specific file over the table.
 
-> **Note:** a `.bhx` is a *container* (`GHDR`/`SHDR`, big-endian). Don't confuse it with the
-> `0x0900`-headered **bootloader package** (`pmrbl`/`pmrbu`) — that's a signed
-> flash-programming container, not flat code, and the steps here do not apply to it. App bodies
-> (`DIR_*`, `PMR_*`, `PCS_*`) are flat code and do.
+> **Note:** a `.bhx` is a *container* (`GHDR`/`SHDR`, big-endian). The `0x0900`-headered
+> **bootloader artifacts** (`pmrbl`/`pmrbu`) carry an extra inner header but ARE flat
+> byte-swapped C28x code too — these same steps DO apply (validated 2026-06-25:
+> `swap16(bu .bhx payload)` == the coherent Ghidra image byte-for-byte, 49152/49152; the
+> full UDS/flash handlers decompile cleanly). They are NOT signed packages — image
+> acceptance is CRC + fw_type + SecurityAccess + rev only. The earlier "signed container /
+> not flat code" note was wrong. App bodies (`DIR_*`, `PMR_*`, `PCS_*`) are likewise flat code.
 
 ---
 
 ## Step 2 — Byte-swap the image
 
 ```bash
-python scripts/c28x_loadimg.py --mode swap out/PMR_32-67-0_...bin --out pmr_swapped.bin
+python scripts/c28x/c28x_loadimg.py --mode swap out/PMR_32-67-0_...bin --out pmr_swapped.bin
 ```
 
 This swaps the two bytes of every 16-bit word. The output is what Ghidra imports. The tool
@@ -302,7 +305,7 @@ python bhx.py info    <col1-path>.bhx        # note the segment target address =
 python bhx.py extract <col1-path>.bhx out/
 
 # 2. byte-swap for the C28x instruction stream
-python scripts/c28x_loadimg.py --mode swap out/firmware.bin --out fw_swapped.bin
+python scripts/c28x/c28x_loadimg.py --mode swap out/firmware.bin --out fw_swapped.bin
 ```
 
 In Ghidra:

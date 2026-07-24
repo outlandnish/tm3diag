@@ -15,6 +15,7 @@ import contextlib
 import json
 import logging
 import threading
+import time
 import webbrowser
 from pathlib import Path
 
@@ -28,6 +29,8 @@ _STATIC_DIR = Path(__file__).parent / "can_live_ui"
 _DB: CanDatabase | None = None
 
 log = logging.getLogger("can_live")
+
+_RAW_RATE_LIMIT = 1 / 20  # minimum seconds between sends per CAN ID (~20/s max)
 
 
 # ---------------------------------------------------------------------------
@@ -89,12 +92,31 @@ async def _ws_handler(request: web.Request) -> web.WebSocketResponse:
     return ws
 
 
+async def _ws_raw_handler(request: web.Request) -> web.WebSocketResponse:
+    ws = web.WebSocketResponse()
+    await ws.prepare(request)
+
+    app = request.app
+    app["raw_clients"].add(ws)
+    log.info("Raw WebSocket client connected (%d total)", len(app["raw_clients"]))
+
+    # Consume any incoming messages (we don't act on them) until close
+    async for msg in ws:
+        if msg.type in (web.WSMsgType.ERROR, web.WSMsgType.CLOSE):
+            break
+
+    app["raw_clients"].discard(ws)
+    log.info("Raw WebSocket client disconnected (%d remaining)", len(app["raw_clients"]))
+    return ws
+
+
 # ---------------------------------------------------------------------------
 # CAN reader task
 # ---------------------------------------------------------------------------
 
 async def _can_reader(app: web.Application, bus: can.BusABC) -> None:
     loop = asyncio.get_running_loop()
+    raw_last_sent: dict[int, float] = {}  # CAN ID -> monotonic timestamp of last raw send
 
     def _read_one() -> can.Message | None:
         return bus.recv(timeout=0.1)
@@ -104,6 +126,26 @@ async def _can_reader(app: web.Application, bus: can.BusABC) -> None:
         if msg is None:
             continue
 
+        # --- Raw broadcast (all frames, rate-limited per ID) ---
+        if app["raw_clients"]:
+            now = time.monotonic()
+            arb_id = msg.arbitration_id
+            if now - raw_last_sent.get(arb_id, 0.0) >= _RAW_RATE_LIMIT:
+                raw_last_sent[arb_id] = now
+                raw_payload = json.dumps({
+                    "id": arb_id,
+                    "data": list(msg.data),
+                    "ts": msg.timestamp,
+                })
+                dead_raw: set[web.WebSocketResponse] = set()
+                for rws in list(app["raw_clients"]):
+                    try:
+                        await rws.send_str(raw_payload)
+                    except Exception:
+                        dead_raw.add(rws)
+                app["raw_clients"].difference_update(dead_raw)
+
+        # --- Decoded broadcast (DBC frames only) ---
         decoded = _DB.decode_frame(msg.arbitration_id, bytes(msg.data))
         if decoded is None:
             continue
@@ -140,6 +182,7 @@ async def _can_reader(app: web.Application, bus: can.BusABC) -> None:
 
 async def _start_reader(app: web.Application) -> None:
     app["clients"] = set()
+    app["raw_clients"] = set()
     bus: can.BusABC = app["bus"]
     app["reader_task"] = asyncio.create_task(_can_reader(app, bus))
 
@@ -197,6 +240,7 @@ def _build_app(bus: can.BusABC) -> web.Application:
     app.router.add_get("/", _index)
     app.router.add_get("/api/db", _api_db)
     app.router.add_get("/ws", _ws_handler)
+    app.router.add_get("/ws-raw", _ws_raw_handler)
     return app
 
 

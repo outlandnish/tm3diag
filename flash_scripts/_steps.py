@@ -7,6 +7,7 @@ to drive the underlying UDS transport.
 
 from __future__ import annotations
 
+import logging
 import time
 from typing import TYPE_CHECKING
 
@@ -23,6 +24,8 @@ from ._display import _bar
 
 if TYPE_CHECKING:
     from uds_local.client import UdsSession
+
+_log = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
@@ -238,6 +241,48 @@ def step_erase(sess: UdsSession, ctx: FlashContext) -> None:
     ctx.display.set_detail("Erase complete")
 
 
+def _request_download_with_module_fallback(
+    sess: UdsSession, ctx: FlashContext, address: int, size: int
+) -> int:
+    """RequestDownload, retrying with the fallback module byte on NRC 0x31/0x22.
+
+    A bootloader can *accept* moduleToProgram with the wrong secondary-select
+    byte but then reject RequestDownload at the target address — with either NRC
+    0x31 (requestOutOfRange) or NRC 0x22 (conditionsNotCorrect, observed on a
+    12804 PMR bootloader when the module byte and the 0x82000 secondary-region
+    address disagree) — so step_module_to_program's own NRC fallback never fires.
+    When that happens, re-select the module with the fallback byte, re-erase
+    (erase is module-scoped, so the new selection needs a fresh erase), and retry
+    the download. Only attempted once, and only for the first segment.
+    """
+    from uds_local.client import UdsError
+    try:
+        return sess.request_download(address, size)
+    except UdsError as e:
+        if (
+            e.nrc not in (0x31, 0x22)
+            or ctx.fallback_module_byte is None
+            or ctx.module_byte == ctx.fallback_module_byte
+        ):
+            raise
+        ctx.display.set_detail(
+            f"RequestDownload: NRC 0x{e.nrc:02X} ({e.nrc_name}) — "
+            f"re-selecting module 0x{ctx.module_byte:02X} -> "
+            f"fallback 0x{ctx.fallback_module_byte:02X} and retrying"
+        )
+        sess.module_to_program(ctx.fallback_module_byte)
+        ctx.module_byte = ctx.fallback_module_byte
+        # Erase is module-scoped — the freshly selected module needs its own erase.
+        sess.start_tester_present()
+        try:
+            sess.set_timeout(ctx.erase_timeout)
+            sess.routine_control(_RC_ERASE)
+        finally:
+            sess.set_timeout(3.0)
+            sess.stop_tester_present()
+        return sess.request_download(address, size)
+
+
 def step_transfer_loop(sess: UdsSession, ctx: FlashContext) -> None:
     """RequestDownload + TransferData + RequestTransferExit for each SHDR."""
     display = ctx.display
@@ -249,7 +294,14 @@ def step_transfer_loop(sess: UdsSession, ctx: FlashContext) -> None:
     for seg_idx, seg in enumerate(segments):
         seg_label = f"SHDR {seg_idx + 1}/{n_segs}"
         display.set_detail(f"Requesting download: {seg_label}  addr=0x{seg.start_address:08X}")
-        max_block_len = sess.request_download(seg.start_address, seg.length)
+        # First segment may hit NRC 0x31 from a wrong (older) module byte that the
+        # newer firmware silently accepted at moduleToProgram — retry with fallback.
+        if seg_idx == 0:
+            max_block_len = _request_download_with_module_fallback(
+                sess, ctx, seg.start_address, seg.length
+            )
+        else:
+            max_block_len = sess.request_download(seg.start_address, seg.length)
 
         seg_start = bytes_done
 
@@ -324,15 +376,48 @@ def step_transfer_loop_inter_shdr(sess: UdsSession, ctx: FlashContext) -> None:
 
 
 def step_verify_crc(sess: UdsSession, ctx: FlashContext) -> None:
+    """RC 0x0201 checkModuleProgrammedCorrectly.
+
+    NOTE (validation in progress): the device replies 71 01 02 01 <status>, where
+    status 0x00 = CRC MATCH and 0x04 = CRC MISMATCH (both are UDS *positive*
+    responses, so routine_control() does NOT catch a mismatch). We READ and LOG the
+    status here (non-fatal) so we can finally see whether verifyCRC actually passes
+    on a real flash and what expected value the device uses. Whether the host must
+    SUPPLY the expected CRC (in the RC arg) or the device derives it from the image
+    is still UNCONFIRMED — this logging is how we find out. Do not treat a pass as
+    given until the status byte is observed = 0x00.
+    """
     ctx.display.set_detail("CRC check (RC 0x0201)...")
-    sess.routine_control(_RC_VERIFY_CRC)
-    ctx.display.set_detail("CRC check: OK")
+    resp = sess.routine_control(_RC_VERIFY_CRC)
+    status = resp[0] if resp else None
+    if status == 0x00:
+        ctx.display.set_detail("CRC check: status=0x00 (MATCH)")
+    else:
+        # non-fatal: surface it loudly but don't abort the (still-being-validated) pipeline
+        msg = (f"CRC check: status={f'0x{status:02X}' if status is not None else 'EMPTY'} "
+               f"(0x04=MISMATCH; expected 0x00). raw={resp.hex() if resp else '<none>'}")
+        ctx.display.set_detail(msg)
+        _log.warning("step_verify_crc: %s", msg)
 
 
 def step_check_rev(sess: UdsSession, ctx: FlashContext) -> None:
+    """RC 0x0202 checkCorrectComponentAndRev.
+
+    Device replies 71 01 02 02 <status>: 0x00 = OK; 1..4 = which header rev/part-id
+    field mismatched (1=part/module-id, 2=byte-pair, 3=major-rev, 4=minor-rev), all
+    positive responses. We READ + LOG the status (non-fatal) for the same reason as
+    step_verify_crc — the response was never validated before.
+    """
     ctx.display.set_detail("Revision check (RC 0x0202)...")
-    sess.routine_control(_RC_CHECK_REV)
-    ctx.display.set_detail("Revision check: OK")
+    resp = sess.routine_control(_RC_CHECK_REV)
+    status = resp[0] if resp else None
+    if status == 0x00:
+        ctx.display.set_detail("Revision check: status=0x00 (OK)")
+    else:
+        msg = (f"Revision check: status={f'0x{status:02X}' if status is not None else 'EMPTY'} "
+               f"(1-4=field mismatch; expected 0x00). raw={resp.hex() if resp else '<none>'}")
+        ctx.display.set_detail(msg)
+        _log.warning("step_check_rev: %s", msg)
 
 
 # ---------------------------------------------------------------------------

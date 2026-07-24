@@ -430,11 +430,11 @@ SCRIPT_THS = FlashScript(
 #   reset(0)  halt
 SCRIPT_BL_UPDATER = FlashScript(
     steps=[
-        step_halt_if_running_boot_updater,   # ← 0x29 leading guard (device-confirmed)
+        step_halt_if_running_boot_updater,  # ← 0x29 leading guard (device-confirmed)
         step_ecu_reset,
         step_wait_for_bootloader,
         step_programming_session,
-        step_verify_comp_fw,           # expected_fw_type=1 (default)
+        step_verify_comp_fw,  # expected_fw_type=1 (default)
         step_security_access,
         step_module_to_program,
         step_erase,
@@ -446,27 +446,12 @@ SCRIPT_BL_UPDATER = FlashScript(
     erase_timeout=3.0,
 )
 
-# 0x00651340 — bootloader image (`*bl` files: parkbl, hvbmsbl, hvpbl, vcfrontbl)
-# Runs immediately after SCRIPT_BL_UPDATER without an intervening reset/handover —
-# the bu's trailing reset boots the update agent, and step_sleep_1000ms gives it
-# time to come up. Then DSC + verify(fw_type=2) + auth + erase + transfer +
-# verify + reset against the agent. Confirmed against the device firmware:
-# update-2020.img bl script at 0x40035FE8 (5 `*bl` node entries point to it).
-# Note: the bl script has NO leading haltIfRunningBootUpdater guard and NO
-# reset/enterBootloader preamble — it cannot run standalone, only after bu.
-# Decoded bytecode:
-#   sleep(1000ms)
-#   diagnosticSession(2)
-#   varifyCompAndFirmwareType(2)  ← fw_type = 2 (BOOTLOADER)
-#   securityAccess(0)  netSetTimeout(3)
-#   CALL sub0 [moduleToProgram(0) + initializeEraseModule(0) + transferData(0) + RET]
-#   checkModuleProgrammed  checkCorrectComponentAndRev
-#   reset(0)  halt
 SCRIPT_BL = FlashScript(
     steps=[
         step_sleep_1000ms,
+        step_wait_for_bootloader,  # confirm the bu agent is up before DSC
         step_programming_session,
-        step_verify_comp_fw,           # expected_fw_type=2 set below
+        step_verify_comp_fw,  # expected_fw_type=2 set below
         step_security_access,
         step_module_to_program,
         step_erase,
@@ -479,22 +464,14 @@ SCRIPT_BL = FlashScript(
     expected_fw_type=0x02,
 )
 
-# 0x00651320 — vcfront-specific bootloader-updater (`vcfrontbu`)
-# Same as SCRIPT_BL_UPDATER but with a `CALL sub4` preamble that opens a
-# transient session to VCRIGHT, runs OTA-mode prep + IOCBI lockout, and
-# closes it. Used because VCFRONT cannot enter the bootloader-update flow
-# without VCRIGHT being held in a coordinated OTA state first.
-#
-# Requires: VCRIGHT reachable on the same CAN channel; vehicle actively in
-# OTA state (RC 0x0540 must return response[0]==2).
 SCRIPT_BL_UPDATER_VCFRONT = FlashScript(
     steps=[
-        step_vcright_ota_prep,         # ← sub4 (VCRIGHT detour)
-        step_halt_if_running_boot_updater,   # ← 0x29 leading guard (bu variant)
+        step_vcright_ota_prep,  # ← sub4 (VCRIGHT detour)
+        step_halt_if_running_boot_updater,  # ← 0x29 leading guard (bu variant)
         step_ecu_reset,
         step_wait_for_bootloader,
         step_programming_session,
-        step_verify_comp_fw,           # expected_fw_type=1 (default)
+        step_verify_comp_fw,  # expected_fw_type=1 (default)
         step_security_access,
         step_module_to_program,
         step_erase,

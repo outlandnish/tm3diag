@@ -608,22 +608,28 @@ class UdsSession:
             try:
                 self._send_tp_no_wait()
                 keepalive_count += 1
-            except Exception as exc:
+            except Exception:
+                # A failed 3E 80 TX here is EXPECTED, not fatal: right after the
+                # 11 81 reset the ECU is mid-reboot and not ACKing, and on a
+                # single-node bench bus (only the target on the wire) there is no
+                # other node to ACK, so the controller goes error-passive and
+                # bus.send() raises. That is precisely the window we're waiting
+                # through. Do NOT abort — count it, keep the cadence, and let
+                # Phase 2 (3E 00 -> 7E 00) be the arbiter of whether the
+                # bootloader actually came back. If it never does, Phase 2 raises
+                # a clean TimeoutError below.
                 bus_errors += 1
-                if bus_errors >= 5:
-                    # The binary aborts on the first send error; we tolerate
-                    # a few transients (bus may glitch right after reset)
-                    # but bail if it's persistent — that signals the bus is
-                    # down, not the ECU rebooting.
-                    raise RuntimeError(
-                        f"Phase 1: {bus_errors} consecutive bus send errors — "
-                        "bus is probably down; abandoning bootloader handover"
-                    ) from exc
             # Early exit on broadcast counter advance (mirrors the binary)
             if watcher is not None and watcher.count != baseline:
                 early_exit_ms = (time.monotonic() - phase1_start) * 1000
                 break
             time.sleep(keepalive_interval_s)
+        if bus_errors:
+            _log.debug(
+                "Phase 1: %d keep-alive TX errors (expected on a single-node bus"
+                " while the ECU reboots) — deferring to Phase 2 for confirmation",
+                bus_errors,
+            )
         if early_exit_ms is not None:
             _log.debug(
                 "Phase 1: broadcast 0x%03X advanced after %.0f ms"
@@ -647,9 +653,19 @@ class UdsSession:
 
         # Phase 2: 14 fast 3E 00 probes (P2 = 40 ms) back-to-back.
         nrc_count = 0
+        send_errors = 0
         first_nrc: int | None = None
         for _attempt in range(1, confirm_max_attempts + 1):
-            resp = self._send_raw([_SID_TP, 0x00], timeout_ms=confirm_p2_ms)
+            try:
+                resp = self._send_raw([_SID_TP, 0x00], timeout_ms=confirm_p2_ms)
+            except Exception:
+                # Same single-node window as Phase 1: the 3E 00 TX may still fail
+                # to be ACKed for the first probes while the ECU finishes booting.
+                # Count it and keep probing — once the bootloader is up it ACKs
+                # and answers 7E 00.
+                send_errors += 1
+                time.sleep(confirm_p2_ms / 1000.0)
+                continue
             if resp and resp[0] == 0x7E:
                 return
             if resp and resp[0] == 0x7F:
@@ -658,9 +674,12 @@ class UdsSession:
                     first_nrc = resp[2]
             # No inter-attempt sleep — back-to-back like the binary
         diag = (
-            f"phase 1 sent {keepalive_count} keep-alive frames; phase 2 sent"
-            f" {confirm_max_attempts} TesterPresent probes (P2={confirm_p2_ms} ms),"
-            " no positive response"
+            f"phase 1 sent {keepalive_count} keep-alive frames"
+            + (f" ({bus_errors} TX errors)" if bus_errors else "")
+            + f"; phase 2 sent {confirm_max_attempts} TesterPresent probes"
+            f" (P2={confirm_p2_ms} ms)"
+            + (f", {send_errors} TX errors" if send_errors else "")
+            + ", no positive response"
         )
         if nrc_count:
             diag += (

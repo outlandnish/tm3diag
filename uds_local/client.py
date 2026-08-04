@@ -18,7 +18,7 @@ from uds.message import UdsMessage
 
 from .broadcast_config import broadcast_for
 from .node_config import NodeConfig
-from .security import compute_key
+from .security_provider import compute_key
 
 # The py-uds library emits two routine warnings on every session:
 #   - PyCanTransportInterface adjusts its notifier timeout to 0.001 s

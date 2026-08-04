@@ -15,6 +15,16 @@ docs/superpowers
 immo_keys.json
 docs/private/
 
+# Sensitive local-only layer — never publish (provider seam keeps these out of the tree)
+*.key
+security_impl.py
+uds_local/security_impl.py
+uds_local/immobilizer.py
+scripts/di/immobilizer_handshake.py
+# Additional local operational/firmware artifacts (kept out of the public tree)
+scripts/di/immo_l04.py
+_client_fw/
+
 # Local test scaffolding — not for check-in
 _flash_*_oneoff.py
 _flash_dir_0x04.py

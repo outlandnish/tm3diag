@@ -20,6 +20,12 @@ from ihex import decode_to_hex, load_intelhex, parse_bytes, parse_file, to_hex_t
 
 _HGZ = Path(__file__).parent / "fixtures" / "highland" / "GW.HGZ"
 
+if not _HGZ.exists():
+    pytest.skip(
+        "highland GW.HGZ is a local-only Tesla capture (gitignored); not shipped",
+        allow_module_level=True,
+    )
+
 # Bank layout of this gateway build, verified against the decoded image.
 _BANK_A = (0x00FB0000, 113504, "e776ce6d")
 _BANK_B = (0x00FD0000, 113504, "1e9456e4")

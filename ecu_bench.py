@@ -202,7 +202,7 @@ class _ImmoResponder(can.Listener):
     def __init__(self, state: BenchState, spec: ImmoSpec,
                  channel: str, interface: str) -> None:
         from uds_local.client import UdsSession
-        from uds_local.immobilizer import Keystore, challenge_response
+        from uds_local.security_provider import Keystore, challenge_response
         self._state = state
         self._spec = spec
         self._challenge_response = challenge_response
@@ -217,7 +217,8 @@ class _ImmoResponder(can.Listener):
         if entry is None:
             raise SystemExit(
                 f"No stored immobilizer key for board {board_sn!r} in {ks.path}. "
-                f"Pair first: scripts/di/immobilizer_handshake.py pair"
+                f"Provide a key via your key-derivation provider / keystore "
+                f"(see docs/SECURITY_PROVIDER.md)."
             )
         self._key = entry.key_bytes
         self.challenges = 0

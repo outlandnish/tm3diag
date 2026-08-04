@@ -1,20 +1,30 @@
-"""Tests for uds/security.py — all algorithm implementations."""
+"""Tests for the security-access algorithms.
+
+The seed/key algorithms are NOT shipped in this repo; they are supplied by a
+local, gitignored drop-in module (``uds_local/security_impl.py``) or via the
+``TM3_SECURITY_PROVIDER`` provider. When that implementation is absent — as in
+the published tree — this whole module is skipped.
+"""
 
 import pytest
 
-from uds_local.security import (
-    baolong_hash,
-    bitron_hash,
-    bosch_hash,
-    compute_key,
-    conti_hash,
-    delphi_hash,
-    halla_hash,
-    jlr_hash,
-    panasonic_hash,
-    pektron_hash,
-    tesla_hash,
+_impl = pytest.importorskip(
+    "uds_local.security_impl",
+    reason="seed/key algorithms are a local drop-in (uds_local/security_impl.py); "
+    "not shipped in this build — see docs/SECURITY_PROVIDER.md",
 )
+
+baolong_hash = _impl.baolong_hash
+bitron_hash = _impl.bitron_hash
+bosch_hash = _impl.bosch_hash
+compute_key = _impl.compute_key
+conti_hash = _impl.conti_hash
+delphi_hash = _impl.delphi_hash
+halla_hash = _impl.halla_hash
+jlr_hash = _impl.jlr_hash
+panasonic_hash = _impl.panasonic_hash
+pektron_hash = _impl.pektron_hash
+tesla_hash = _impl.tesla_hash
 
 
 class TestTeslaHash:

@@ -5,6 +5,9 @@ Tesla Model 3 diagnostics tools for CAN
 > **Use at your own risk**
 > This is unofficial, open-source software with no affiliation to Tesla. Flashing ECU firmware carries real risk — a failed or interrupted flash can leave an ECU in an unrecoverable state, potentially disabling safety-critical vehicle systems. By using these tools you accept full responsibility for any damage to your vehicle, its components, or any third parties. The authors provide no warranty and assume no liability.
 
+> **Scope**
+> This tool ships **no** seed/key algorithms, immobilizer logic, or decryption keys. It is a CAN/UDS diagnostics and interoperability framework intended for use on hardware you own. Where a security-access or immobilizer computation is required, you supply it through a provider you are lawfully entitled to use — see [docs/SECURITY_PROVIDER.md](docs/SECURITY_PROVIDER.md).
+
 ## Requirements
 
 - Python 3.10 or later
@@ -62,7 +65,7 @@ sudo ip link set vcan0 up
 
 ### 3. Firmware dump (optional)
 
-Some tools (`tm3diag.py`, `dfu.py`, `tm3uds.py`) can decode signal names and validate routines when pointed at an extracted Tesla firmware squashfs. This is **not required** for the immobilizer handshake script.
+Some tools (`tm3diag.py`, `dfu.py`, `tm3uds.py`) can decode signal names and validate routines when pointed at an extracted Tesla firmware squashfs. This is **not required** for the CAN/bench tools.
 
 If you have a firmware image, extract it with `unsquash_firmware.py`, then set `TM3_ROOT` in `.env` to the resulting `squashfs-root` directory:
 
@@ -70,7 +73,11 @@ If you have a firmware image, extract it with `unsquash_firmware.py`, then set `
 TM3_ROOT=/path/to/squashfs-root
 ```
 
-If your firmware's `.compact.json` and ODJ files are encrypted `.bin` files, you'll also need the decryption key — see `.env.example` for how to extract it.
+If your firmware's `.compact.json` and ODJ files are encrypted `.bin` files, you'll also need the decryption key, which you must supply for firmware you own — this project ships no key-extraction tooling. See `.env.example`.
+
+### 4. Security / immobilizer provider (optional)
+
+The framework contains no seed/key or immobilizer algorithms. Tools that need a UDS SecurityAccess key or an immobilizer response resolve it through a provider you supply. If none is configured they fail closed with a pointer to the docs. See [docs/SECURITY_PROVIDER.md](docs/SECURITY_PROVIDER.md) for the interface.
 
 ## Tools
 
@@ -79,8 +86,7 @@ If your firmware's `.compact.json` and ODJ files are encrypted `.bin` files, you
 | [`tm3diag.py`](docs/tm3diag.md) | Interactive diagnostic terminal — read DIDs, run routines, trigger firmware updates |
 | [`tm3uds.py`](docs/tm3uds.md) | General-purpose UDS CLI for reading/writing DIDs, routines, and session management |
 | [`dfu.py`](docs/dfu.md) | Firmware flash CLI — identity discovery, file selection, and ECU-specific flash sequence |
-| [`scripts/di/di.py`](docs/di.md) | Drive Inverter bench emulator — gear/system control + immobilizer responder |
-| [`scripts/di/immobilizer_handshake.py`](docs/immobilizer_handshake.md) | Pair a KEY/SALT with the Drive Inverter and run the runtime 0x276/0x3D9 responder |
+| [`scripts/di/di.py`](docs/di.md) | Drive Inverter bench emulator — gear/system control + optional immobilizer responder (provider-supplied) |
 | [`scripts/pcs/pcs.py`](docs/pcs.md) | PCS bench emulator — operating modes, precharge, DC-DC and charge control |
 | [`bhx.py`](docs/bhx.md) | BHX firmware image parser and builder |
 | [`ihex.py`](docs/ihex.md) | Intel HEX / `.hgz` parser — decode dual-bank gateway images to canonical Intel HEX |
@@ -93,7 +99,7 @@ If your firmware's `.compact.json` and ODJ files are encrypted `.bin` files, you
 ## Reference
 
 - [unsquash_firmware.md](docs/unsquash_firmware.md) — How to extract a firmware blob to a `squashfs-root` directory
-- [immobilizer_handshake.md](docs/immobilizer_handshake.md) — Immobilizer pairing and runtime handshake guide
+- [SECURITY_PROVIDER.md](docs/SECURITY_PROVIDER.md) — The security-access / key-derivation provider interface (signatures only)
 - [FIRMWARE_UPDATE.md](docs/FIRMWARE_UPDATE.md) — UDS flash protocol, script map, frame-by-frame reference
 - [ghidra_c28x_loading.md](docs/ghidra_c28x_loading.md) — Load a TMS320 firmware image (inverter DIR/PMR, PCS) into Ghidra for reverse engineering
 
@@ -103,3 +109,7 @@ If your firmware's `.compact.json` and ODJ files are encrypted `.bin` files, you
 source .venv/bin/activate
 pytest tests/ -v
 ```
+
+## License
+
+Licensed under the GNU General Public License v3.0 — see [LICENSE](LICENSE).

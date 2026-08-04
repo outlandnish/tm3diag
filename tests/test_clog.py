@@ -23,6 +23,12 @@ _FIX = Path(__file__).parent / "fixtures" / "highland"
 _CLH = _FIX / "0.CLH"
 _CLB = _FIX / "0.CLB"
 
+if not _FIX.exists():
+    pytest.skip(
+        "highland fixtures are a local-only Tesla capture (gitignored); not shipped",
+        allow_module_level=True,
+    )
+
 _GIT_SHA = "067a1dfcf133a88b994f7f9562dde8eae27155c0"
 # (seq, start_time, end_time, start_offset, end_offset) verified from the card.
 _EXPECTED = [

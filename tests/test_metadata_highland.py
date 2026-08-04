@@ -37,6 +37,12 @@ _TSV = _FIXTURES / "signed_metadata_map.tsv"
 _SIG = _FIXTURES / "signed_metadata_map.tsv.sig"
 _CONFIG = _FIXTURES / "vehicle_config.json"
 
+if not _FIXTURES.exists():
+    pytest.skip(
+        "highland fixtures are a local-only Tesla capture (gitignored); not shipped",
+        allow_module_level=True,
+    )
+
 # Build identifier stamped on this card (also appears in BOOTED.IMG/GW.HGZ at offset 0x14).
 _GIT_SHA = "067a1dfcf133a88b994f7f9562dde8eae27155c0"
 _MAP_VERSION = "11"

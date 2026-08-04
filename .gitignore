@@ -24,6 +24,8 @@ scripts/di/immobilizer_handshake.py
 # Additional local operational/firmware artifacts (kept out of the public tree)
 scripts/di/immo_l04.py
 _client_fw/
+# Real Tesla service-capture fixtures (firmware image, signed metadata, vehicle config)
+tests/fixtures/highland/
 
 # Local test scaffolding — not for check-in
 _flash_*_oneoff.py

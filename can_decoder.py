@@ -285,13 +285,51 @@ class CanDatabase:
     def messages_for_node(self, node: str) -> list[dict[str, Any]]:
         return [self.messages[mid] for mid in self._by_node.get(node, [])]
 
+    def _get_alertlog(self):
+        """Lazily build the Tesla alertLog decoder (best-effort, cached)."""
+        dec = getattr(self, "_alertlog", None)
+        if dec is not None or getattr(self, "_alertlog_tried", False):
+            return dec
+        self._alertlog_tried = True
+        self._alertlog = None
+        try:
+            import alert_log
+            self._alertlog = alert_log.get_decoder()
+        except Exception:
+            pass  # no firmware libs / not applicable -> plain decoding only
+        return self._alertlog
+
+    def _decode_alertlog(self, msg_id: int, data: bytes) -> list[dict[str, Any]]:
+        """Synthetic rows for a <NODE>_alertLog frame (empty if not one)."""
+        dec = self._get_alertlog()
+        if dec is None or not dec.is_alertlog(msg_id):
+            return []
+        r = dec.decode(msg_id, bytes(data))
+        if r is None:
+            return []
+        rows = [{"signal": "alertCode", "value": r.alert_code,
+                 "label": r.alert or "", "units": ""}]
+        if r.rationality and r.offending_id is not None:
+            rows.append({"signal": "offendingMessage", "value": r.offending_id,
+                         "label": r.offending_name or f"0x{r.offending_id:03X}",
+                         "units": ""})
+            rows.append({"signal": "errorType", "value": r.error_type,
+                         "label": r.error_name or "", "units": ""})
+            if r.bad_value1 is not None:
+                rows.append({"signal": "badValue1", "value": r.bad_value1,
+                             "label": "", "units": ""})
+                rows.append({"signal": "badValue2", "value": r.bad_value2,
+                             "label": "", "units": ""})
+        return rows
+
     def decode_frame(
         self, msg_id: int, data: bytes
     ) -> list[dict[str, Any]] | None:
         """Decode a raw CAN frame into a list of signal result dicts."""
+        overlay = self._decode_alertlog(msg_id, data)
         msg = self.messages.get(msg_id)
         if msg is None:
-            return None
+            return overlay or None
 
         # Determine muxer value if present
         muxer_value: int | None = None
@@ -305,7 +343,7 @@ class CanDatabase:
                 muxer_value = raw
                 break
 
-        results = []
+        results = list(overlay)
         for sname, sig in msg["signals"].items():
             if sig.get("is_muxer"):
                 continue  # don't surface the mux selector itself

@@ -51,13 +51,17 @@ def _sanitize(name: str) -> str:
 
 
 def convert(src: Path, dst: Path) -> None:
-    db = load_json(src)
+    """Convert a compact.json file at *src* to a DBC at *dst*."""
+    convert_db(load_json(src), dst)
 
+
+def convert_db(db: dict, dst: Path) -> None:
+    """Convert an in-memory compact-schema *db* dict to a DBC at *dst*."""
     messages = db["messages"]
 
     lines: list[str] = []
 
-    lines.append('VERSION ""')
+    lines.append(f'VERSION "{db.get("dbc_version", "")}"')
     lines.append("")
     lines.append("NS_ :")
     lines.append("")
@@ -102,6 +106,8 @@ def convert(src: Path, dst: Path) -> None:
     # Collect value_descriptions to emit after all messages
     val_defs: list[tuple[int, str, dict]] = []  # (msg_id, sig_name, value_description)
 
+    sig_comments: list[tuple[int, str, str]] = []  # (msg_id, sig_name, comment)
+
     for msg_name, msg in sorted(messages.items(), key=lambda kv: kv[1]["message_id"]):
         msg_id = msg["message_id"]
         length = msg.get("length_bytes", 8)
@@ -138,10 +144,18 @@ def convert(src: Path, dst: Path) -> None:
             if vd:
                 val_defs.append((msg_id, sig_name, vd))
 
+            comment = sig.get("comment")
+            if comment:
+                sig_comments.append((msg_id, sig_name, comment))
+
         lines.append("")
 
-    # ---- Signal comments (units already in SG_, add any extra description) ----
-    # (nothing extra in this schema)
+    # ---- Signal comments (CM_ SG_) ----
+    if sig_comments:
+        for msg_id, sig_name, comment in sig_comments:
+            esc = comment.replace("\\", "\\\\").replace('"', '\\"')
+            lines.append(f'CM_ SG_ {msg_id} {_sanitize(sig_name)} "{esc}";')
+        lines.append("")
 
     # ---- Value definitions ----
     if val_defs:

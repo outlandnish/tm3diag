@@ -175,8 +175,7 @@ each word with its bytes reversed relative to the instruction stream. Read raw, 
 compiled-function prologue `MOVL *SP++` ×3 (`b2bd aabd a2bd`) appears **0** times; read
 byte-swapped it appears 67–329× per image, and `LRETR` density jumps to ~7/KB (real-code
 density). This is a property of the Tesla F28377D image format, so it applies to **every**
-F28377D-based module — DIR, PMR, PCS, and others — across all firmware eras. (See
-`docs/private/c28x-ghidra-tesla/BYTESWAP-BREAKTHROUGH.md` for the full evidence.)
+F28377D-based module — DIR, PMR, PCS, and others — across all firmware eras.
 
 ---
 
@@ -282,8 +281,7 @@ So don't go hunting for a single "main" entry. Instead, work outward from what S
 gives you: call targets, prologue-seeded functions, and string/MMIO cross-references. For the
 inverter, the CAN driver and its RX-filter mailbox tables are the most productive anchors
 (CAN is PMR-side; the DIR receives commands over the `0x3FC00` IPC message RAM). Reading flash
-sector A or a full live image needs hardware (JTAG via the DCSM, or chip-off) — see
-`docs/private/c28x-ghidra-tesla/docs/GETTING-THE-ENTRY.md`.
+sector A or a full live image needs hardware (JTAG via the DCSM, or chip-off).
 
 ---
 
@@ -323,6 +321,3 @@ Prologue byte-search for manual seeding: `bd b2 bd aa bd a2`.
 - [tm3diag.md](tm3diag.md) — the interactive terminal; `board-parts` reads the part DIDs that key into the metadata map.
 - [bhx.md](bhx.md) — the BHX container format and `bhx.py`.
 - `deploy/seed_artifacts_v2/signed_metadata_map.tsv` — the firmware index (part# → file → config tags).
-- `docs/private/c28x-ghidra-tesla/BYTESWAP-BREAKTHROUGH.md` — why the byte-swap is needed.
-- `docs/private/c28x-ghidra-tesla/docs/GETTING-THE-ENTRY.md` — the missing sector-A entry stub.
-- `ghidra-tms320c28x/docs/BUILDING.machine-specific.md` — building/installing the processor module.

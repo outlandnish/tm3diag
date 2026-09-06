@@ -16,7 +16,7 @@ This tool runs in two modes:
              record format can be pinned down by eye / by cross-image diff.
   build    — (once the format is confirmed) emit the reassembled flat runtime image.
 
-Header format (reverse-engineered; see docs/private/.../tesla_0x0900_header.md):
+Header format (reverse-engineered):
   u32[0] magic 0x0900 (low) | version<<16 (0x1c=P28)
   u32[1] image type/seq (pmrbl=1, pmrbu=2)
   u32[2..3] signature/id

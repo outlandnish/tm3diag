@@ -19,7 +19,7 @@ The .bin decryption key (TM3_BIN_KEY in .env) is the base64 constant ``C`` in
 Decode of ``binary_metadata_reader`` there: salt = first 16 bytes of the file,
 key = PBKDF2-HMAC-SHA256(base64decode(C), salt, 123456 iters, 32 bytes) then
 Fernet-decrypt + ``pickle.loads``. To validate a build / refresh the key:
-    grep -rn "^C = " <out>/src/.../odin/platforms/binary_metadata_utils.py
+    grep -rn "^C = " <out>/src/.../odin_extracted/platforms/binary_metadata_utils.py
 and compare against TM3_BIN_KEY in .env (see .env.example).
 
 Usage:
@@ -29,6 +29,7 @@ Example:
   python dump_odin.py /home/outlandnish/dev/tesla-fw/2026.8.3.ice \\
       --out ~/dev/odin-dumps/2026.8.3
 """
+
 from __future__ import annotations
 
 import argparse
@@ -42,14 +43,45 @@ _DEFAULT_TOOLS = Path("~/dev/tools").expanduser()
 # CPython bytecode magic (first 2 bytes of a .pyc) -> python version label.
 # Enough to pick a decompiler; extend as new builds appear.
 _MAGIC = {
-    3360: "3.6", 3361: "3.6", 3377: "3.6", 3379: "3.6",
-    3390: "3.7", 3391: "3.7", 3392: "3.7", 3393: "3.7", 3394: "3.7",
-    3400: "3.8", 3401: "3.8", 3410: "3.8", 3411: "3.8", 3412: "3.8", 3413: "3.8",
-    3420: "3.9", 3421: "3.9", 3422: "3.9", 3423: "3.9", 3424: "3.9", 3425: "3.9",
-    3430: "3.10", 3431: "3.10", 3432: "3.10", 3433: "3.10", 3434: "3.10", 3435: "3.10",
-    3436: "3.10", 3437: "3.10", 3438: "3.10", 3439: "3.10",
-    3450: "3.11", 3451: "3.11", 3452: "3.11", 3453: "3.11", 3454: "3.11", 3455: "3.11",
-    3531: "3.12", 3571: "3.13",
+    3360: "3.6",
+    3361: "3.6",
+    3377: "3.6",
+    3379: "3.6",
+    3390: "3.7",
+    3391: "3.7",
+    3392: "3.7",
+    3393: "3.7",
+    3394: "3.7",
+    3400: "3.8",
+    3401: "3.8",
+    3410: "3.8",
+    3411: "3.8",
+    3412: "3.8",
+    3413: "3.8",
+    3420: "3.9",
+    3421: "3.9",
+    3422: "3.9",
+    3423: "3.9",
+    3424: "3.9",
+    3425: "3.9",
+    3430: "3.10",
+    3431: "3.10",
+    3432: "3.10",
+    3433: "3.10",
+    3434: "3.10",
+    3435: "3.10",
+    3436: "3.10",
+    3437: "3.10",
+    3438: "3.10",
+    3439: "3.10",
+    3450: "3.11",
+    3451: "3.11",
+    3452: "3.11",
+    3453: "3.11",
+    3454: "3.11",
+    3455: "3.11",
+    3531: "3.12",
+    3571: "3.13",
 }
 
 
@@ -86,16 +118,17 @@ def _resolve_extractor(pyver: str | None) -> tuple[str, str]:
 
     uv = Path("~/.local/bin/uv").expanduser()
     if uv.exists():
-        find = subprocess.run([str(uv), "python", "find", pyver],
-                              capture_output=True, text=True)
+        find = subprocess.run([str(uv), "python", "find", pyver], capture_output=True, text=True)
         if find.returncode == 0 and find.stdout.strip():
             return ("local", find.stdout.strip())
 
     if _has_docker():
         return ("docker", f"python:{pyver}-slim")
 
-    print(f"  ! no Python {pyver} via host/uv and no Docker; using {cur} — "
-          f"PYZ may not unmarshal. Try: uv python install {pyver}")
+    print(
+        f"  ! no Python {pyver} via host/uv and no Docker; using {cur} — "
+        f"PYZ may not unmarshal. Try: uv python install {pyver}"
+    )
     return ("local", sys.executable)
 
 
@@ -128,12 +161,10 @@ def _pyver_from_libpython(odin_dir: Path) -> str | None:
     return None
 
 
-def extract(odin_bin: Path, out: Path, tools: Path,
-            extractor: tuple[str, str]) -> Path:
+def extract(odin_bin: Path, out: Path, tools: Path, extractor: tuple[str, str]) -> Path:
     pyinstx = tools / "pyinstxtractor.py"
     if not pyinstx.exists():
-        sys.exit(f"pyinstxtractor.py not found at {pyinstx} "
-                 "(fetch it into --tools first)")
+        sys.exit(f"pyinstxtractor.py not found at {pyinstx} (fetch it into --tools first)")
     out.mkdir(parents=True, exist_ok=True)
     extracted = out / "extracted"
     extracted.mkdir(exist_ok=True)
@@ -144,13 +175,22 @@ def extract(odin_bin: Path, out: Path, tools: Path,
         # pyinstxtractor inside the container with the output dir as cwd so the
         # <name>_extracted tree lands on the host. -u for live output.
         cmd = [
-            "docker", "run", "--rm",
-            "-v", f"{odin_bin}:/in/odin:ro",
-            "-v", f"{pyinstx}:/in/pyinstxtractor.py:ro",
-            "-v", f"{extracted}:/out",
-            "-w", "/out",
+            "docker",
+            "run",
+            "--rm",
+            "-v",
+            f"{odin_bin}:/in/odin:ro",
+            "-v",
+            f"{pyinstx}:/in/pyinstxtractor.py:ro",
+            "-v",
+            f"{extracted}:/out",
+            "-w",
+            "/out",
             ref,
-            "python", "-u", "/in/pyinstxtractor.py", "/in/odin",
+            "python",
+            "-u",
+            "/in/pyinstxtractor.py",
+            "/in/odin",
         ]
     else:
         # pyinstxtractor writes <name>_extracted in cwd; run it inside
@@ -180,10 +220,11 @@ def decompile(extracted: Path, out: Path, pyver: str | None, tools: Path) -> Non
             print("  pycdc not built; falling back to uncompyle6 (py<=3.8 only)")
         else:
             sys.exit(
-                f"pycdc not found at {tools/'pycdc'/'pycdc'} and python {pyver} "
+                f"pycdc not found at {tools / 'pycdc' / 'pycdc'} and python {pyver} "
                 "is out of uncompyle6 range. Build pycdc:\n"
                 "  sudo apt-get install -y cmake\n"
-                "  cd ~/dev/tools/pycdc && cmake . && make -j$(nproc)")
+                "  cd ~/dev/tools/pycdc && cmake . && make -j$(nproc)"
+            )
 
     pycs = sorted(extracted.rglob("*.pyc"))
     print(f"  decompiling {len(pycs)} .pyc -> {src}")
@@ -194,12 +235,10 @@ def decompile(extracted: Path, out: Path, pyver: str | None, tools: Path) -> Non
         dst.parent.mkdir(parents=True, exist_ok=True)
         try:
             if use_uncompyle:
-                res = subprocess.run(["uncompyle6", str(pyc)],
-                                     capture_output=True, text=True)
+                res = subprocess.run(["uncompyle6", str(pyc)], capture_output=True, text=True)
                 out_text = res.stdout
             else:
-                res = subprocess.run([str(pycdc), str(pyc)],
-                                     capture_output=True, text=True)
+                res = subprocess.run([str(pycdc), str(pyc)], capture_output=True, text=True)
                 out_text = res.stdout
             if out_text.strip():
                 dst.write_text(out_text)
@@ -214,15 +253,23 @@ def decompile(extracted: Path, out: Path, pyver: str | None, tools: Path) -> Non
 
 def main() -> None:
     ap = argparse.ArgumentParser(
-        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("firmware_root", type=Path,
-                    help="Squashfs root of a firmware extraction")
-    ap.add_argument("--out", type=Path, default=None,
-                    help="Output dir (default: ~/dev/odin-dumps/<root name>)")
-    ap.add_argument("--tools", type=Path, default=_DEFAULT_TOOLS,
-                    help="Dir holding pyinstxtractor.py and pycdc/ (default: ~/dev/tools)")
-    ap.add_argument("--no-decompile", action="store_true",
-                    help="Only extract the PyInstaller archive; skip decompile")
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
+    ap.add_argument("firmware_root", type=Path, help="Squashfs root of a firmware extraction")
+    ap.add_argument(
+        "--out", type=Path, default=None, help="Output dir (default: ~/dev/odin-dumps/<root name>)"
+    )
+    ap.add_argument(
+        "--tools",
+        type=Path,
+        default=_DEFAULT_TOOLS,
+        help="Dir holding pyinstxtractor.py and pycdc/ (default: ~/dev/tools)",
+    )
+    ap.add_argument(
+        "--no-decompile",
+        action="store_true",
+        help="Only extract the PyInstaller archive; skip decompile",
+    )
     args = ap.parse_args()
 
     root = args.firmware_root.expanduser()
@@ -230,8 +277,7 @@ def main() -> None:
     if not odin_bin.exists():
         sys.exit(f"odin binary not found at {odin_bin}")
 
-    out = args.out.expanduser() if args.out else \
-        Path("~/dev/odin-dumps").expanduser() / root.name
+    out = args.out.expanduser() if args.out else Path("~/dev/odin-dumps").expanduser() / root.name
     tools = args.tools.expanduser()
 
     # Detect the frozen Python version up front (from libpython) so extraction
@@ -239,8 +285,7 @@ def main() -> None:
     pyver = _pyver_from_libpython(odin_bin.parent)
     extractor = _resolve_extractor(pyver)
     print(f"[1/3] extracting {odin_bin}")
-    print(f"  target python: {pyver or 'unknown'}  "
-          f"extractor: {extractor[0]}:{extractor[1]}")
+    print(f"  target python: {pyver or 'unknown'}  extractor: {extractor[0]}:{extractor[1]}")
     extracted = extract(odin_bin, out, tools, extractor)
 
     print("[2/3] confirming bundled Python version (from .pyc magic)")

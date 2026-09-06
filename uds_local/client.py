@@ -49,6 +49,7 @@ _SID_ER = 0x11  # ECUReset
 _SID_TP = 0x3E  # TesterPresent
 _SID_CDI = 0x14  # ClearDiagnosticInformation
 _SID_IOCBI = 0x2F  # InputOutputControlByIdentifier
+_SID_RDTC = 0x19  # ReadDTCInformation
 
 _RC_START = 0x01
 _RC_REQUEST_RESULTS = 0x03
@@ -712,6 +713,22 @@ class UdsSession:
         b = group.to_bytes(3, "big")
         resp = self._send_raw([_SID_CDI, b[0], b[1], b[2]])
         self._check_positive(resp, _SID_CDI)
+
+    def read_dtcs(self, status_mask: int = 0xFF) -> dict[int, int]:
+        """ReadDTCInformation reportDTCByStatusMask (0x19 02) — return {dtc_code:
+        status} for stored DTCs whose status matches ``status_mask`` (0xFF = any).
+
+        Positive response is ``59 02 <availabilityMask> [<dtc hi mid lo> <status>]*``;
+        the empty case (a healthy ECU) returns an empty dict.
+        """
+        resp = self._send_raw([_SID_RDTC, 0x02, status_mask & 0xFF])
+        self._check_positive(resp, _SID_RDTC)
+        out: dict[int, int] = {}
+        body = resp[3:]  # skip 59 02 <availabilityMask>
+        for i in range(0, len(body) - 3, 4):
+            dtc = (body[i] << 16) | (body[i + 1] << 8) | body[i + 2]
+            out[dtc] = body[i + 3]
+        return out
 
     # ------------------------------------------------------------------
     # Internal helpers

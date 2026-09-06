@@ -1,0 +1,466 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>TM3 Drive HUD</title>
+<style>
+  /* Design system matched to the CAN Live Viewer (index.html) */
+  :root{
+    --bg:#0f0f11; --panel:#18181c; --panel2:#1e1e24; --border:#2a2a32;
+    --accent:#e31937; --accent-dim:#8a0f20; --text:#e8e8ec; --dim:#7a7a88;
+    --ok:#22c55e; --warn:#f59e0b; --info:#22c55e; --danger:#e31937; --flash:#3a3a10;
+  }
+  *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+  body{background:var(--bg);color:var(--text);
+    font-family:'SF Mono','Cascadia Code','Fira Mono',monospace;font-size:13px;line-height:1.4}
+  a{color:var(--accent);text-decoration:none}
+  .wrap{max-width:1000px;margin:0 auto;padding:18px}
+  header{display:flex;align-items:center;gap:12px;padding:12px 2px 16px;
+    border-bottom:1px solid var(--border);margin-bottom:16px}
+  header h1{font-size:15px;font-weight:700;color:var(--accent);letter-spacing:.02em}
+  header .spacer{flex:1}
+  #conn{display:flex;align-items:center;gap:6px;color:var(--dim);font-size:11px;
+    text-transform:uppercase;letter-spacing:.06em}
+  .dot{width:8px;height:8px;border-radius:50%;background:#444;flex-shrink:0}
+  .dot.live{background:var(--ok)}
+  .btn{background:none;color:var(--dim);border:1px solid var(--border);border-radius:4px;
+    padding:5px 11px;cursor:pointer;font:inherit;font-size:11px;text-transform:uppercase;
+    letter-spacing:.05em;white-space:nowrap;transition:background .1s,color .1s,border-color .1s}
+  .btn:hover{color:var(--text);border-color:var(--accent-dim)}
+  .banner{background:var(--flash);border:1px solid var(--accent-dim);color:#e6c98a;border-radius:4px;
+    padding:9px 12px;margin-bottom:16px;font-size:12px}
+  .panel{background:var(--panel);border:1px solid var(--border);border-radius:6px;padding:16px}
+  .grid{display:grid;gap:14px}
+  .top{grid-template-columns:1.1fr 1fr}
+  @media(max-width:720px){.top{grid-template-columns:1fr}}
+  .label{color:var(--dim);font-size:10px;text-transform:uppercase;letter-spacing:.09em;margin-bottom:6px}
+
+  /* immobilizer + system state strip */
+  .status-strip{display:flex;gap:14px;margin-bottom:14px;flex-wrap:wrap}
+  .status-card{flex:1;min-width:160px;background:var(--panel);border:1px solid var(--border);
+    border-radius:6px;padding:12px 14px}
+  .status-val{font-size:19px;font-weight:700;margin-top:3px;letter-spacing:.02em}
+  .status-card.ok{border-color:var(--ok)} .status-card.ok .status-val{color:var(--ok)}
+  .status-card.warn{border-color:var(--warn)} .status-card.warn .status-val{color:var(--warn)}
+  .status-card.danger{border-color:var(--accent)} .status-card.danger .status-val{color:var(--accent)}
+
+  /* speed */
+  .speed{display:flex;flex-direction:column;align-items:center;justify-content:center}
+  .speed .num{font-size:82px;font-weight:700;line-height:1;font-variant-numeric:tabular-nums;color:var(--text)}
+  .speed .unit{color:var(--dim);font-size:12px;letter-spacing:.2em;margin-top:6px}
+  .accel{margin-top:14px;width:100%}
+  .bar{height:8px;background:var(--bg);border:1px solid var(--border);border-radius:3px;overflow:hidden}
+  .bar>span{display:block;height:100%;width:0;background:var(--accent);transition:width .12s}
+
+  /* gear */
+  .gears{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-top:6px}
+  .gear{position:relative;background:var(--panel2);border:1px solid var(--border);border-radius:6px;
+    padding:16px 0;text-align:center;font-size:24px;font-weight:700;cursor:pointer;color:var(--dim);
+    transition:.1s}
+  .gear:hover{border-color:var(--accent-dim);color:var(--text)}
+  .gear.reported{color:#fff;background:var(--accent);border-color:var(--accent)}
+  .gear.commanded::after{content:"";position:absolute;inset:3px;border:1px dashed var(--accent);
+    border-radius:4px;opacity:.8}
+  .gear[disabled]{cursor:not-allowed;opacity:.45}
+  .gear-note{color:var(--dim);font-size:11px;margin-top:10px;text-align:center}
+
+  /* LV power */
+  .lv-btns{display:grid;grid-template-columns:repeat(4,1fr);gap:10px}
+  .lv-btn{background:var(--panel2);border:1px solid var(--border);border-radius:6px;padding:14px 6px;
+    text-align:center;font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.05em;
+    color:var(--dim);cursor:pointer;transition:.1s}
+  .lv-btn:hover{border-color:var(--accent-dim);color:var(--text)}
+  .lv-btn.on{background:var(--accent);border-color:var(--accent);color:#fff}
+  .lv-btn[disabled]{cursor:not-allowed;opacity:.45}
+
+  /* telltales */
+  .tells{display:grid;grid-template-columns:repeat(auto-fill,minmax(120px,1fr));gap:8px}
+  .tell{border:1px solid var(--border);border-radius:4px;padding:9px 10px;background:var(--panel2);
+    font-size:11px;font-weight:600;letter-spacing:.05em;text-transform:uppercase;color:var(--dim);
+    text-align:center;opacity:.5}
+  .tell.lit{opacity:1}
+  .tell.lit.danger{background:rgba(227,25,55,.15);border-color:var(--accent);color:#f2909c}
+  .tell.lit.warn{background:rgba(245,158,11,.15);border-color:var(--warn);color:var(--warn)}
+  .tell.lit.info{background:rgba(34,197,94,.15);border-color:var(--info);color:var(--info)}
+
+  /* faults */
+  .faults-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(250px,1fr));gap:8px}
+  .fault{display:block;width:100%;text-align:left;font:inherit;cursor:pointer;
+    border:1px solid var(--accent);border-radius:4px;padding:8px 10px;font-size:11px;
+    background:rgba(227,25,55,.1);color:#f2909c;overflow:hidden;transition:.1s}
+  .fault:hover{background:rgba(227,25,55,.2)}
+  .fault.hw{border-color:var(--border);background:var(--panel2);color:var(--dim)}
+  .fault.hw:hover{background:#26262e}
+  .fault .tag{float:right;font-size:9px;text-transform:uppercase;letter-spacing:.05em;opacity:.7;
+    margin-left:6px}
+  .fault .f-title{font-size:12px;font-weight:600}
+  .fault .f-desc{margin-top:3px;opacity:.75;line-height:1.35;
+    display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+  .no-faults{color:var(--ok);font-size:12px}
+
+  /* alert log */
+  .alog{display:flex;flex-direction:column;gap:4px}
+  .alog-row{display:flex;align-items:baseline;gap:10px;width:100%;text-align:left;font:inherit;
+    font-size:11px;cursor:pointer;background:var(--panel2);border:1px solid var(--border);
+    border-radius:4px;padding:7px 10px;color:var(--text);transition:.1s}
+  .alog-row:hover{border-color:var(--accent-dim)}
+  .alog-row .t{color:var(--dim);font-variant-numeric:tabular-nums;flex-shrink:0}
+  .alog-row .ecu{color:var(--accent);font-weight:700;flex-shrink:0}
+  .alog-row .code{color:var(--dim);flex-shrink:0}
+  .alog-row .ttl{font-weight:600;flex-shrink:0}
+  .alog-row .why{color:var(--warn);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .alog-row .n{margin-left:auto;color:var(--dim);flex-shrink:0}
+  .hint{color:var(--dim);font-size:11px;line-height:1.5}
+
+  /* alert detail sheet */
+  .a-sub{color:var(--dim);font-size:11px;margin:2px 0 14px;letter-spacing:.04em}
+  .a-sec{margin-bottom:12px}
+  .a-sec h3{font-size:10px;text-transform:uppercase;letter-spacing:.09em;color:var(--dim);
+    margin-bottom:4px;font-weight:600}
+  .a-sec p{font-size:12px;line-height:1.55}
+  .a-code{background:var(--panel2);border:1px solid var(--border);border-radius:4px;
+    padding:8px 10px;font-size:11px;color:var(--dim);word-break:break-all}
+  .a-code b{color:var(--text);font-weight:600}
+  .a-kv{display:grid;grid-template-columns:auto 1fr;gap:3px 12px;font-size:11px}
+  .a-kv dt{color:var(--dim)}
+
+  /* settings */
+  .settings{display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:12px}
+  .field{display:flex;flex-direction:column;gap:5px}
+  .field span{color:var(--dim);font-size:11px;text-transform:uppercase;letter-spacing:.04em}
+  select,input[type=number]{background:var(--bg);color:var(--text);border:1px solid var(--border);
+    border-radius:4px;padding:6px 8px;font:inherit;font-size:12px}
+  select:focus,input:focus{outline:none;border-color:var(--accent-dim)}
+  h2{font-size:11px;text-transform:uppercase;letter-spacing:.09em;color:var(--dim);
+    margin:0 0 12px;padding-bottom:8px;border-bottom:1px solid var(--border)}
+  .mt{margin-top:14px}
+
+  /* modal */
+  .modal{position:fixed;inset:0;background:rgba(0,0,0,.72);display:none;z-index:20;
+    align-items:flex-start;justify-content:center;padding:24px;overflow:auto}
+  .modal.open{display:flex}
+  .modal .sheet{background:var(--panel);border:1px solid var(--border);border-radius:6px;
+    width:100%;max-width:840px;padding:20px}
+  .modal header{margin-bottom:8px;border:none;padding:0}
+  .modal header h1{color:var(--accent)}
+  details{border:1px solid var(--border);border-radius:4px;margin-bottom:10px;background:var(--panel2)}
+  details>summary{cursor:pointer;padding:10px 14px;font-weight:600;font-size:11px;text-transform:uppercase;
+    letter-spacing:.06em;color:var(--dim);list-style:none}
+  details>summary::-webkit-details-marker{display:none}
+  details[open]>summary{border-bottom:1px solid var(--border);color:var(--text)}
+  .cfg-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:12px;padding:14px}
+  #toast{position:fixed;bottom:18px;left:50%;transform:translateX(-50%);background:var(--panel);
+    border:1px solid var(--border);border-radius:4px;padding:9px 14px;font-size:12px;opacity:0;
+    transition:.2s;pointer-events:none;z-index:30}
+  #toast.show{opacity:1}
+  #toast.err{border-color:var(--accent);color:var(--accent)}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>TM3 · Drive HUD</h1>
+    <span id="conn"><span class="dot"></span><span id="conn-txt">connecting…</span></span>
+    <span class="spacer"></span>
+    <button class="btn" id="cfg-open">Car config</button>
+    <a class="btn" href="/">CAN viewer →</a>
+  </header>
+
+  <div id="banner" class="banner" style="display:none"></div>
+
+  <div class="status-strip">
+    <div class="status-card" id="immo-card">
+      <div class="label">Immobilizer</div>
+      <div class="status-val" id="immo">—</div>
+    </div>
+    <div class="status-card" id="sys-card">
+      <div class="label">System state</div>
+      <div class="status-val" id="sysstate">—</div>
+    </div>
+  </div>
+
+  <div class="grid top">
+    <div class="panel speed">
+      <div class="num" id="speed">—</div>
+      <div class="unit">KM/H</div>
+      <div class="accel">
+        <div class="label">Accelerator <span id="accel-val"></span></div>
+        <div class="bar"><span id="accel-bar"></span></div>
+      </div>
+    </div>
+
+    <div class="panel">
+      <h2>Gear</h2>
+      <div class="gears" id="gears"></div>
+      <div class="gear-note" id="gear-note"></div>
+    </div>
+  </div>
+
+  <div class="panel mt">
+    <h2>LV power <span id="lv-cur" style="color:var(--dim);font-weight:400"></span></h2>
+    <div class="lv-btns" id="lv-btns"></div>
+  </div>
+
+  <div class="panel mt">
+    <h2>Telltales</h2>
+    <div class="tells" id="tells"></div>
+  </div>
+
+  <div class="panel mt">
+    <h2>Faults <span id="fault-count" style="color:var(--dim);font-weight:400"></span></h2>
+    <div class="faults-grid" id="faults"></div>
+  </div>
+
+  <div class="panel mt">
+    <h2>Alert log <span id="alog-count" style="color:var(--dim);font-weight:400"></span>
+      <button class="btn" id="alog-clear" style="float:right;margin-top:-4px">Clear</button></h2>
+    <div class="alog" id="alog"></div>
+  </div>
+
+  <div class="panel mt">
+    <h2>Drive settings</h2>
+    <div class="settings" id="settings"></div>
+  </div>
+</div>
+
+<!-- Car-config modal -->
+<div class="modal" id="cfg-modal">
+  <div class="sheet">
+    <header>
+      <h1 id="cfg-title">Car config — GTW_carConfig</h1>
+      <span class="spacer"></span>
+      <button class="btn" id="cfg-close">Close</button>
+    </header>
+    <p style="color:var(--dim);font-size:12px;margin:.2em 0 14px">
+      Every field is transmitted as a named signal via the DB encoder. Changes apply on the next
+      broadcast of that mux page.</p>
+    <div id="cfg-body"></div>
+  </div>
+</div>
+
+<!-- Alert detail modal -->
+<div class="modal" id="alert-modal">
+  <div class="sheet">
+    <header>
+      <h1 id="alert-title">Alert</h1>
+      <span class="spacer"></span>
+      <button class="btn" id="alert-close">Close</button>
+    </header>
+    <div id="alert-body"></div>
+  </div>
+</div>
+
+<div id="toast"></div>
+
+<script src="/alerts.js"></script>
+<script>
+const GEARS = ["P","R","N","D"];
+let controlOn = false, uiBuilt = false, cfgLoaded = false, lvBuilt = false;
+
+const $ = s => document.querySelector(s);
+function toast(msg, err){
+  const t = $("#toast"); t.textContent = msg; t.className = "show" + (err ? " err" : "");
+  clearTimeout(t._t); t._t = setTimeout(() => t.className = "", 1800);
+}
+async function post(url, body){
+  try{
+    const r = await fetch(url, {method:"POST", headers:{"Content-Type":"application/json"},
+      body: JSON.stringify(body)});
+    const j = await r.json().catch(() => ({}));
+    if(!r.ok){ toast(j.error || ("HTTP " + r.status), true); return null; }
+    return j;
+  }catch(e){ toast(String(e), true); return null; }
+}
+
+// Alert detail sheet, shared by the fault cards and the alert-log rows.
+const openAlert = TMAlerts.mountModal(
+  $("#alert-modal"), $("#alert-title"), $("#alert-body"), $("#alert-close"));
+
+// ---- gear buttons ----
+const gearsEl = $("#gears");
+GEARS.forEach(g => {
+  const b = document.createElement("button");
+  b.className = "gear"; b.textContent = g; b.dataset.g = g;
+  b.onclick = () => post("/api/gear", {value: g}).then(r => r && toast("Gear → " + g));
+  gearsEl.appendChild(b);
+});
+
+// ---- drive settings (built once from ui_schema) ----
+function buildSettings(schema, values){
+  const box = $("#settings"); box.innerHTML = "";
+  Object.entries(schema).forEach(([field, spec]) => {
+    const wrap = document.createElement("label"); wrap.className = "field";
+    const name = document.createElement("span"); name.textContent = spec.label;
+    const sel = document.createElement("select"); sel.dataset.field = field;
+    Object.entries(spec.options).forEach(([label, val]) => {
+      const o = document.createElement("option"); o.value = val; o.textContent = label; sel.appendChild(o);
+    });
+    if(values && field in values) sel.value = values[field];
+    sel.disabled = !controlOn;
+    sel.onchange = () => post("/api/ui", {field, value: Number(sel.value)})
+      .then(r => r && toast(spec.label + " set"));
+    wrap.append(name, sel); box.appendChild(wrap);
+  });
+  uiBuilt = true;
+}
+
+// ---- render loop ----
+function setConn(live){
+  $("#conn .dot").classList.toggle("live", live);
+  $("#conn-txt").textContent = live ? "receiving" : "no data";
+}
+function render(s){
+  // banner
+  const banner = $("#banner");
+  if(!s.control){
+    banner.style.display = "";
+    banner.textContent = "Read-only — start can_live with --control to drive gear / settings. " +
+      "Run vehicle_sim --no-shifter --exclude 334 alongside for immobilizer + liveness.";
+  } else banner.style.display = "none";
+
+  // immobilizer + system state
+  const immo = $("#immo"); immo.textContent = s.immobilizer ?? "—";
+  const ic = $("#immo-card"); ic.className = "status-card " +
+    (s.immobilizer == null ? "" : s.immobilizer_ok ? "ok" : "warn");
+  $("#sysstate").textContent = s.system_state ?? "—";
+
+  // speed + accel
+  $("#speed").textContent = s.speed_kph == null ? "—" : Math.round(s.speed_kph);
+  const ap = s.accel_pct;
+  $("#accel-val").textContent = ap == null ? "" : ap.toFixed(0) + "%";
+  $("#accel-bar").style.width = (ap == null ? 0 : Math.max(0, Math.min(100, ap))) + "%";
+
+  // gears
+  gearsEl.querySelectorAll(".gear").forEach(b => {
+    b.classList.toggle("reported", b.dataset.g === s.gear);
+    b.classList.toggle("commanded", b.dataset.g === s.commanded_gear);
+    b.disabled = !s.control;
+  });
+  $("#gear-note").textContent = s.gear
+    ? ("Reported gear: " + s.gear + (s.commanded_gear ? "  ·  commanded: " + s.commanded_gear : ""))
+    : "No DI_gear on the bus yet — is the DU powered + on the bus?";
+
+  // LV power buttons (built once from lv_options)
+  if(s.lv_options && !lvBuilt){
+    const box = $("#lv-btns"); box.innerHTML = "";
+    s.lv_options.forEach(st => {
+      const b = document.createElement("button");
+      b.className = "lv-btn"; b.dataset.st = st; b.textContent = st;
+      b.onclick = () => post("/api/lv", {value: st}).then(r => r && toast("LV power → " + st));
+      box.appendChild(b);
+    });
+    lvBuilt = true;
+  }
+  $("#lv-cur").textContent = s.lv_state ? "· " + s.lv_state : "";
+  $("#lv-btns").querySelectorAll(".lv-btn").forEach(b => {
+    b.classList.toggle("on", b.dataset.st === s.lv_state);
+    b.disabled = !s.control;
+  });
+
+  // telltales
+  const tells = $("#tells");
+  tells.innerHTML = "";
+  (s.telltales || []).forEach(t => {
+    const el = document.createElement("div");
+    el.className = "tell " + (t.lit ? "lit " + (t.level || "") : "");
+    el.textContent = t.label; tells.appendChild(el);
+  });
+
+  // faults (active alert-matrix bits; hardware faults dimmed + tagged). Each card
+  // carries Tesla's own description; click opens the full cause/clear/effect.
+  const fs = s.faults || [];
+  $("#fault-count").textContent = fs.length ? "(" + fs.length + ")" : "";
+  TMAlerts.renderFaults($("#faults"), fs, openAlert);
+
+  // settings (build once)
+  controlOn = !!s.control;
+  if(s.ui_schema && (!uiBuilt || !s.ui)) buildSettings(s.ui_schema, s.ui);
+  else if(s.ui){
+    Object.entries(s.ui).forEach(([f, v]) => {
+      const sel = $(`select[data-field="${f}"]`);
+      if(sel && document.activeElement !== sel) sel.value = v;
+    });
+  }
+}
+
+let missed = 0;
+async function poll(){
+  try{
+    const r = await fetch("/api/dash");
+    const s = await r.json();
+    setConn(s.connected); missed = 0;
+    render(s);
+  }catch(e){
+    if(++missed > 3) setConn(false);
+  }
+}
+setInterval(poll, 200); poll();
+
+// ---- alert log (what the ECUs logged about their alerts) ----
+// Polled slower than the HUD: the log only changes when an ECU raises or
+// re-raises something, and the payload carries every distinct entry.
+let catalogWarned = false;
+async function pollAlerts(){
+  let a;
+  try{ a = await (await fetch("/api/alerts")).json(); }catch(e){ return; }
+  const n = TMAlerts.renderLog($("#alog"), a.log, openAlert);
+  $("#alog-count").textContent = n ? "(" + n + ")" : "";
+  if(!a.catalog && !catalogWarned){
+    catalogWarned = true;
+    $("#alog").insertAdjacentHTML("afterbegin",
+      '<div class="hint">No firmware alert catalog loaded — alerts show their name '
+      + 'only. Set TM3_ROOT to a firmware extraction for Tesla’s descriptions.</div>');
+  }
+}
+setInterval(pollAlerts, 1000); pollAlerts();
+
+$("#alog-clear").onclick = () => post("/api/alerts/clear", {})
+  .then(r => { if(r){ toast("Alert log cleared"); pollAlerts(); } });
+
+// ---- car config modal ----
+const modal = $("#cfg-modal");
+$("#cfg-open").onclick = async () => { modal.classList.add("open"); if(!cfgLoaded) await loadConfig(); };
+$("#cfg-close").onclick = () => modal.classList.remove("open");
+modal.onclick = e => { if(e.target === modal) modal.classList.remove("open"); };
+
+async function loadConfig(){
+  const body = $("#cfg-body");
+  let sch;
+  try{ sch = await (await fetch("/api/carconfig")).json(); }
+  catch(e){ body.textContent = "Failed to load config."; return; }
+  if(sch.error){ body.innerHTML = '<div class="banner" style="display:block">' + sch.error + '</div>'; return; }
+  $("#cfg-title").textContent = "Car config — " + sch.msg;
+  body.innerHTML = "";
+  sch.pages.forEach((pg, i) => {
+    const d = document.createElement("details"); if(i === 0) d.open = true;
+    const sum = document.createElement("summary");
+    sum.textContent = `Page ${pg.page} · ${pg.signals.length} signals`;
+    const grid = document.createElement("div"); grid.className = "cfg-grid";
+    pg.signals.forEach(sig => grid.appendChild(cfgField(sig)));
+    d.append(sum, grid); body.appendChild(d);
+  });
+  cfgLoaded = true;
+}
+function cfgField(sig){
+  const wrap = document.createElement("label"); wrap.className = "field";
+  const name = document.createElement("span"); name.textContent = sig.name.replace(/^GTW_/, "");
+  let input;
+  if(sig.options){
+    input = document.createElement("select");
+    Object.entries(sig.options).forEach(([label, val]) => {
+      const o = document.createElement("option"); o.value = val;
+      o.textContent = `${label} (${val})`; input.appendChild(o);
+    });
+    input.value = sig.value;
+  }else{
+    input = document.createElement("input"); input.type = "number";
+    input.min = 0; input.max = (2 ** sig.width) - 1; input.value = sig.value;
+  }
+  input.onchange = () => post("/api/carconfig", {signal: sig.name, value: Number(input.value)})
+    .then(r => r && toast(sig.name.replace(/^GTW_/, "") + " set"));
+  wrap.append(name, input); return wrap;
+}
+</script>
+</body>
+</html>

@@ -17,6 +17,7 @@
     --text-dim: #7a7a88;
     --green: #22c55e;
     --yellow: #f59e0b;
+    --red: #ef4444;
     --flash: #3a3a10;
   }
 
@@ -53,6 +54,19 @@
     transition: color .1s, border-color .1s;
   }
   .tab-btn:hover { color: var(--text); }
+  /* active-fault count on the Alerts tab, so a fault is visible from any tab */
+  #tab-alert-badge {
+    display: none;
+    margin-left: 7px;
+    padding: 1px 6px;
+    border-radius: 8px;
+    background: var(--accent);
+    color: #fff;
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0;
+    vertical-align: 1px;
+  }
   .tab-btn.active {
     color: var(--accent);
     border-bottom-color: var(--accent);
@@ -204,7 +218,7 @@
     text-align: right;
   }
 
-  #alert-filter-btn {
+  #alert-filter-btn, #tx-filter-btn, .plain-btn {
     background: none;
     border: 1px solid var(--border);
     border-radius: 4px;
@@ -216,8 +230,10 @@
     white-space: nowrap;
     transition: background .1s, color .1s, border-color .1s;
   }
-  #alert-filter-btn:hover { color: var(--text); border-color: var(--accent-dim); }
-  #alert-filter-btn.active {
+  #alert-filter-btn:hover, #tx-filter-btn:hover, .plain-btn:hover {
+    color: var(--text); border-color: var(--accent-dim);
+  }
+  #alert-filter-btn.active, #tx-filter-btn.active {
     background: rgba(227,25,55,.15);
     border-color: var(--accent);
     color: var(--accent);
@@ -591,6 +607,341 @@
     flex-direction: column;
     overflow: hidden;
   }
+
+  /* ===================================================================
+     ODIN + DID tabs (folded in from the old standalone odin.html).
+     Scoped to .odin: these override index's .sidebar/.sidebar-header/
+     .placeholder and add bare-element rules that must not escape into the
+     Live/Explorer/Raw tabs -- odin styles `input[type=text]` and
+     `table.grid`, and index styles bare `table`/`td`. Rules index already
+     provides identically (:root, body, .tab-btn, .tab-view, .main) are gone.
+     =================================================================== */
+  .odin .sidebar { width: 300px; min-width: 220px; }
+  .odin .sidebar-header {
+    padding: 12px;
+    display: flex;
+    gap: 8px;
+    align-items: center;
+    font-size: inherit;
+    text-transform: none;
+    letter-spacing: normal;
+    color: var(--text);
+  }
+  .odin input[type=text], .odin input[type=search] {
+    flex: 1;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    color: var(--text);
+    font: inherit;
+    font-size: 12px;
+    padding: 6px 8px;
+    border-radius: 3px;
+    outline: none;
+  }
+  .odin input:focus { border-color: var(--accent-dim); }
+
+  .odin .list { overflow-y: auto; flex: 1; }
+  .odin .list-item {
+    display: block;
+    width: 100%;
+    text-align: left;
+    padding: 8px 12px;
+    background: none;
+    border: none;
+    border-left: 3px solid transparent;
+    color: var(--text);
+    cursor: pointer;
+    font: inherit;
+    transition: background .1s, border-color .1s;
+    border-bottom: 1px solid rgba(255,255,255,.03);
+  }
+  .odin .list-item:hover { background: rgba(255,255,255,.04); }
+  .odin .list-item.active {
+    background: rgba(227,25,55,.1);
+    border-left-color: var(--accent);
+    color: #fff;
+  }
+  .odin .list-item .li-title { font-size: 12px; }
+  .odin .list-item .li-sub { font-size: 10px; color: var(--text-dim); margin-top: 2px; }
+  .odin .li-tag {
+    font-size: 9px; text-transform: uppercase; letter-spacing: .05em;
+    color: var(--yellow); border: 1px solid var(--border); border-radius: 3px;
+    padding: 1px 4px; margin-left: 6px;
+  }
+
+  .odin .pane-header {
+    padding: 14px 18px;
+    border-bottom: 1px solid var(--border);
+    flex-shrink: 0;
+  }
+  .odin .pane-header-row {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 12px;
+  }
+  .odin .pane-header h2 { font-size: 15px; font-weight: 700; }
+  .odin .pane-header .sub { color: var(--text-dim); font-size: 11px; margin-top: 4px; }
+  .odin .pane-body { flex: 1; overflow-y: auto; padding: 18px; }
+  .odin .placeholder {
+    display: block;
+    height: auto;
+    color: var(--text-dim);
+    padding: 40px 18px;
+    text-align: center;
+  }
+
+  #odin-conn { font-size: 11px; color: var(--text-dim); white-space: nowrap; }
+  #odin-conn .dot { color: var(--red); }
+  #odin-conn.up .dot { color: var(--green); }
+
+  .odin button.btn {
+    background: var(--accent);
+    color: #fff;
+    border: none;
+    font: inherit;
+    font-size: 12px;
+    text-transform: uppercase;
+    letter-spacing: .06em;
+    padding: 8px 18px;
+    border-radius: 3px;
+    cursor: pointer;
+    transition: background .1s;
+  }
+  .odin button.btn:hover { background: #ff2444; }
+  .odin button.btn:disabled { background: var(--accent-dim); cursor: not-allowed; opacity: .6; }
+  .odin button.btn.ghost { background: none; border: 1px solid var(--border); color: var(--text); }
+  .odin button.btn.ghost:hover { border-color: var(--accent-dim); background: rgba(255,255,255,.03); }
+
+  .odin .badge {
+    display: inline-block; padding: 2px 8px; border-radius: 3px;
+    font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .05em;
+  }
+  .odin .badge.pass { background: rgba(34,197,94,.15); color: var(--green); }
+  .odin .badge.fail { background: rgba(239,68,68,.15); color: var(--red); }
+
+  .odin .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-bottom: 14px; }
+  .odin .kv { margin-bottom: 6px; }
+  .odin .kv .k { color: var(--text-dim); display: inline-block; min-width: 130px; }
+
+  .odin .log {
+    background: #0b0b0d;
+    border: 1px solid var(--border);
+    border-radius: 3px;
+    padding: 10px;
+    font-size: 11px;
+    line-height: 1.5;
+    height: 240px;
+    overflow-y: auto;
+    white-space: pre-wrap;
+    margin-top: 12px;
+  }
+  .odin .log .ev-metric { color: var(--yellow); }
+  .odin .log .ev-trace { color: var(--text-dim); }
+  .odin .log .ev-done { color: var(--green); }
+  .odin .log .ev-error { color: var(--red); }
+
+  .odin table.grid { width: 100%; border-collapse: collapse; margin-top: 8px; }
+  .odin table.grid th, .odin table.grid td {
+    text-align: left; padding: 6px 10px; border-bottom: 1px solid var(--border);
+    font-size: 12px;
+  }
+  .odin table.grid th {
+    color: var(--text-dim); font-weight: 400; font-size: 10px;
+    text-transform: uppercase; letter-spacing: .05em;
+  }
+
+  .odin .field-row { display: flex; gap: 8px; align-items: center; margin-bottom: 8px; }
+  .odin .field-row label { min-width: 160px; color: var(--text-dim); font-size: 12px; }
+  .odin .field-row input { max-width: 200px; }
+  .odin .err { color: var(--red); font-size: 12px; margin-top: 10px; }
+  .odin .section-label {
+    font-size: 10px; text-transform: uppercase; letter-spacing: .08em;
+    color: var(--text-dim); padding: 8px 12px 4px; border-top: 1px solid var(--border);
+  }
+
+  /* "Requires on bus" (per-proc static requirements + live seen/missing dots) */
+  .odin .reqs { margin-top: 16px; border-top: 1px solid var(--border); padding-top: 12px; }
+  .odin .reqs h3 {
+    font-size: 11px; text-transform: uppercase; letter-spacing: .06em;
+    color: var(--text-dim); margin-bottom: 8px;
+  }
+  .odin .bus-group { margin-bottom: 10px; }
+  .odin .bus-name {
+    font-size: 10px; text-transform: uppercase; letter-spacing: .05em;
+    color: var(--accent); margin-bottom: 4px;
+  }
+  .odin .sig-row { display: flex; gap: 8px; align-items: center; padding: 2px 0; font-size: 12px; }
+  .odin .sig-dot { font-size: 9px; color: var(--text-dim); }
+  .odin .sig-row.seen .sig-dot { color: var(--green); }
+  .odin .sig-row.missing .sig-dot { color: var(--red); }
+  .odin .sig-kind {
+    font-size: 9px; text-transform: uppercase; letter-spacing: .05em; color: var(--text-dim);
+    border: 1px solid var(--border); border-radius: 3px; padding: 0 4px;
+  }
+  .odin .reqs .note { font-size: 11px; color: var(--yellow); margin-top: 6px; }
+  .odin .reqs .muted { font-size: 11px; color: var(--text-dim); }
+  .odin .muted { font-size: 11px; color: var(--text-dim); }
+
+  /* low-level UDS operations */
+  .odin select {
+    background: var(--bg);
+    border: 1px solid var(--border);
+    color: var(--text);
+    font: inherit;
+    font-size: 12px;
+    padding: 6px 8px;
+    border-radius: 3px;
+    outline: none;
+    max-width: 200px;
+  }
+  .odin select:focus { border-color: var(--accent-dim); }
+  .odin input[type=checkbox] { accent-color: var(--accent); width: 14px; height: 14px; }
+  .odin .uds-op {
+    border: 1px solid var(--border);
+    border-radius: 3px;
+    padding: 12px 14px;
+    margin-bottom: 10px;
+  }
+  .odin .uds-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(290px, 1fr));
+    gap: 10px;
+    /* stretch (the default), not start: help text runs one to three lines, so
+       self-sized cards leave a ragged row. Equal heights + the Run button pinned
+       to the bottom of each card gives the row one baseline to read along. */
+    align-items: stretch;
+  }
+  .odin .uds-grid { margin-bottom: 18px; }
+  .odin .uds-grid .uds-op {
+    margin-bottom: 0;
+    display: flex;
+    flex-direction: column;
+  }
+  .odin .uds-grid .uds-op .row { margin-top: auto; padding-top: 4px; }
+  /* Inside a column the 160px label gutter no longer fits; let the label take
+     the slack and cap the control instead. */
+  .odin .uds-grid .field-row label { min-width: 0; flex: 1; }
+  .odin .uds-grid .field-row input[type=text],
+  .odin .uds-grid select { max-width: 110px; }
+  /* the DID sidebar picker fills its row, like the text box it replaced */
+  .odin .sidebar-header select { flex: 1; max-width: none; }
+  .odin .field-row input.invalid,
+  .odin .field-row select.invalid { border-color: var(--red); }
+  /* the node picker carries "NAME  0x6xx/0x6xx", wider than the hex fields */
+  .odin .field-row select#uds-node { max-width: 240px; }
+  .odin .uds-node-err {
+    color: var(--red);
+    font-size: 11px;
+    min-height: 14px;
+    margin: -4px 0 8px 168px;   /* line up under the control, past the label gutter */
+  }
+  .odin .uds-section-head {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    width: 100%;
+    background: none;
+    border: none;
+    border-top: 1px solid var(--border);
+    font-family: inherit;
+    text-align: left;
+    cursor: pointer;
+    transition: color .1s;
+  }
+  .odin .uds-section-head:hover { color: var(--text); }
+  .odin .uds-caret {
+    display: inline-block;
+    font-size: 9px;
+    transition: transform .12s;
+  }
+  .odin .uds-section-head.collapsed .uds-caret { transform: rotate(-90deg); }
+  .odin .uds-section-count { margin-left: auto; opacity: .6; }
+  .odin .uds-grid.collapsed { display: none; }
+  .odin .uds-op-head { display: flex; align-items: center; gap: 8px; margin-bottom: 4px; }
+  .odin .uds-op-title { font-size: 12px; font-weight: 700; }
+  .odin .uds-help { font-size: 11px; color: var(--text-dim); margin-bottom: 10px; line-height: 1.45; }
+  .odin .uds-op .row { margin-bottom: 0; }
+
+  /* ---- alerts tab ----
+     The markup is generated by the shared renderer (/alerts.js, also used by
+     /dash); only these class definitions are per-page, bound to this palette. */
+  #alerts-scroll { flex: 1; overflow-y: auto; padding: 18px; }
+  .alerts-section { margin-bottom: 26px; }
+  .alerts-section h2 {
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: .09em;
+    color: var(--text-dim);
+    font-weight: 600;
+    margin-bottom: 10px;
+    padding-bottom: 8px;
+    border-bottom: 1px solid var(--border);
+  }
+  .alerts-section h2 .count { opacity: .7; font-weight: 400; }
+  .faults-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 8px; }
+  .fault {
+    display: block; width: 100%; text-align: left; font: inherit; font-size: 11px;
+    cursor: pointer; border: 1px solid var(--accent); border-radius: 4px;
+    padding: 8px 10px; background: rgba(227,25,55,.1); color: #f2909c;
+    overflow: hidden; transition: background .1s;
+  }
+  .fault:hover { background: rgba(227,25,55,.2); }
+  /* bench hardware faults (no motor / HV / resolver wired) read as expected, not urgent */
+  .fault.hw { border-color: var(--border); background: var(--panel); color: var(--text-dim); }
+  .fault.hw:hover { background: #26262e; }
+  .fault .tag {
+    float: right; font-size: 9px; text-transform: uppercase;
+    letter-spacing: .05em; opacity: .7; margin-left: 6px;
+  }
+  .fault .f-title { font-size: 12px; font-weight: 600; }
+  .fault .f-desc {
+    margin-top: 3px; opacity: .75; line-height: 1.35;
+    display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
+  }
+  .no-faults { color: var(--green); font-size: 12px; }
+  .alog { display: flex; flex-direction: column; gap: 4px; }
+  .alog-row {
+    display: flex; align-items: baseline; gap: 10px; width: 100%; text-align: left;
+    font: inherit; font-size: 11px; cursor: pointer; background: var(--panel);
+    border: 1px solid var(--border); border-radius: 4px; padding: 7px 10px;
+    color: var(--text); transition: border-color .1s;
+  }
+  .alog-row:hover { border-color: var(--accent-dim); }
+  .alog-row .t { color: var(--text-dim); font-variant-numeric: tabular-nums; flex-shrink: 0; }
+  .alog-row .ecu { color: var(--accent); font-weight: 700; flex-shrink: 0; }
+  .alog-row .code { color: var(--text-dim); flex-shrink: 0; }
+  .alog-row .ttl { font-weight: 600; flex-shrink: 0; }
+  .alog-row .why { color: var(--yellow); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .alog-row .n { margin-left: auto; color: var(--text-dim); flex-shrink: 0; }
+  .hint { color: var(--text-dim); font-size: 11px; line-height: 1.5; }
+
+  /* alert detail modal (shared markup, see /alerts.js) */
+  .modal {
+    position: fixed; inset: 0; background: rgba(0,0,0,.72); display: none; z-index: 40;
+    align-items: flex-start; justify-content: center; padding: 24px; overflow: auto;
+  }
+  .modal.open { display: flex; }
+  .modal .sheet {
+    background: var(--panel); border: 1px solid var(--border); border-radius: 6px;
+    width: 100%; max-width: 760px; padding: 20px;
+  }
+  .modal .sheet-head { display: flex; align-items: center; gap: 12px; margin-bottom: 2px; }
+  .modal .sheet-head h1 { font-size: 16px; color: var(--accent); flex: 1; }
+  .a-sub { color: var(--text-dim); font-size: 11px; margin: 2px 0 14px; letter-spacing: .04em; }
+  .a-sec { margin-bottom: 12px; }
+  .a-sec h3 {
+    font-size: 10px; text-transform: uppercase; letter-spacing: .09em;
+    color: var(--text-dim); margin-bottom: 4px; font-weight: 600;
+  }
+  .a-sec p { font-size: 12px; line-height: 1.55; }
+  .a-code {
+    background: var(--bg); border: 1px solid var(--border); border-radius: 4px;
+    padding: 8px 10px; font-size: 11px; color: var(--text-dim); word-break: break-all;
+  }
+  .a-code b { color: var(--text); font-weight: 600; }
+  .a-kv { display: grid; grid-template-columns: auto 1fr; gap: 3px 12px; font-size: 11px; }
+  .a-kv dt { color: var(--text-dim); }
 </style>
 </head>
 <body>
@@ -598,8 +949,11 @@
 <!-- Tab bar -->
 <div id="tab-bar">
   <button class="tab-btn active" data-tab="live">Live</button>
+  <button class="tab-btn" data-tab="alerts">Alerts<span id="tab-alert-badge"></span></button>
   <button class="tab-btn" data-tab="explorer">DB Explorer</button>
   <button class="tab-btn" data-tab="raw">Raw Frames</button>
+  <button class="tab-btn" data-tab="odin">ODIN</button>
+  <button class="tab-btn" data-tab="did">DID</button>
 </div>
 
 <!-- ===================== LIVE TAB ===================== -->
@@ -616,6 +970,7 @@
     <div class="topbar">
       <input id="filter-input" class="filter-input" type="text" placeholder="Filter signals…">
       <button id="alert-filter-btn">Active alerts only</button>
+      <button id="tx-filter-btn" style="display:none">Hide our TX</button>
       <div id="fps-counter"></div>
       <div id="status-dot"></div>
       <div id="status-text">disconnected</div>
@@ -625,6 +980,38 @@
         <div>Choose an ECU node from the sidebar</div>
       </div>
     </div>
+  </div>
+</div>
+
+<!-- ===================== ALERTS TAB ===================== -->
+<div id="tab-alerts" class="tab-view">
+  <div class="main">
+    <div class="topbar">
+      <div id="alerts-status" style="color:var(--text-dim);font-size:12px">loading…</div>
+      <div style="flex:1"></div>
+      <button id="alerts-clear" class="plain-btn">Clear log</button>
+    </div>
+    <div id="alerts-scroll">
+      <div class="alerts-section">
+        <h2>Active faults <span class="count" id="al-fault-count"></span></h2>
+        <div class="faults-grid" id="al-faults"></div>
+      </div>
+      <div class="alerts-section">
+        <h2>Alert log <span class="count" id="al-log-count"></span></h2>
+        <div class="alog" id="al-log"></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Alert detail modal (shared renderer) -->
+<div class="modal" id="alert-modal">
+  <div class="sheet">
+    <div class="sheet-head">
+      <h1 id="alert-title">Alert</h1>
+      <button class="plain-btn" id="alert-close">Close</button>
+    </div>
+    <div id="alert-body"></div>
   </div>
 </div>
 
@@ -645,9 +1032,11 @@
       <input id="raw-id-filter" type="text" placeholder="Filter by ID (hex)…">
       <button id="raw-clear-btn" class="raw-btn">Clear</button>
       <button id="raw-freeze-btn" class="raw-btn">Freeze</button>
+      <button id="raw-tx-filter-btn" class="raw-btn" style="display:none">Hide our TX</button>
       <div id="raw-status">
         <div id="raw-status-dot"></div>
         <span id="raw-status-text">disconnected</span>
+        <span id="raw-rx-counter" style="margin-left:8px;color:var(--text-dim);font-size:11px"></span>
       </div>
     </div>
     <div id="raw-cards-wrap">
@@ -680,30 +1069,147 @@
   </div>
 </div>
 
+<!-- ===================== ODIN TAB ===================== -->
+<div id="tab-odin" class="tab-view odin">
+  <div class="sidebar">
+    <div class="sidebar-header">
+      <input type="search" id="proc-filter" placeholder="filter procedures…" autocomplete="off">
+    </div>
+    <div class="list" id="proc-list"><div class="placeholder">loading…</div></div>
+  </div>
+  <div class="main">
+    <div class="pane-header">
+      <div class="pane-header-row">
+        <div>
+          <h2 id="proc-title">Select a procedure</h2>
+          <div class="sub" id="proc-sub">runnable procedures from the ODIN bundle</div>
+        </div>
+        <div id="odin-conn"><span class="dot">●</span> <span id="odin-conn-txt">ws offline</span></div>
+      </div>
+    </div>
+    <div class="pane-body" id="odin-body">
+      <div class="placeholder">Pick a procedure on the left to run it against the bench.</div>
+    </div>
+  </div>
+</div>
+
+<!-- ===================== DID TAB ===================== -->
+<div id="tab-did" class="tab-view odin">
+  <div class="sidebar">
+    <div class="sidebar-header">
+      <select id="did-node"><option value="">node…</option></select>
+      <button class="btn ghost" id="did-load">Load</button>
+    </div>
+    <div class="list" id="did-list"><div class="placeholder">enter a node</div></div>
+  </div>
+  <div class="main">
+    <div class="pane-header">
+      <h2 id="did-title">Select a DID</h2>
+      <div class="sub" id="did-sub">read or write a data identifier</div>
+    </div>
+    <div class="pane-body" id="did-body">
+      <div class="placeholder">Load a node, then pick a DID to read or write.</div>
+    </div>
+  </div>
+</div>
+
+<script src="/alerts.js"></script>
 <script>
 const CONFIG = {
-  WS_URL:              `ws://${location.host}/ws`,
+  WS_URL:              '/ws',
   API_DB:              '/api/db',
   RECONNECT_MS:        1500,
   FPS_INTERVAL_MS:     1000,
   AGE_INTERVAL_MS:     250,
   FLASH_MS:            300,
   STALE_MULTIPLIER:    3,
+  // How far outside the scroll viewport a message section still counts as
+  // "visible" and keeps getting DOM writes. Wide enough that a fast scroll
+  // never outruns the repaint.
+  VIEWPORT_MARGIN:     '400px 0px',
   ALERT_RE:            /_a\d{3}_/,
   CHAR_RE:             /^(.+)Char(\d+)$/,
 };
 
 // ===========================================================
+// Shared helpers
+// ===========================================================
+
+// Send a command only if the socket is actually up.
+function sendJson(sock, obj) {
+  if (sock && sock.readyState === WebSocket.OPEN) sock.send(JSON.stringify(obj));
+}
+
+// Flash bookkeeping. The old code did `el.classList.remove(c); void el.offsetWidth;
+// el.classList.add(c)` plus a setTimeout per element — a forced synchronous
+// reflow and a timer for every changed byte AND every changed bit, which is what
+// actually melted the raw tab. These classes are plain background swaps (no
+// keyframes), so no reflow is needed to restart them; expiry is swept in bulk
+// from the same rAF that paints.
+function makeFlasher(cls, ms) {
+  const live = new Map();  // element -> expiry timestamp
+  return {
+    flash(el) {
+      if (!live.has(el)) el.classList.add(cls);
+      live.set(el, performance.now() + ms);
+    },
+    sweep(now) {
+      if (!live.size) return;
+      for (const [el, until] of live) {
+        if (now >= until) { el.classList.remove(cls); live.delete(el); }
+      }
+    },
+    clear() { live.forEach((_, el) => el.classList.remove(cls)); live.clear(); },
+    get size() { return live.size; },
+  };
+}
+
+// ===========================================================
 // Tab switching
 // ===========================================================
-document.querySelectorAll('.tab-btn').forEach(btn => {
-  btn.addEventListener('click', () => {
-    const tab = btn.dataset.tab;
-    document.querySelectorAll('.tab-btn').forEach(b => b.classList.toggle('active', b === btn));
-    document.querySelectorAll('.tab-view').forEach(v => v.classList.toggle('active', v.id === `tab-${tab}`));
-    if (tab === 'explorer' && !expLoaded) loadExplorer();
-  });
+let activeTab = 'live';
+
+// Streams for tabs the user isn't looking at are paused server-side, so a busy
+// bus costs nothing while you're on another tab or another window.
+function updateStreamPause() {
+  const away = document.hidden;
+  sendJson(ws, { type: 'pause', on: away || activeTab !== 'live' });
+  if (window.__rawPause) window.__rawPause(away || activeTab !== 'raw');
+}
+
+// One-shot initializers keyed by tab name, run the first time a tab is shown,
+// so a tab you never open costs nothing -- no socket, no fetch. Tabs register
+// their own below (see the Raw Frames and ODIN sections).
+const tabInit = {
+  explorer: () => { if (!expLoaded) loadExplorer(); },
+};
+
+// TEMPORARY: tabs whose buttons are hidden. The view and its lazy initializer
+// stay in place -- an unshown tab never opens its socket -- so restoring one is
+// just removing it from this set.
+const HIDDEN_TABS = new Set(['raw']);
+
+document.querySelectorAll('.tab-btn').forEach(b => {
+  if (HIDDEN_TABS.has(b.dataset.tab)) b.style.display = 'none';
 });
+
+function selectTab(tab) {
+  activeTab = tab;
+  document.querySelectorAll('.tab-btn').forEach(b => b.classList.toggle('active', b.dataset.tab === tab));
+  document.querySelectorAll('.tab-view').forEach(v => v.classList.toggle('active', v.id === `tab-${tab}`));
+  const init = tabInit[tab];
+  if (init) { delete tabInit[tab]; init(); }
+  // Keep the URL addressable, so a reload (or a shared link) lands on the same
+  // tab instead of bouncing back to Live.
+  history.replaceState(null, '', tab === 'live' ? location.pathname : '#' + tab);
+  updateStreamPause();
+}
+
+document.querySelectorAll('.tab-btn').forEach(btn => {
+  btn.addEventListener('click', () => selectTab(btn.dataset.tab));
+});
+
+document.addEventListener('visibilitychange', updateStreamPause);
 
 // ===========================================================
 // LIVE TAB
@@ -711,7 +1217,8 @@ document.querySelectorAll('.tab-btn').forEach(btn => {
 let ws = null;
 const msgState   = new Map();
 const msgDom     = new Map();
-let frameCount = 0;
+let frameCount = 0;     // decoded messages seen (incl. ones coalesced server-side)
+let busRxAccum = 0;     // raw frames the backend read off the wire
 let lastFpsTs  = performance.now();
 
 const nodeList      = document.getElementById('node-list');
@@ -719,11 +1226,14 @@ const tableWrap     = document.getElementById('table-wrap');
 const placeholder   = document.getElementById('placeholder');
 const filterInput   = document.getElementById('filter-input');
 const alertFilterBtn = document.getElementById('alert-filter-btn');
+const txFilterBtn   = document.getElementById('tx-filter-btn');
 const statusDot     = document.getElementById('status-dot');
 const statusText    = document.getElementById('status-text');
 const fpsCounter    = document.getElementById('fps-counter');
 
 let alertFilterActive = false;
+let alertFilterDirty  = false;
+const liveFlash = makeFlasher('flash', CONFIG.FLASH_MS);
 
 function connect() {
   ws = new WebSocket(CONFIG.WS_URL);
@@ -731,6 +1241,7 @@ function connect() {
     statusDot.className = 'connected';
     statusText.textContent = 'connected';
     subscribe('');
+    updateStreamPause();
   };
   ws.onclose = () => {
     statusDot.className = '';
@@ -742,14 +1253,146 @@ function connect() {
     statusText.textContent = 'error';
   };
   ws.onmessage = (ev) => {
+    let msg;
     try {
-      const msg = JSON.parse(ev.data);
-      if      (msg.type === 'db')    handleDb(msg);
-      else if (msg.type === 'frame') handleFrame(msg);
+      msg = JSON.parse(ev.data);
     } catch (e) {
       console.error('Failed to parse WebSocket message:', e);
+      return;
+    }
+    switch (msg.type) {
+      case 'db':        handleDb(msg); applyServerConfig(msg); break;
+      case 'frames':    queueFrames(msg); break;
+      case 'tx_filter': applyTxFilterState(msg.on); break;
     }
   };
+}
+
+// ---- server-driven config (TX filter) ----
+let txIds = [];
+let txHidden = false;
+
+function applyServerConfig(msg) {
+  txIds = msg.tx_ids || [];
+  applyTxFilterState(!!msg.tx_hidden);
+}
+
+function applyTxFilterState(on) {
+  txHidden = on;
+  txFilterBtn.style.display = txIds.length ? '' : 'none';
+  txFilterBtn.classList.toggle('active', on);
+  txFilterBtn.textContent = on
+    ? `Our TX hidden (${txIds.length})`
+    : `Hide our TX (${txIds.length})`;
+  if (window.__rawTxState) window.__rawTxState(on, txIds);
+}
+
+txFilterBtn.addEventListener('click', () => {
+  sendJson(ws, { type: 'tx_filter', on: !txHidden });
+});
+window.__setTxFilter = (on) => sendJson(ws, { type: 'tx_filter', on });
+
+// ---- batched receive -> rAF paint ----
+// Nothing touches the DOM in onmessage. Batches are merged into a
+// latest-per-message map and applied once per animation frame, so an 80%-loaded
+// bus paints at 60 Hz instead of trying to paint thousands of times a second.
+const livePending = new Map();
+let liveRafQueued = false;
+
+function queueFrames(batch) {
+  busRxAccum += batch.rx || 0;
+  const frames = batch.frames || [];
+  for (let i = 0; i < frames.length; i++) {
+    livePending.set(frames[i].msg_id, frames[i]);
+  }
+  scheduleLiveFlush();
+}
+
+function scheduleLiveFlush() {
+  if (liveRafQueued) return;
+  liveRafQueued = true;
+  requestAnimationFrame(flushLive);
+}
+
+function flushLive(now) {
+  liveRafQueued = false;
+  const render = activeTab === 'live' && !document.hidden;
+  livePending.forEach(f => applyFrame(f, render));
+  livePending.clear();
+  liveFlash.sweep(now);
+  if (render && alertFilterActive && alertFilterDirty) {
+    alertFilterDirty = false;
+    applyFilter();
+  }
+  if (liveFlash.size) scheduleLiveFlush();  // keep sweeping until flashes expire
+}
+
+function applyFrame(msg, render) {
+  frameCount += msg.n || 1;
+  if (msg.unknown) ensureUnknownMsg(msg.msg_id);
+  const state = msgState.get(msg.msg_id);
+  if (!state) return;
+  state.lastTs = msg.timestamp;
+  // `same` = byte-identical payload; the backend skipped the decode, and no
+  // displayed value can have changed. Only liveness needed updating.
+  if (msg.same) return;
+  let dom = render ? msgDom.get(msg.msg_id) : null;
+  if (dom && !dom.visible) dom = null;  // off-screen: update state, skip the DOM
+
+  // An unknown id has no signal list to walk -- all we can show is the payload.
+  if (msg.unknown) {
+    const hex = (msg.data || [])
+      .map(b => b.toString(16).toUpperCase().padStart(2, '0')).join(' ');
+    const cur = state.signals.raw;
+    const changed = cur.value !== hex;
+    cur.value = hex;
+    const row = dom && dom.rows.raw;
+    if (row && row.valueTd.textContent !== hex) {
+      row.valueTd.textContent = hex;
+      if (changed) flashCell(row.valueTd);
+    }
+    return;
+  }
+
+  const updatedPrefixes = dom ? new Set() : null;
+
+  const sigs = msg.signals;
+  for (let i = 0; i < sigs.length; i++) {
+    const s = sigs[i];
+    const cur = state.signals[s.signal];
+    if (!cur) continue;
+    const changed = cur.value !== s.value || cur.label !== s.label;
+    cur.value = s.value;
+    cur.label = s.label || null;
+    if (changed && alertFilterActive && CONFIG.ALERT_RE.test(s.signal)) alertFilterDirty = true;
+    if (!dom) continue;
+
+    const row = dom.rows[s.signal];
+    if (!row) continue;
+    const formatted = (s.label && !s.units) ? s.label : formatValue(s.value, s.units);
+    if (row.valueTd.textContent !== formatted) {
+      row.valueTd.textContent = formatted;
+      if (changed) flashCell(row.valueTd);
+    }
+    const label = (s.label && !s.units) ? '' : (s.label || '');
+    if (row.labelTd.textContent !== label) row.labelTd.textContent = label;
+
+    const m = CONFIG.CHAR_RE.exec(s.signal);
+    if (m) updatedPrefixes.add(m[1]);
+  }
+
+  if (dom) {
+    updatedPrefixes.forEach(prefix => {
+      const key = `__str__${prefix}`;
+      const row = dom.rows[key];
+      if (!row) return;
+      const str = assembleString(prefix, row.charGroup, state);
+      if (row.valueTd.textContent !== str) {
+        row.valueTd.textContent = str;
+        flashCell(row.valueTd);
+      }
+    });
+  }
 }
 
 async function handleDb(msg) {
@@ -774,9 +1417,11 @@ async function handleDb(msg) {
   try {
     const res = await fetch(CONFIG.API_DB);
     const db = await res.json();
+    sectionObs.disconnect();
     msgState.clear();
     msgDom.clear();
     tableWrap.innerHTML = '';
+    unknownMsgList = null;   // wiped with the table; rebuilt on the next unknown id
 
     msg.nodes.forEach(node => {
       const messages = db[node];
@@ -816,48 +1461,108 @@ async function handleDb(msg) {
   }
 }
 
-function handleFrame(msg) {
-  frameCount++;
-  const state = msgState.get(msg.msg_id);
-  if (!state) return;
-  state.lastTs = msg.timestamp;
-  const dom = msgDom.get(msg.msg_id);
-  const updatedPrefixes = new Set();
-
-  msg.signals.forEach(s => {
-    const cur = state.signals[s.signal];
-    if (!cur) return;
-    const changed = cur.value !== s.value || cur.label !== s.label;
-    cur.value = s.value;
-    cur.label = s.label || null;
-    if (!dom) return;
-    const row = dom.rows[s.signal];
-    if (!row) return;
-    const formatted = (s.label && !s.units) ? s.label : formatValue(s.value, s.units);
-    if (row.valueTd.textContent !== formatted) {
-      row.valueTd.textContent = formatted;
-      if (changed) flashCell(row.valueTd);
-    }
-    row.labelTd.textContent = (s.label && !s.units) ? '' : (s.label || '');
-
-    const m = CONFIG.CHAR_RE.exec(s.signal);
-    if (m) updatedPrefixes.add(m[1]);
-  });
-
-  if (dom) {
-    updatedPrefixes.forEach(prefix => {
-      const key = `__str__${prefix}`;
-      const row = dom.rows[key];
-      if (!row) return;
-      const str = assembleString(prefix, row.charGroup, state);
-      if (row.valueTd.textContent !== str) {
-        row.valueTd.textContent = str;
-        flashCell(row.valueTd);
-      }
-    });
+// ---- Viewport gating ------------------------------------------------------
+// Every message of every node is materialized into the table at load, but only
+// a couple of screens' worth is ever on display. Writing textContent and flash
+// classes into rows nobody can see was the bulk of the per-tick DOM cost on a
+// busy bus. `msgState` is still updated for every frame -- only the DOM write
+// is skipped -- so filters, the alert view and liveness stay correct, and a
+// section repaints from state as soon as it scrolls back in. Sections hidden
+// by applyFilter stop intersecting too, so they fall out for free.
+//
+// Sections start visible and the observer switches them OFF: the failure mode of
+// a gate that starts closed is a permanently blank section, indistinguishable
+// from the viewer having lost the node. Starting open means the worst case is
+// simply the un-gated behaviour.
+const sectionObs = new IntersectionObserver(entries => {
+  for (const e of entries) {
+    const dom = msgDom.get(+e.target.dataset.msgId);
+    if (!dom) continue;
+    const wasVisible = dom.visible;
+    dom.visible = e.isIntersecting;
+    if (dom.visible && !wasVisible) repaintSection(+e.target.dataset.msgId, dom);
   }
+}, { root: tableWrap, rootMargin: CONFIG.VIEWPORT_MARGIN });
 
-  if (alertFilterActive) applyFilter();
+function updateAge(dom, state, now) {
+  if (state.lastTs === null) return;
+  const age = now - state.lastTs;
+  dom.ageEl.textContent = age < 10 ? `${age.toFixed(1)}s` : `${age.toFixed(0)}s`;
+  const staleThreshold = state.cycleTime ? (state.cycleTime * CONFIG.STALE_MULTIPLIER) / 1000 : 1.0;
+  dom.ageEl.className = 'msg-age' + (age > staleThreshold ? ' stale' : '');
+}
+
+// Bring a section's rows up to date with state after it was skipped. No
+// flashing: those values changed while it was off-screen, so lighting them all
+// up on scroll-in would be noise, not signal.
+function repaintSection(id, dom) {
+  const state = msgState.get(id);
+  if (!state) return;
+  for (const sig in dom.rows) {
+    const row = dom.rows[sig];
+    if (row.charGroup) {
+      row.valueTd.textContent = assembleString(sig.replace('__str__', ''), row.charGroup, state);
+      continue;
+    }
+    const cur = state.signals[sig];
+    if (!cur) continue;
+    row.valueTd.textContent = (cur.label && !cur.units) ? cur.label : formatValue(cur.value, cur.units);
+    row.labelTd.textContent = (cur.label && !cur.units) ? '' : (cur.label || '');
+  }
+  updateAge(dom, state, Date.now() / 1000);
+}
+
+// ---- ids the signal DB doesn't carry -------------------------------------
+// The server forwards these tagged unknown:1 with their raw payload rather than
+// dropping them, because a frame hidden by the viewer is indistinguishable from
+// a node that has stopped transmitting. They get a synthetic node group built on
+// first sight, appended after the DB's nodes.
+const UNKNOWN_NODE = 'unknown';
+let unknownMsgList = null;
+
+function ensureUnknownHome() {
+  if (unknownMsgList && unknownMsgList.isConnected) return;
+
+  const header = document.createElement('div');
+  header.className = 'node-section-header';
+  header.id = `node-${UNKNOWN_NODE}`;
+  header.textContent = `${UNKNOWN_NODE} — not in the signal DB`;
+  tableWrap.appendChild(header);
+
+  const item = document.createElement('div');
+  const btn = document.createElement('button');
+  btn.className = 'node-btn';
+  btn.textContent = UNKNOWN_NODE;
+  btn.addEventListener('click', () => selectNode(UNKNOWN_NODE));
+  unknownMsgList = document.createElement('div');
+  unknownMsgList.className = 'msg-list';
+  unknownMsgList.dataset.node = UNKNOWN_NODE;
+  item.appendChild(btn);
+  item.appendChild(unknownMsgList);
+  nodeList.appendChild(item);
+}
+
+function ensureUnknownMsg(msgId) {
+  if (msgState.has(msgId)) return;
+  ensureUnknownHome();
+  const hex = `0x${msgId.toString(16).toUpperCase().padStart(3, '0')}`;
+  msgState.set(msgId, {
+    name: hex,
+    lastTs: null,
+    cycleTime: 0,
+    signals: { raw: { value: '—', label: null, units: '' } },
+  });
+  buildMsgSection({ id: msgId, name: `${hex} · undecoded`, signals: [{ name: 'raw', units: '' }] });
+
+  const mb = document.createElement('button');
+  mb.className = 'msg-btn';
+  mb.textContent = hex;
+  const tag = document.createElement('span');
+  tag.className = 'msg-btn-id';
+  tag.textContent = 'undecoded';
+  mb.appendChild(tag);
+  mb.addEventListener('click', () => scrollToMsg(msgId));
+  unknownMsgList.appendChild(mb);
 }
 
 function buildMsgSection(m) {
@@ -921,26 +1626,32 @@ function buildMsgSection(m) {
 
   section.appendChild(table);
   tableWrap.appendChild(section);
-  msgDom.set(m.id, { section, ageEl, rows, charGroups });
+  msgDom.set(m.id, { section, ageEl, rows, charGroups, visible: true });
+  sectionObs.observe(section);
 }
 
 setInterval(() => {
   const now = Date.now() / 1000;
   msgDom.forEach((dom, id) => {
+    if (!dom.visible) return;
     const state = msgState.get(id);
-    if (!state || state.lastTs === null) return;
-    const age = now - state.lastTs;
-    dom.ageEl.textContent = age < 10 ? `${age.toFixed(1)}s` : `${age.toFixed(0)}s`;
-    const staleThreshold = state.cycleTime ? (state.cycleTime * CONFIG.STALE_MULTIPLIER) / 1000 : 1.0;
-    dom.ageEl.className = 'msg-age' + (age > staleThreshold ? ' stale' : '');
+    if (!state) return;
+    updateAge(dom, state, now);
   });
 }, CONFIG.AGE_INTERVAL_MS);
 
 setInterval(() => {
   const now = performance.now();
   const elapsed = (now - lastFpsTs) / 1000;
-  fpsCounter.textContent = `${(frameCount / elapsed).toFixed(0)} fps`;
+  const decRate = frameCount / elapsed;
+  const busRate = busRxAccum / elapsed;
+  // Bus rate is what the backend actually read; decoded rate counts messages
+  // matched to the DB — both are pre-coalescing, so they don't lie about load.
+  fpsCounter.textContent = busRxAccum
+    ? `${busRate.toFixed(0)} f/s bus · ${decRate.toFixed(0)}/s decoded`
+    : `${decRate.toFixed(0)}/s decoded`;
   frameCount = 0;
+  busRxAccum = 0;
   lastFpsTs  = now;
 }, CONFIG.FPS_INTERVAL_MS);
 
@@ -1059,10 +1770,7 @@ function formatValue(v, _units) {
 }
 
 function flashCell(td) {
-  td.classList.remove('flash');
-  void td.offsetWidth;
-  td.classList.add('flash');
-  setTimeout(() => td.classList.remove('flash'), CONFIG.FLASH_MS);
+  liveFlash.flash(td);
 }
 
 connect();
@@ -1203,7 +1911,7 @@ function renderExp() {
 // RAW FRAMES TAB
 // ===========================================================
 (function () {
-  const WS_RAW_URL     = `ws://${location.host}/ws-raw`;
+  const WS_RAW_URL     = '/ws-raw';
   const RECONNECT_MS   = 1500;
   const BYTE_FLASH_MS  = 200;
   const BIT_FLASH_MS   = 200;
@@ -1212,20 +1920,29 @@ function renderExp() {
   const rawIdFilter    = document.getElementById('raw-id-filter');
   const rawClearBtn    = document.getElementById('raw-clear-btn');
   const rawFreezeBtn   = document.getElementById('raw-freeze-btn');
+  const rawTxBtn       = document.getElementById('raw-tx-filter-btn');
   const rawCardsGrid   = document.getElementById('raw-cards-grid');
   const rawStatusDot   = document.getElementById('raw-status-dot');
   const rawStatusText  = document.getElementById('raw-status-text');
+  const rawRxCounter   = document.getElementById('raw-rx-counter');
   const rawIdList      = document.getElementById('raw-id-list');
   const rawShowAll     = document.getElementById('raw-show-all');
   const rawHideAll     = document.getElementById('raw-hide-all');
 
   let rawWs        = null;
   let frozen       = false;
+  let paused       = false;
   let filterText   = '';
+  let rawTxHidden  = false;
+  let rawTxCount   = 0;
+  let rxAccum      = 0;
   const hiddenIds  = new Set();  // CAN IDs the user has unchecked
 
-  // Map: CAN ID (number) -> { card dom, prevData, timestamps[] for rate, byteEls[], bitEls[][] }
+  // Map: CAN ID (number) -> { card dom, prevData, count, byteEls[], bitEls[][] }
   const rawCards = new Map();
+
+  const byteFlash = makeFlasher('byte-flash', BYTE_FLASH_MS);
+  const bitFlash  = makeFlasher('bit-flash', BIT_FLASH_MS);
 
   // ---- WebSocket connection ----
   function connectRaw() {
@@ -1233,6 +1950,8 @@ function renderExp() {
     rawWs.onopen = () => {
       rawStatusDot.className = 'connected';
       rawStatusText.textContent = 'connected';
+      pushMute();
+      pushPause();
     };
     rawWs.onclose = () => {
       rawStatusDot.className = '';
@@ -1244,20 +1963,97 @@ function renderExp() {
       rawStatusText.textContent = 'error';
     };
     rawWs.onmessage = (ev) => {
-      if (frozen) return;
-      let frame;
-      try { frame = JSON.parse(ev.data); } catch { return; }
-      handleRawFrame(frame);
+      let msg;
+      try { msg = JSON.parse(ev.data); } catch { return; }
+      if (msg.type === 'frames') {
+        if (!frozen) queueRawFrames(msg);
+      } else if (msg.type === 'hello') {
+        rawTxHidden = !!msg.tx_hidden;
+        rawTxCount  = (msg.tx_ids || []).length;
+        renderTxBtn();
+      } else if (msg.type === 'tx_filter') {
+        rawTxHidden = !!msg.on;
+        renderTxBtn();
+      }
     };
   }
 
-  // ---- Frame handling ----
-  function handleRawFrame(frame) {
-    const { id, data, ts } = frame;
-    if (!rawCards.has(id)) {
-      createCard(id, data);
+  // ---- Server-side stream control ----
+  // Muting and pausing happen on the backend, so filtered-out traffic costs no
+  // bandwidth, no JSON parse, and no DOM work — unlike the old display:none,
+  // which still paid for every hidden frame.
+  function pushMute() {
+    sendJson(rawWs, { type: 'mute', ids: [...hiddenIds] });
+  }
+
+  function pushPause() {
+    sendJson(rawWs, { type: 'pause', on: paused || frozen });
+  }
+
+  window.__rawPause = (on) => {
+    if (paused === on) return;
+    paused = on;
+    pushPause();
+  };
+
+  window.__rawTxState = (on, ids) => {
+    rawTxHidden = on;
+    rawTxCount = ids.length;
+    renderTxBtn();
+  };
+
+  function renderTxBtn() {
+    rawTxBtn.style.display = rawTxCount ? '' : 'none';
+    rawTxBtn.classList.toggle('active', rawTxHidden);
+    rawTxBtn.textContent = rawTxHidden
+      ? `Our TX hidden (${rawTxCount})`
+      : `Hide our TX (${rawTxCount})`;
+  }
+
+  rawTxBtn.addEventListener('click', () => {
+    sendJson(rawWs, { type: 'tx_filter', on: !rawTxHidden });
+  });
+
+  // ---- Batched receive -> rAF paint ----
+  const rawPending = new Map();  // id -> newest frame in this paint window
+  let rawRafQueued = false;
+
+  function queueRawFrames(batch) {
+    rxAccum += batch.rx || 0;
+    const frames = batch.frames || [];
+    for (let i = 0; i < frames.length; i++) {
+      const f = frames[i];
+      const prev = rawPending.get(f.id);
+      if (prev) {
+        f.n = (f.n || 1) + (prev.n || 1);  // keep the arrival count honest
+        if (!f.data) f.data = prev.data;   // liveness tick after a real update
+      }
+      rawPending.set(f.id, f);
     }
-    updateCard(id, data);
+    scheduleRawFlush();
+  }
+
+  function scheduleRawFlush() {
+    if (rawRafQueued) return;
+    rawRafQueued = true;
+    requestAnimationFrame(flushRaw);
+  }
+
+  function flushRaw(now) {
+    rawRafQueued = false;
+    const render = activeTab === 'raw' && !document.hidden;
+    rawPending.forEach(f => {
+      let state = rawCards.get(f.id);
+      if (!state) state = createCard(f.id, f.data);  // undefined data -> 8 boxes
+      state.count += f.n || 1;
+      if (!f.data) return;  // liveness tick: bytes unchanged, nothing to repaint
+      if (render && state.visible) updateCard(state, f.data);
+      else state.prevData = f.data;  // resync without painting
+    });
+    rawPending.clear();
+    byteFlash.sweep(now);
+    bitFlash.sweep(now);
+    if (byteFlash.size || bitFlash.size) scheduleRawFlush();
   }
 
   // ---- Card creation ----
@@ -1344,6 +2140,7 @@ function renderExp() {
       if (cb.checked) hiddenIds.delete(id);
       else hiddenIds.add(id);
       applyRawFilter();
+      pushMute();
     });
 
     const lbl = document.createElement('span');
@@ -1374,76 +2171,70 @@ function renderExp() {
     if (!rowInserted) rawIdList.appendChild(row);
     row.dataset.rawId = id;
 
-    rawCards.set(id, {
+    const state = {
       card,
       rateEl,
       sidebarRate,
       byteEls,
       bitEls,
       prevData: null,
-      timestamps: [],
-    });
+      count: 0,      // arrivals since the last rate tick (server-counted)
+      rate: -1,
+      visible: true,
+    };
+    rawCards.set(id, state);
 
     applyRawFilter();
+    return state;
   }
 
   // ---- Card update ----
-  function updateCard(id, data) {
-    const state = rawCards.get(id);
-    if (!state) return;
-
-    // Rate tracking
-    const now = performance.now();
-    state.timestamps.push(now);
-    // Prune old timestamps outside the window
-    const cutoff = now - RATE_WINDOW_MS;
-    while (state.timestamps.length && state.timestamps[0] < cutoff) {
-      state.timestamps.shift();
-    }
-    const rate = state.timestamps.length;
-    state.rateEl.textContent = `${rate}/s`;
-    state.sidebarRate.textContent = `${rate}/s`;
-
+  // Only ever called for a visible card on an active tab, at most once per
+  // animation frame.
+  function updateCard(state, data) {
     const prev = state.prevData;
 
-    for (let b = 0; b < data.length; b++) {
+    const n = Math.min(data.length, state.byteEls.length);  // DLC can vary per frame
+    for (let b = 0; b < n; b++) {
       const val = data[b];
       const prevVal = prev ? prev[b] : null;
-      const byteChanged = prevVal === null || val !== prevVal;
+      if (val === prevVal) continue;  // nothing to paint for this byte
 
       const { box, hexEl } = state.byteEls[b];
       hexEl.textContent = val.toString(16).toUpperCase().padStart(2, '0');
-
-      if (byteChanged) {
-        // Flash byte box yellow
-        box.classList.remove('byte-flash');
-        void box.offsetWidth; // reflow to restart animation
-        box.classList.add('byte-flash');
-        setTimeout(() => box.classList.remove('byte-flash'), BYTE_FLASH_MS);
-      }
+      byteFlash.flash(box);
 
       // Update bits (MSB = bit 7 = index 0 in our array)
       const bits = state.bitEls[b];
       for (let bit = 7; bit >= 0; bit--) {
-        const bitIdx = 7 - bit; // 0 = MSB
-        const sq = bits[bitIdx];
         const isOn = (val >> bit) & 1;
-        const wasOn = prev ? (prev[b] >> bit) & 1 : -1;
-        const bitChanged = wasOn !== isOn;
-
+        const wasOn = prevVal === null ? -1 : (prevVal >> bit) & 1;
+        if (wasOn === isOn) continue;
+        const sq = bits[7 - bit];  // 0 = MSB
         sq.classList.toggle('on', !!isOn);
-
-        if (bitChanged) {
-          sq.classList.remove('bit-flash');
-          void sq.offsetWidth;
-          sq.classList.add('bit-flash');
-          setTimeout(() => sq.classList.remove('bit-flash'), BIT_FLASH_MS);
-        }
+        bitFlash.flash(sq);
       }
     }
 
-    state.prevData = data.slice();
+    state.prevData = data;
   }
+
+  // ---- Rate display ----
+  // Driven by the backend's per-ID arrival counts, so it reports the true bus
+  // rate rather than however many updates the UI happened to receive.
+  setInterval(() => {
+    rawCards.forEach(state => {
+      const rate = state.count;
+      state.count = 0;
+      if (rate === state.rate) return;
+      state.rate = rate;
+      const txt = `${rate}/s`;
+      state.rateEl.textContent = txt;
+      state.sidebarRate.textContent = txt;
+    });
+    rawRxCounter.textContent = rxAccum ? `${rxAccum} f/s bus` : '';
+    rxAccum = 0;
+  }, RATE_WINDOW_MS);
 
   // ---- Filter ----
   function applyRawFilter() {
@@ -1452,7 +2243,10 @@ function renderExp() {
       const idHex = id.toString(16).toLowerCase();
       const matchesText = !f || idHex.includes(f);
       const show = matchesText && !hiddenIds.has(id);
-      state.card.style.display = show ? '' : 'none';
+      if (state.visible !== show) {
+        state.visible = show;
+        state.card.style.display = show ? '' : 'none';
+      }
     });
   }
 
@@ -1464,41 +2258,759 @@ function renderExp() {
   rawClearBtn.addEventListener('click', () => {
     rawCards.clear();
     hiddenIds.clear();
+    rawPending.clear();
+    byteFlash.clear();
+    bitFlash.clear();
     rawCardsGrid.innerHTML = '';
     rawIdList.innerHTML = '';
+    pushMute();
   });
 
   rawShowAll.addEventListener('click', () => {
     hiddenIds.clear();
     rawIdList.querySelectorAll('input[type=checkbox]').forEach(cb => cb.checked = true);
     applyRawFilter();
+    pushMute();
   });
 
   rawHideAll.addEventListener('click', () => {
     rawCards.forEach((_, id) => hiddenIds.add(id));
     rawIdList.querySelectorAll('input[type=checkbox]').forEach(cb => cb.checked = false);
     applyRawFilter();
+    pushMute();
   });
 
   rawFreezeBtn.addEventListener('click', () => {
     frozen = !frozen;
     rawFreezeBtn.classList.toggle('active', frozen);
     rawFreezeBtn.textContent = frozen ? 'Unfreeze' : 'Freeze';
+    pushPause();  // freeze stops the stream at the source, not just the paint
   });
 
-  // Connect when the Raw tab is first activated (lazy), but also connect eagerly
-  // so rate data starts accumulating. We connect on first tab activation.
-  let rawConnected = false;
-
-  document.querySelectorAll('.tab-btn').forEach(btn => {
-    btn.addEventListener('click', () => {
-      if (btn.dataset.tab === 'raw' && !rawConnected) {
-        rawConnected = true;
-        connectRaw();
-      }
-    });
-  });
+  // Open the raw socket the first time the tab is shown.
+  tabInit.raw = connectRaw;
 })();
+// ===========================================================
+// ODIN + DID TABS
+// ===========================================================
+// Lifted wholesale from the old standalone odin.html. Wrapped in an IIFE
+// because it brings its own $/el/fmt helpers, which would otherwise collide
+// with the viewer's globals. Boots lazily on first activation of either tab:
+// until then it opens no socket and fetches no procedure list.
+(function () {
+  const $ = (s, r=document) => r.querySelector(s);
+  const el = (tag, cls, txt) => { const e = document.createElement(tag); if (cls) e.className = cls; if (txt != null) e.textContent = txt; return e; };
+  // Display any value: objects/arrays as JSON (else "[object Object]"), null as ''.
+  const fmt = (v) => v == null ? '' : (typeof v === 'object' ? JSON.stringify(v) : String(v));
+  async function jget(u) { const r = await fetch(u); return { ok: r.ok, status: r.status, data: await r.json() }; }
+  async function jpost(u, body) {
+    const r = await fetch(u, { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(body) });
+    return { ok: r.ok, status: r.status, data: await r.json() };
+  }
+
+  // The UDS node list is static config (nodes.json), shared by the DID tab and
+  // the low-level panel. Fetched once; both pickers fill from it. If the endpoint
+  // is unavailable the selects stay empty rather than silently offering nothing
+  // that works.
+  let udsNodes = null;
+
+  async function loadUdsNodes() {
+    if (udsNodes) return udsNodes;
+    try {
+      const { ok, data } = await jget('/api/uds/nodes');
+      udsNodes = ok && Array.isArray(data) ? data : [];
+    } catch (e) {
+      udsNodes = [];
+    }
+    return udsNodes;
+  }
+
+  // Fill a <select> with the node list, preserving `selected` if it still exists.
+  async function fillNodeSelect(sel, selected) {
+    const nodes = await loadUdsNodes();
+    sel.innerHTML = '';
+    const blank = el('option', null, nodes.length ? 'node…' : 'no nodes available');
+    blank.value = '';
+    sel.append(blank);
+    for (const n of nodes) {
+      const o = el('option', null, `${n.node}  ${n.tx}/${n.rx}`);
+      o.value = n.node;
+      sel.append(o);
+    }
+    if (selected && nodes.some(n => n.node === selected)) sel.value = selected;
+  }
+
+  /* ===================== ODIN ===================== */
+  let procs = [];
+  let selectedProc = null;
+  let seenTimer = null;   // polls /api/seen-signals to color the requires-on-bus rows
+
+  async function loadProcs() {
+    const list = $('#proc-list');
+    try {
+      const { ok, data } = await jget('/api/odin/procedures');
+      if (!ok) { list.innerHTML = ''; list.append(el('div', 'placeholder', (data && data.error) || 'failed to load')); return; }
+      procs = data;
+      renderProcs();
+    } catch (e) {
+      list.innerHTML = ''; list.append(el('div', 'placeholder', 'server unreachable'));
+    }
+  }
+
+  function renderProcs() {
+    const q = $('#proc-filter').value.trim().toLowerCase();
+    const list = $('#proc-list');
+    list.innerHTML = '';
+    // Pinned above the procedures, and never filtered out: the raw UDS primitives
+    // the procedures are composed from. When you are bringing a bench ECU up, no
+    // packaged procedure covers "hold this node in its bootloader".
+    list.append(el('div', 'section-label', 'low level'));
+    const llb = el('button', 'list-item');
+    llb.append(el('div', 'li-title', 'UDS operations'));
+    llb.append(el('div', 'li-sub', 'session · security · reset · bootloader · DTCs'));
+    llb.onclick = () => selectLowLevel(llb);
+    list.append(llb);
+    list.append(el('div', 'section-label', 'procedures'));
+    const shown = procs.filter(p =>
+      !q || p.name.toLowerCase().includes(q) || (p.title || '').toLowerCase().includes(q));
+    if (!shown.length) { list.append(el('div', 'placeholder', 'no matches')); return; }
+    for (const p of shown) {
+      const b = el('button', 'list-item');
+      b.append(el('div', 'li-title', p.title || p.name));
+      const sub = el('div', 'li-sub', p.name);
+      if (p.valid_states && p.valid_states.length) {
+        const t = el('span', 'li-tag', p.valid_states.join('|'));
+        sub.append(t);
+      }
+      b.append(sub);
+      b.onclick = () => selectProc(p, b);
+      list.append(b);
+    }
+  }
+  $('#proc-filter').oninput = renderProcs;
+
+  function selectProc(p, btn) {
+    selectedProc = p;
+    document.querySelectorAll('#proc-list .list-item').forEach(x => x.classList.toggle('active', x === btn));
+    $('#proc-title').textContent = p.title || p.name;
+    $('#proc-sub').textContent = p.basename;
+    const body = $('#odin-body');
+    body.innerHTML = '';
+    const row = el('div', 'row');
+    const runBtn = el('button', 'btn', 'Run procedure');
+    runBtn.id = 'run-btn';
+    runBtn.onclick = () => runProc(p);
+    row.append(runBtn);
+    const res = el('span'); res.id = 'run-result';
+    row.append(res);
+    body.append(row);
+    if (p.valid_states && p.valid_states.length) {
+      const vs = el('div', 'kv');
+      vs.append(el('span', 'k', 'required states'));
+      vs.append(el('span', null, p.valid_states.join(', ')));
+      body.append(vs);
+    }
+    if (p.principals && p.principals.length) {
+      const pr = el('div', 'kv');
+      pr.append(el('span', 'k', 'principals'));
+      pr.append(el('span', null, p.principals.join(', ')));
+      body.append(pr);
+    }
+    // "Requires on bus": what the sim / a real ECU must provide before this proc runs.
+    const reqs = el('div', 'reqs'); reqs.id = 'proc-reqs';
+    reqs.append(el('h3', null, 'Requires on bus'));
+    reqs.append(el('div', 'muted', 'loading…'));
+    body.append(reqs);
+    loadRequirements(p, reqs);
+    const log = el('div', 'log'); log.id = 'run-log';
+    log.append(el('div', 'ev-trace', '— run log —'));
+    body.append(log);
+    const metrics = el('div'); metrics.id = 'run-metrics';
+    body.append(metrics);
+  }
+
+  // Fetch + render the proc's static "requires on bus" readout into `container`.
+  // On-demand (the per-proc graph walk isn't free); the server caches by basename.
+  async function loadRequirements(p, container) {
+    try {
+      const { ok, data } = await jget('/api/odin/requirements?procedure=' + encodeURIComponent(p.basename));
+      if (selectedProc !== p) return;             // user moved on before it returned
+      if (!ok) return reqsMessage(container, (data && data.error) || 'unavailable');
+      renderRequirements(data, container);
+    } catch (e) {
+      if (selectedProc === p) reqsMessage(container, 'unavailable');
+    }
+  }
+
+  function reqsMessage(container, msg) {
+    container.innerHTML = '';
+    container.append(el('h3', null, 'Requires on bus'));
+    container.append(el('div', 'muted', msg));
+  }
+
+  function renderRequirements(req, container) {
+    container.innerHTML = '';
+    container.append(el('h3', null, 'Requires on bus'));
+    const buses = Object.keys(req.signals || {}).sort();
+    if (!buses.length && !(req.alerts || []).length) {
+      container.append(el('div', 'muted', 'no static CAN reads detected'));
+    }
+    for (const bus of buses) {
+      const g = el('div', 'bus-group');
+      g.append(el('div', 'bus-name', bus));
+      for (const sig of req.signals[bus]) {
+        const r = el('div', 'sig-row');
+        r.dataset.signal = sig.signal;            // colored below by live presence
+        r.append(el('span', 'sig-dot', '●'));
+        r.append(el('span', null, sig.signal));
+        r.append(el('span', 'sig-kind', sig.kind));
+        g.append(r);
+      }
+      container.append(g);
+    }
+    if ((req.alerts || []).length) {
+      const txt = req.alerts.map(a => (a.prefix || '*') + (a.bus ? '@' + a.bus : '')).join(', ');
+      addReqKV(container, 'alerts', txt);
+    }
+    const pre = req.preconditions || {};
+    addReqKV(container, 'application state', pre.application_state);
+    addReqKV(container, 'power state', pre.power_state);
+    addReqKV(container, 'UDS target nodes', req.nodes);
+    addReqKV(container, 'MCU data values', pre.cid_values);
+    if (req.dynamic_count) {
+      container.append(el('div', 'note',
+        req.dynamic_count + ' dynamic signal' + (req.dynamic_count > 1 ? 's' : '') +
+        ' unresolved — list is a lower bound'));
+    }
+    startSeenPolling(container);
+  }
+
+  // Live cross-reference: color each expected signal green (frame seen on the bus
+  // now) or red (missing), polling /api/seen-signals while this proc stays
+  // selected. If the endpoint isn't served the dots just stay neutral.
+  function startSeenPolling(container) {
+    if (seenTimer) { clearInterval(seenTimer); seenTimer = null; }
+    if (!container.querySelector('.sig-row')) return;
+    const apply = async () => {
+      if (!document.body.contains(container)) { clearInterval(seenTimer); seenTimer = null; return; }
+      if (document.hidden || activeTab !== 'odin') return;  // off-screen: skip the poll
+      try {
+        const { ok, data } = await jget('/api/seen-signals');
+        if (!ok || !data || !Array.isArray(data.signals)) return;
+        const seen = new Set(data.signals);
+        container.querySelectorAll('.sig-row').forEach(r => {
+          const present = seen.has(r.dataset.signal);
+          r.classList.toggle('seen', present);
+          r.classList.toggle('missing', !present);
+        });
+      } catch (e) { /* leave dots neutral */ }
+    };
+    apply();
+    seenTimer = setInterval(apply, 2000);
+  }
+
+  function addReqKV(container, key, val) {
+    if (val == null || (Array.isArray(val) && !val.length)) return;
+    const d = el('div', 'kv');
+    d.append(el('span', 'k', key));
+    d.append(el('span', null, Array.isArray(val) ? val.join(', ') : String(val)));
+    container.append(d);
+  }
+
+  function logEvent(kind, text) {
+    const log = $('#run-log');
+    if (!log) return;
+    const line = el('div', 'ev-' + kind, text);
+    log.append(line);
+    log.scrollTop = log.scrollHeight;
+  }
+
+  async function runProc(p) {
+    const btn = $('#run-btn');
+    btn.disabled = true;
+    $('#run-result').textContent = '';
+    $('#run-metrics').innerHTML = '';
+    const log = $('#run-log'); if (log) log.innerHTML = '';
+    logEvent('trace', '▶ running ' + p.basename + ' …');
+    try {
+      const { ok, status, data } = await jpost('/api/odin/run', { procedure: p.basename });
+      if (!ok) {
+        logEvent('error', '✖ ' + (data.error || ('HTTP ' + status)));
+        $('#run-result').innerHTML = '<span class="badge fail">error</span>';
+      } else {
+        renderRunResult(data);
+      }
+    } catch (e) {
+      logEvent('error', '✖ ' + e);
+    } finally {
+      btn.disabled = false;
+    }
+  }
+
+  function renderRunResult(res) {
+    const pass = res.passed;
+    $('#run-result').innerHTML = pass
+      ? '<span class="badge pass">pass · exit ' + res.exit_code + '</span>'
+      : '<span class="badge fail">fail · exit ' + res.exit_code + '</span>';
+    const m = $('#run-metrics');
+    m.innerHTML = '';
+    if (res.metrics && res.metrics.length) {
+      const t = el('table', 'grid');
+      const head = el('tr');
+      ['metric', 'value', 'rc', 'expected'].forEach(h => head.append(el('th', null, h)));
+      t.append(head);
+      for (const row of res.metrics) {
+        const tr = el('tr');
+        tr.append(el('td', null, row.metric));
+        tr.append(el('td', null, fmt(row.value)));
+        tr.append(el('td', null, fmt(row.result_code)));
+        tr.append(el('td', null, fmt(row.expected)));
+        t.append(tr);
+      }
+      m.append(el('div', 'section-label', 'metrics'));
+      m.append(t);
+    }
+    if (res.outputs && Object.keys(res.outputs).length) {
+      const t = el('table', 'grid');
+      const head = el('tr');
+      ['output', 'value'].forEach(h => head.append(el('th', null, h)));
+      t.append(head);
+      for (const k of Object.keys(res.outputs)) {
+        const tr = el('tr');
+        tr.append(el('td', null, k));
+        tr.append(el('td', null, fmt(res.outputs[k])));
+        t.append(tr);
+      }
+      m.append(el('div', 'section-label', 'outputs'));
+      m.append(t);
+    }
+  }
+
+  /* ===================== LOW-LEVEL UDS ===================== */
+  // Catalog-driven: /api/uds/ops describes each operation's fields and whether it
+  // is destructive, so adding an op server-side needs no change here.
+  let udsOps = null;
+  let udsNode = localStorage.getItem('tm3.udsNode') || '';
+  const udsCollapsed = new Set(readCollapsed());
+
+  function readCollapsed() {
+    try {
+      const v = JSON.parse(localStorage.getItem('tm3.udsCollapsed') || '[]');
+      return Array.isArray(v) ? v : [];
+    } catch (e) {
+      return [];
+    }
+  }
+
+  async function selectLowLevel(btn) {
+    selectedProc = null;
+    if (seenTimer) { clearInterval(seenTimer); seenTimer = null; }
+    document.querySelectorAll('#proc-list .list-item').forEach(x => x.classList.toggle('active', x === btn));
+    $('#proc-title').textContent = 'Low-level UDS';
+    $('#proc-sub').textContent = 'the primitives the ODIN procedures are built from';
+    const body = $('#odin-body');
+    body.innerHTML = '';
+
+    const nodeRow = el('div', 'field-row');
+    nodeRow.append(el('label', null, 'node'));
+    const nodeInput = el('select');
+    nodeInput.id = 'uds-node';
+    nodeInput.onchange = () => {
+      udsNode = nodeInput.value;
+      localStorage.setItem('tm3.udsNode', udsNode);
+      if (udsNode) clearNodeError();
+    };
+    nodeRow.append(nodeInput);
+    body.append(nodeRow);
+    fillNodeSelect(nodeInput, udsNode);
+
+    const nodeErr = el('div', 'uds-node-err');
+    nodeErr.id = 'uds-node-err';
+    body.append(nodeErr);
+
+    if (!udsOps) {
+      try {
+        const { ok, data } = await jget('/api/uds/ops');
+        if (!ok) { body.append(el('div', 'err', 'could not load the operation catalog')); return; }
+        udsOps = data;
+      } catch (e) {
+        body.append(el('div', 'err', 'server unreachable'));
+        return;
+      }
+    }
+
+    const out = el('div'); out.id = 'uds-out';
+    for (const group of [...new Set(udsOps.map(o => o.group))]) {
+      const ops = udsOps.filter(o => o.group === group);
+
+      const head = el('button', 'section-label uds-section-head');
+      head.type = 'button';
+      head.append(el('span', 'uds-caret', '▾'));
+      head.append(el('span', null, group));
+      head.append(el('span', 'uds-section-count', String(ops.length)));
+
+      const wrap = el('div', 'uds-grid');
+      for (const op of ops) wrap.append(udsOpCard(op, out));
+
+      if (udsCollapsed.has(group)) {
+        head.classList.add('collapsed');
+        wrap.classList.add('collapsed');
+      }
+      head.onclick = () => {
+        const nowCollapsed = wrap.classList.toggle('collapsed');
+        head.classList.toggle('collapsed', nowCollapsed);
+        if (nowCollapsed) udsCollapsed.add(group); else udsCollapsed.delete(group);
+        localStorage.setItem('tm3.udsCollapsed', JSON.stringify([...udsCollapsed]));
+      };
+
+      body.append(head);
+      body.append(wrap);
+    }
+    body.append(out);
+  }
+
+  function udsOpCard(op, out) {
+    const card = el('div', 'uds-op');
+    const head = el('div', 'uds-op-head');
+    head.append(el('span', 'uds-op-title', op.title));
+    card.append(head);
+    if (op.help) card.append(el('div', 'uds-help', op.help));
+
+    const inputs = {};
+    for (const f of (op.fields || [])) {
+      const fr = el('div', 'field-row');
+      fr.append(el('label', null, f.label));
+      let inp;
+      if (f.type === 'select') {
+        inp = el('select');
+        for (const o of f.options) { const opt = el('option', null, o); opt.value = o; inp.append(opt); }
+        inp.value = f.default;
+      } else if (f.type === 'bool') {
+        inp = el('input'); inp.type = 'checkbox'; inp.checked = !!f.default;
+      } else {
+        inp = el('input'); inp.type = 'text'; inp.value = f.default == null ? '' : String(f.default);
+      }
+      inputs[f.name] = { inp, type: f.type };
+      fr.append(inp);
+      card.append(fr);
+    }
+
+    const row = el('div', 'row');
+    const run = el('button', op.danger ? 'btn' : 'btn ghost', 'Run');
+    run.onclick = () => runUdsOp(op, inputs, run, out);
+    row.append(run);
+    card.append(row);
+    return card;
+  }
+
+  function clearNodeError() {
+    const inp = $('#uds-node');
+    if (inp) inp.classList.remove('invalid');
+    const err = $('#uds-node-err');
+    if (err) err.textContent = '';
+  }
+
+  // Returns the node name, or null having already told the user why not --
+  // marked on the field itself and scrolled into view, because the panel scrolls
+  // and a message appended at the bottom is a message nobody sees.
+  function requireNode() {
+    const inp = $('#uds-node');
+    const node = (inp.value || '').trim();
+    if (node) { clearNodeError(); return node; }
+    inp.classList.add('invalid');
+    $('#uds-node-err').textContent = 'enter a node first — e.g. DI, PMR, DIR';
+    inp.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+    inp.focus();
+    return null;
+  }
+
+  async function runUdsOp(op, inputs, btn, out) {
+    const node = requireNode();
+    if (!node) return;
+    // Resets and bootloader handovers reboot the ECU -- make them deliberate.
+    if (op.danger && !confirm(op.title + ' on ' + node + '?\n\n' + (op.help || ''))) return;
+    const args = {};
+    for (const [name, { inp, type }] of Object.entries(inputs)) {
+      args[name] = type === 'bool' ? inp.checked
+                 : type === 'int'  ? Number(inp.value)
+                 : inp.value;
+    }
+    btn.disabled = true;
+    udsMessage(out, 'muted', 'running ' + op.title + ' on ' + node + ' …');
+    try {
+      const { ok, status, data } = await jpost('/api/uds/op', { node, op: op.op, args });
+      if (!ok) udsMessage(out, 'err', (data && data.error) || ('HTTP ' + status));
+      else renderUdsResult(out, op, data.result);
+    } catch (e) {
+      udsMessage(out, 'err', String(e));
+    } finally {
+      btn.disabled = false;
+    }
+  }
+
+  function udsMessage(out, cls, msg) {
+    out.innerHTML = '';
+    out.append(el('div', 'section-label', 'result'));
+    out.append(el('div', cls, msg));
+  }
+
+  function renderUdsResult(out, op, res) {
+    out.innerHTML = '';
+    out.append(el('div', 'section-label', 'result · ' + op.title));
+    if (res == null || !Object.keys(res).length) { out.append(el('div', 'muted', 'ok — no data')); return; }
+    const t = el('table', 'grid');
+    const head = el('tr'); ['field', 'value'].forEach(h => head.append(el('th', null, h))); t.append(head);
+    for (const [k, v] of Object.entries(res)) {
+      if (k === 'dtcs' && Array.isArray(v)) continue;   // rendered as its own table
+      const tr = el('tr');
+      tr.append(el('td', null, k));
+      tr.append(el('td', null, fmt(v)));
+      t.append(tr);
+    }
+    out.append(t);
+    if (Array.isArray(res.dtcs) && res.dtcs.length) {
+      out.append(el('div', 'section-label', 'dtcs'));
+      const d = el('table', 'grid');
+      const h = el('tr'); ['dtc', 'status'].forEach(x => h.append(el('th', null, x))); d.append(h);
+      for (const row of res.dtcs) {
+        const tr = el('tr');
+        tr.append(el('td', null, row.dtc));
+        tr.append(el('td', null, row.status));
+        d.append(tr);
+      }
+      out.append(d);
+    }
+  }
+
+  /* ---- progress WebSocket ---- */
+  function connectWS() {
+    const ws = new WebSocket('/ws/odin');
+    ws.onopen = () => { $('#odin-conn').classList.add('up'); $('#odin-conn-txt').textContent = 'ws live'; };
+    ws.onclose = () => {
+      $('#odin-conn').classList.remove('up'); $('#odin-conn-txt').textContent = 'ws offline';
+      setTimeout(connectWS, 2000);
+    };
+    ws.onmessage = (e) => {
+      let d; try { d = JSON.parse(e.data); } catch { return; }
+      if (d.type === 'trace') logEvent('trace', '  '.repeat(d.depth || 0) + (d.message || ''));
+      else if (d.type === 'metric') logEvent('metric', '● ' + d.metric + ' = ' + fmt(d.value) + ' (rc ' + d.result_code + ')');
+      else if (d.type === 'done') logEvent('done', '✔ done · exit ' + d.exit_code);
+      else if (d.type === 'error') logEvent('error', '✖ ' + d.error);
+    };
+  }
+
+  /* ===================== DID ===================== */
+  let didCurrentNode = null;
+
+  async function loadDids() {
+    const node = $('#did-node').value;
+    if (!node) return;
+    didCurrentNode = node;
+    const list = $('#did-list');
+    list.innerHTML = ''; list.append(el('div', 'placeholder', 'loading…'));
+    try {
+      const { ok, status, data } = await jget('/api/did/' + encodeURIComponent(node));
+      if (!ok) { list.innerHTML = ''; list.append(el('div', 'placeholder', (data && data.error) || ('HTTP ' + status))); return; }
+      renderDidList(data);
+    } catch (e) {
+      list.innerHTML = ''; list.append(el('div', 'placeholder', 'server unreachable'));
+    }
+  }
+  $('#did-load').onclick = loadDids;
+  $('#did-node').addEventListener('change', () => { if ($('#did-node').value) loadDids(); });
+  fillNodeSelect($('#did-node'), null);
+
+  function renderDidList(dids) {
+    const list = $('#did-list');
+    list.innerHTML = '';
+    // Merge the read + write lists by DID id: a DID that is BOTH readable and
+    // writable appears ONCE, carrying both subspecs, so its detail view offers
+    // read AND write.
+    const merged = new Map();
+    for (const d of (dids.read || []))
+      merged.set(d.id, { id: d.id, name: d.name, hex_id: d.hex_id, read: d, write: null });
+    for (const d of (dids.write || [])) {
+      const m = merged.get(d.id) || { id: d.id, name: d.name, hex_id: d.hex_id, read: null };
+      m.write = d;
+      merged.set(d.id, m);
+    }
+    const items = [...merged.values()].sort((a, b) => a.name.localeCompare(b.name));
+    if (!items.length) { list.append(el('div', 'placeholder', 'no DIDs for this node')); return; }
+    for (const m of items) {
+      const b = el('button', 'list-item');
+      b.append(el('div', 'li-title', m.name));
+      const sub = el('div', 'li-sub', m.hex_id);
+      sub.append(el('span', 'li-tag', (m.read ? 'R' : '') + (m.write ? 'W' : '')));
+      b.append(sub);
+      b.onclick = () => selectDid(m, b);
+      list.append(b);
+    }
+  }
+
+  function selectDid(m, btn) {
+    document.querySelectorAll('#did-list .list-item').forEach(x => x.classList.toggle('active', x === btn));
+    const sl = [];
+    if (m.read && m.read.security_level) sl.push('read sl ' + m.read.security_level);
+    if (m.write && m.write.security_level) sl.push('write sl ' + m.write.security_level);
+    $('#did-title').textContent = m.name;
+    $('#did-sub').textContent = m.hex_id + (sl.length ? ' · ' + sl.join(' · ') : '');
+    const body = $('#did-body');
+    body.innerHTML = '';
+
+    // Always offer a read (0x22): read_did decodes ODJ fields when the DID declares
+    // a read subspec, else returns raw bytes -- writable/config DIDs are usually
+    // still physically readable, so a write-only-in-ODJ DID can still show its value.
+    {
+      body.append(el('div', 'section-label', m.read ? 'read (0x22)' : 'read (0x22 · raw)'));
+      const row = el('div', 'row');
+      const rb = el('button', 'btn', 'Read');
+      rb.onclick = () => doRead(m);
+      row.append(rb);
+      body.append(row);
+      const out = el('div'); out.id = 'did-read-out'; body.append(out);
+    }
+
+    if (m.write) {
+      body.append(el('div', 'section-label', 'write (0x2E)'));
+      const form = el('div'); form.id = 'did-form';
+      const fields = m.write.fields || [];
+      for (const f of fields) {
+        const fr = el('div', 'field-row');
+        fr.append(el('label', null, f));
+        const inp = el('input'); inp.type = 'text'; inp.dataset.field = f; inp.placeholder = 'value / enum';
+        fr.append(inp);
+        form.append(fr);
+      }
+      if (!fields.length) {
+        const fr = el('div', 'field-row');
+        fr.append(el('label', null, 'raw bytes (hex)'));
+        const inp = el('input'); inp.type = 'text'; inp.id = 'did-raw'; inp.placeholder = 'e.g. 01 ff';
+        fr.append(inp); form.append(fr);
+      }
+      body.append(form);
+      const row = el('div', 'row'); row.style.marginTop = '12px';
+      const wb = el('button', 'btn', 'Write DID');
+      wb.onclick = () => doWrite(m);
+      row.append(wb);
+      body.append(row);
+      const out = el('div'); out.id = 'did-write-out'; body.append(out);
+    }
+  }
+
+  async function doRead(m) {
+    const out = $('#did-read-out'); out.innerHTML = '';
+    try {
+      const { ok, status, data } = await jpost('/api/did/read', { node: didCurrentNode, did: m.name });
+      if (!ok) { out.append(el('div', 'err', data.error || ('HTTP ' + status))); return; }
+      const t = el('table', 'grid');
+      const head = el('tr'); ['field', 'value'].forEach(h => head.append(el('th', null, h))); t.append(head);
+      const fields = data.fields || {};
+      for (const k of Object.keys(fields)) {
+        const tr = el('tr'); tr.append(el('td', null, k)); tr.append(el('td', null, fmt(fields[k]))); t.append(tr);
+      }
+      if (!Object.keys(fields).length) {
+        const tr = el('tr'); tr.append(el('td', null, 'raw')); tr.append(el('td', null, data.raw)); t.append(tr);
+      }
+      out.append(el('div', 'section-label', 'response · raw ' + data.raw));
+      out.append(t);
+    } catch (e) { out.append(el('div', 'err', String(e))); }
+  }
+
+  async function doWrite(m) {
+    const out = $('#did-write-out'); out.innerHTML = '';
+    let values;
+    const raw = $('#did-raw');
+    if (raw) {
+      values = raw.value.trim();
+    } else {
+      values = {};
+      document.querySelectorAll('#did-form input[data-field]').forEach(inp => {
+        const v = inp.value.trim();
+        if (v === '') return;
+        values[inp.dataset.field] = /^-?\d+$/.test(v) ? parseInt(v, 10) : v;
+      });
+    }
+    try {
+      const { ok, status, data } = await jpost('/api/did/write', { node: didCurrentNode, did: m.name, values });
+      if (!ok) { out.append(el('div', 'err', data.error || ('HTTP ' + status))); return; }
+      const done = el('div', 'kv');
+      done.innerHTML = '<span class="badge pass">wrote</span> ' + data.hex_id
+        + ' — ' + data.bytes + ' (' + data.size + ' bytes)';
+      out.append(done);
+    } catch (e) { out.append(el('div', 'err', String(e))); }
+  }
+
+  /* ---- lazy boot: first time either ODIN or DID is shown ---- */
+  let booted = false;
+  const boot = () => {
+    if (booted) return;
+    booted = true;
+    loadProcs();
+    connectWS();
+  };
+  tabInit.odin = boot;
+  tabInit.did = boot;
+})();
+
+// ===========================================================
+// ALERTS TAB — human-readable faults + the ECUs' own alert log
+// ===========================================================
+// Backed by /api/alerts: the alert-matrix bits currently set, and the distinct
+// <NODE>_alertLog payloads decoded through the MCU alert catalog. The rendering
+// is shared with the Drive HUD (/alerts.js) so both pages read identically.
+(() => {
+  const badge     = document.getElementById('tab-alert-badge');
+  const statusEl  = document.getElementById('alerts-status');
+  const faultsBox = document.getElementById('al-faults');
+  const logBox    = document.getElementById('al-log');
+  const openAlert = TMAlerts.mountModal(
+    document.getElementById('alert-modal'),
+    document.getElementById('alert-title'),
+    document.getElementById('alert-body'),
+    document.getElementById('alert-close'));
+
+  async function refresh() {
+    let a;
+    try {
+      a = await (await fetch('/api/alerts')).json();
+    } catch (e) {
+      statusEl.textContent = 'backend unreachable';
+      return;
+    }
+    const nf = TMAlerts.renderFaults(faultsBox, a.faults, openAlert);
+    const nl = TMAlerts.renderLog(logBox, a.log, openAlert);
+    document.getElementById('al-fault-count').textContent = nf ? `(${nf})` : '';
+    document.getElementById('al-log-count').textContent = nl ? `(${nl})` : '';
+    // The badge is the point of the tab: you see a fault appear without being on it.
+    badge.textContent = nf ? String(nf) : '';
+    badge.style.display = nf ? '' : 'none';
+    statusEl.textContent = a.catalog
+      ? `${nf} active · ${nl} logged`
+      : `${nf} active · ${nl} logged · no firmware alert catalog (set TM3_ROOT for descriptions)`;
+  }
+
+  document.getElementById('alerts-clear').addEventListener('click', async () => {
+    await fetch('/api/alerts/clear', { method: 'POST' }).catch(() => {});
+    refresh();
+  });
+
+  // Polls whether or not the tab is open (it's one small JSON a second, and the
+  // badge has to stay honest); pauses only when the window is hidden.
+  function tick() {
+    if (!document.hidden) refresh();
+  }
+  tabInit.alerts = refresh;
+  setInterval(tick, 1000);
+  refresh();
+})();
+
+// Boot into the tab named in the URL hash (/#odin), else Live. Runs last, so
+// every tab has registered its initializer by now.
+{
+  const want = location.hash.slice(1);
+  const known = document.getElementById('tab-' + want) && !HIDDEN_TABS.has(want);
+  selectTab(known ? want : 'live');
+}
 </script>
 </body>
 </html>

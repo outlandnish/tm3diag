@@ -6,7 +6,7 @@ Runs the REAL ODIN diagnostic graphs from the firmware bundle
 odin-engine + web UI. Node-type inventory across the bundle is 181 types, but
 only 5 modules touch hardware (uds / odx / can / cid / vehiclecontrols); the
 other ~90% (networks / control / logic / dicts / reporting / ...) is pure
-compute that runs unchanged. See docs/private/odin-resolver-cal-and-inverter-swap.md.
+compute that runs unchanged.
 
 Execution model (as read out of the graphs):
   * CONTROL flow is push: a node's control-OUTPUT port (run/done/passed/if_true/
@@ -112,7 +112,7 @@ class RunResult:
 
 # =====================================================================================
 # CID emulation (cid.* nodes): a read-your-writes data-value store + a read-only
-# view of a firmware-dump rootfs. See docs/private/odin-runner-plan.md (Step 5).
+# view of a firmware-dump rootfs.
 # =====================================================================================
 # Sensible bench defaults for CID data-values graphs read back after (or without)
 # a SetDataValue. Values are strings, matching the CID data-value wire type.

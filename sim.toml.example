@@ -1,0 +1,23 @@
+# Bench config for scripts/vehicle_sim.py — copy to sim.toml to auto-load
+# (or pass --config PATH). CLI --sim/--real/--profile/--exclude compose on top and win.
+#
+# Two sections, both optional: [nodes] chooses which peer ECUs to simulate, and [bus]
+# reassigns individual messages to a different bus for a particular bench wiring.
+
+[nodes]
+# real: ECUs present on the bus for real (or driven by another process, e.g. di.py) —
+# their frames are NOT simulated. Node names are case-insensitive; see `vehicle_sim.py
+# --list-nodes` for the full list (BMS CP PCS VCFRONT VCRIGHT EPAS3P SCCM EPB THERMAL
+# ESP IBST RCM DAS GTW UI UNKNOWN VCSEC).
+real = ["PCS", "CP"]
+
+# sim: optional whitelist — simulate ONLY these nodes. Omit for "all nodes except `real`".
+# sim = ["BMS", "VCFRONT", "SCCM"]
+
+[bus]
+# Message-level bus override: arbitration ID -> logical bus, applied over each message's
+# firmware-correct default. Buses: "vehicle" (group1/CANA), "party" (group2/CANB),
+# "charge". ETH and any unknown token normalize to "vehicle". The channel each logical
+# bus maps to comes from --channel / --party-channel / --charge-channel (or TM3_*_CHANNEL).
+# 0x370 = "charge"
+# 0x11D = "party"

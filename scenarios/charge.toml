@@ -1,0 +1,29 @@
+# Charge scenario profile (the external orchestrator).
+#
+# Brings up a bench PCS (the device under test) by simulating the rest of the car
+# initiating an AC charge session. Run it with:
+#
+#   python scripts/vehicle_sim.py --config scenarios/charge.toml --channel canX
+#
+# This sets only the EXTERNALITIES -- plug in an EVSE (CP) and ask to charge (UI). The rest
+# of the charge state EMERGES reactively from the nodes talking to each other on the bus:
+#   CP evse + UI charge-request  ->  VCFRONT authorizes HV charge (bmsHvChargeEnable)
+#                                ->  BMS goes to charge + HVP commands the PCS (SUPPORT,
+#                                    charge HW, contactors closed).
+# (You can still force any node's end-state directly -- e.g. [scenario.HVP] mode = "charge" --
+# but the point of the reactive layer is that you don't have to.)
+
+[nodes]
+# The PCS is the real hardware on the bench -> don't simulate its frames.
+real = ["PCS"]
+
+[scenario.CP]
+evse_connected = true    # simulate an EVSE/charger plugged in ...
+evse_limit_a   = 32      # ... advertising 32 A
+
+[scenario.UI]
+charge_enable  = true    # the user asks to charge
+charge_limit_a = 32
+
+[scenario.VCFRONT]
+lv_power_state = "accessory"   # not driving; charge-side power. HV-charge-enable is reactive.

@@ -1,0 +1,28 @@
+# Drive scenario profile: bench a real rear drive inverter (DIR/PMR).
+#
+#   python scripts/vehicle_sim.py --config scenarios/drive.toml --channel can0 --party-channel can1
+#
+# The rear inverter hardware is physically connected, so mark it `real` -> the sim does NOT
+# transmit its IDs (DI/DIR/PMR frames) and won't collide with the real device. Everything
+# else (BMS/VCFRONT/CP/brake/immobilizer/UI/...) is simulated to bring the inverter out of MIA
+# and answer the immobilizer, exactly as before. (With NO inverter connected you'd drop this
+# `real` list and the sim would broadcast a virtual inverter too.)
+
+# Target firmware revision for the message layouts. Each node transmits the newest set it has
+# authored at/below this, falling back to the last version for which it has messages. Omit (or
+# comment out) to use each node's newest authored set; --fw on the CLI overrides this.
+#
+# Pinned to the bench unit's firmware (gen-26 12603 running 2022.45.15, ../tesla-fw). This is
+# NOT a no-op any more: DAS/BMS/CMP/APP/UI/EPAS3P/IBST/CP each author a 2022.45.15 set that adds
+# IDs the 2020 DIR did not subscribe to (0x289 0x39B 0x452 0x2A7 0x25C 0x25D 0x3B3) and re-homes
+# IBST_status 0x39D onto bus A. Drop the pin only to bench a 2020-era inverter.
+[firmware]
+version = "2022.45.15"
+
+[nodes]
+real = ["DI", "DIR", "PMR"]
+
+# VCFRONT already defaults to drive power; set it explicitly for clarity. Command a gear with
+# e.g.  [scenario.SCCM]  gear = "D"  (held at standstill; watch DI_gear on 0x118).
+[scenario.VCFRONT]
+lv_power_state = "drive"

@@ -72,10 +72,13 @@ def find_bootloader_entries(selected: list) -> tuple[list, list, list]:
 # ---------------------------------------------------------------------------
 
 # ECU subcomponents that are flashed alongside their parent app via the parent's
-# UDS endpoint (parent MCU bootloader routes the file contents to the
-# subcomponent based on address ranges). Maps subcomponent ecu_type → parent.
-# The CP MCU's bootloader handles cpPlcFw (PLC modem firmware) and cpPlcPib
-# (PLC modem Personality Identifier Block) over its internal interconnect.
+# UDS endpoint. Each subcomponent selects its own flash region with a distinct
+# module byte (WDBI 0x0102) before RequestDownload — see the CP PLC entries in
+# _ecu_map (cpplcfw=0x08, cpplcpib=0x06); the parent bootloader validates the
+# download address against the selected module's window. Maps subcomponent
+# ecu_type → parent. The CP MCU's bootloader handles cpPlcFw (PLC modem firmware,
+# staged in CP flash @0x100000, loaded to the QCA7420 modem at boot) and cpPlcPib
+# (PLC modem Personality Identifier Block, @0xe0000).
 _SUBCOMPONENT_PARENT: dict[str, str] = {
     "cpplcfw":  "cp",
     "cpplcpib": "cp",

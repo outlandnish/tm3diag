@@ -164,13 +164,10 @@ COMPACT_DBS: dict[str, Path] = compact_dbs()
 # CAN channels — the three Model 3 buses
 # ---------------------------------------------------------------------------
 # Downstream tools (odin_runner, ...) pick the right channel per bus.
-# TM3_VEHICLE_CHANNEL is the vehicle bus; it falls back to the generic
-# TM3_CHANNEL so existing single-bus .env files keep working. Party/charge are
-# None unless configured (a simple bench has only the vehicle bus, and callers
-# fall back to it).
-VEHICLE_CHANNEL: str | None = (
-    os.environ.get("TM3_VEHICLE_CHANNEL") or os.environ.get("TM3_CHANNEL")
-)
+# TM3_VEHICLE_CHANNEL is the vehicle bus (and the default --channel for every
+# tool). Party/charge are None unless configured (a simple bench has only the
+# vehicle bus, and callers fall back to it).
+VEHICLE_CHANNEL: str | None = os.environ.get("TM3_VEHICLE_CHANNEL")
 PARTY_CHANNEL:   str | None = os.environ.get("TM3_PARTY_CHANNEL")
 CHARGE_CHANNEL:  str | None = os.environ.get("TM3_CHARGE_CHANNEL")
 
@@ -212,7 +209,7 @@ def can_channel(bus: str | None = None) -> str | None:
 # ---------------------------------------------------------------------------
 
 _ENV_MAP = {
-    "channel":       ("TM3_CHANNEL",       str,  "vcan0"),
+    "channel":       ("TM3_VEHICLE_CHANNEL", str, "vcan0"),
     "interface":     ("TM3_INTERFACE",      str,  "socketcan"),
     "bitrate":       ("TM3_BITRATE",        int,  None),
     "force":         ("TM3_DFU_FORCE",      bool, None),

@@ -13,7 +13,7 @@ python tm3diag.py --node PCS --channel vcan0 --artifacts ~/seed_artifacts_v2
 | Flag                | Default             | Description                                                       |
 | ------------------- | ------------------- | ----------------------------------------------------------------- |
 | `--node`, `-n`      | —                   | ECU node name. Opens pre-connection menu if omitted.              |
-| `--channel`, `-c`   | `TM3_CHANNEL`       | CAN interface                                                     |
+| `--channel`, `-c`   | `TM3_VEHICLE_CHANNEL` | CAN interface                                                   |
 | `--interface`, `-i` | `TM3_INTERFACE`     | python-can interface type                                         |
 | `--artifacts`, `-a` | `TM3_ARTIFACTS_DIR` | Path to `seed_artifacts_v2` (needed for DFU; prompted if missing) |
 

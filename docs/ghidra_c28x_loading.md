@@ -125,7 +125,7 @@ python tm3diag.py --node PCS
 #   board-parts     → reads part/serial DIDs 0xF012–0xF015, 0xF030/0xF031
 ```
 
-(The CAN channel and artifacts directory come from `TM3_CHANNEL` and `TM3_ARTIFACTS_DIR` in
+(The CAN channel and artifacts directory come from `TM3_VEHICLE_CHANNEL` and `TM3_ARTIFACTS_DIR` in
 your `.env`, so you don't need to pass `--channel` or `--artifacts`.)
 
 `board-parts` returns the ECU's hardware part/assembly numbers; match those against the

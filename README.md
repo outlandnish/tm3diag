@@ -40,12 +40,14 @@ Copy the example config and open it in a text editor:
 cp .env.example .env
 ```
 
-Set `TM3_CHANNEL` to your CAN interface name and `TM3_INTERFACE` to your adapter's driver. The defaults work for a standard Linux SocketCAN setup:
+Set `TM3_VEHICLE_CHANNEL` to your CAN interface name and `TM3_INTERFACE` to your adapter's driver. The defaults work for a standard Linux SocketCAN setup:
 
 ```bash
-TM3_CHANNEL=can0       # your interface name — check with: ip link show type can
+TM3_VEHICLE_CHANNEL=can0   # your interface name — check with: ip link show type can
 TM3_INTERFACE=socketcan
 ```
+
+`TM3_VEHICLE_CHANNEL` is the vehicle bus and the default channel for every tool. On a multi-bus bench you can also set `TM3_PARTY_CHANNEL` and `TM3_CHARGE_CHANNEL`; tools fall back to the vehicle bus when a bus has no channel configured.
 
 Bring the interface up before running any tool (replace `can0` and `500000` with your interface and bitrate):
 
@@ -60,7 +62,7 @@ To use a virtual interface for testing without hardware:
 sudo modprobe vcan
 sudo ip link add dev vcan0 type vcan
 sudo ip link set vcan0 up
-# then set TM3_CHANNEL=vcan0 in .env
+# then set TM3_VEHICLE_CHANNEL=vcan0 in .env
 ```
 
 ### 3. Firmware dump (optional)

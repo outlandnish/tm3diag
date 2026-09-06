@@ -31,5 +31,5 @@ python tm3uds.py --node PCS --channel vcan0 reset
 | Flag                | Default         | Description                             |
 | ------------------- | --------------- | --------------------------------------- |
 | `--node`, `-n`      | —               | ECU node name (e.g. `PCS`, `CP`, `RCM`) |
-| `--channel`, `-c`   | `TM3_CHANNEL`   | CAN interface                           |
+| `--channel`, `-c`   | `TM3_VEHICLE_CHANNEL` | CAN interface                     |
 | `--interface`, `-i` | `TM3_INTERFACE` | python-can interface type               |

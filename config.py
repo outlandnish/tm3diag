@@ -103,6 +103,29 @@ def available_products() -> list[str]:
     )
 
 
+def resolve_odin_bundle(root: Path | None,
+                        override: str | None = None) -> Path | None:
+    """Resolve the ODIN graph bundle's ``networks/`` dir.
+
+    The firmware ships ``opt/odin/odin_bundle.zip``; once unzipped, the graphs
+    live under ``opt/odin/.../networks`` (the exact wrapper dir depends on how it
+    was extracted). ``TM3_ODIN_BUNDLE`` overrides the whole path; otherwise we try
+    the known layouts under ``<root>/opt/odin``. Returns None if unresolved.
+    """
+    if override:
+        return Path(override).expanduser()
+    if root is None:
+        return None
+    odin = root / "opt/odin"
+    for cand in ("odin_bundle_extracted/odin_bundle/networks",
+                 "odin_bundle/odin_bundle/networks",
+                 "odin_bundle/networks"):
+        p = odin / cand
+        if p.is_dir():
+            return p
+    return None
+
+
 class FwPaths:
     """Resolved firmware data paths for a specific product.
 
@@ -126,13 +149,63 @@ class FwPaths:
 # Module-level paths for the default product. All derive from TM3_ROOT
 # (and TM3_PRODUCT) — there are no per-path env overrides; use FwPaths to
 # resolve a non-default product.
+ROOT:          Path | None = _ROOT  # squashfs-root of the firmware extraction
 NODES_JSON:    Path | None = _DATA_DIR / "nodes.json" if _DATA_DIR else None
 ETH_COMPACT:   Path | None = _resolve_compact("ETH")
 ODJ_DIR:       Path | None = _DATA_DIR / "odj" if _DATA_DIR else None
 ARTIFACTS_DIR: Path | None = _ROOT / "deploy/seed_artifacts_v2" if _ROOT else None
+# ODIN graph bundle (networks/ dir) — derived from TM3_ROOT, or TM3_ODIN_BUNDLE.
+ODIN_BUNDLE:   Path | None = resolve_odin_bundle(_ROOT, os.environ.get("TM3_ODIN_BUNDLE"))
 
 # All compact DBs for the selected product, keyed by bus token (ETH, VCRIGHTV, ...).
 COMPACT_DBS: dict[str, Path] = compact_dbs()
+
+# ---------------------------------------------------------------------------
+# CAN channels — the three Model 3 buses
+# ---------------------------------------------------------------------------
+# Downstream tools (odin_runner, ...) pick the right channel per bus.
+# TM3_VEHICLE_CHANNEL is the vehicle bus; it falls back to the generic
+# TM3_CHANNEL so existing single-bus .env files keep working. Party/charge are
+# None unless configured (a simple bench has only the vehicle bus, and callers
+# fall back to it).
+VEHICLE_CHANNEL: str | None = (
+    os.environ.get("TM3_VEHICLE_CHANNEL") or os.environ.get("TM3_CHANNEL")
+)
+PARTY_CHANNEL:   str | None = os.environ.get("TM3_PARTY_CHANNEL")
+CHARGE_CHANNEL:  str | None = os.environ.get("TM3_CHARGE_CHANNEL")
+
+CAN_CHANNELS: dict[str, str | None] = {
+    "vehicle": VEHICLE_CHANNEL,
+    "party":   PARTY_CHANNEL,
+    "charge":  CHARGE_CHANNEL,
+}
+
+# Target firmware revision for message layouts. None => newest authored set.
+FW_VERSION: str | None = os.environ.get("TM3_FW")
+
+# ODIN/Tesla bus tokens -> our bus keys.
+_BUS_ALIASES = {
+    "veh": "vehicle", "vehicle": "vehicle", "eth": "vehicle",
+    "party": "party", "pt": "party",
+    "ch": "charge", "chg": "charge", "charge": "charge",
+}
+
+
+def canonical_bus(bus: str | None = None) -> str:
+    """Normalize an ODIN/Tesla bus token to a canonical key: 'vehicle', 'party', or
+    'charge'. ETH (the vehicle backbone) and any unknown/empty token map to 'vehicle'
+    -- i.e. assume the vehicle bus unless another is explicitly named.
+    """
+    return _BUS_ALIASES.get(str(bus or "").strip().lower(), "vehicle")
+
+
+def can_channel(bus: str | None = None) -> str | None:
+    """Resolve an ODIN/Tesla bus token (VEH / PARTY / CH / ETH …) to a CAN
+    channel. Unknown or empty bus -> the vehicle channel; a bus with no channel
+    configured returns None (the caller falls back to the vehicle channel).
+    """
+    return CAN_CHANNELS.get(canonical_bus(bus))
+
 
 # ---------------------------------------------------------------------------
 # CAN / argparse defaults

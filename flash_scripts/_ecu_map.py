@@ -56,14 +56,20 @@ ECU_SCRIPT_MAP: dict[str, _Entry] = {
     "tas":    (SCRIPT_STANDARD, 0x00),
 
     # CP PLC modem subcomponents — flashed via the CP MCU's bootloader using the
-    # same SCRIPT_STANDARD as the regular CP app. Module byte is 0x00 (the CP
-    # MCU's bootloader routes the .hex file contents to the PLC modem over its
-    # internal interconnect based on each record's address range — no module
-    # byte differentiates them at the wire level).
-    # `cpPlcFw` is the modem firmware, `cpPlcPib` is the modem PIB
-    # (Personality Identifier Block — modem config).
-    "cpplcfw":  (SCRIPT_STANDARD, 0x00),
-    "cpplcpib": (SCRIPT_STANDARD, 0x00),
+    # same SCRIPT_STANDARD as the regular CP app, but with DISTINCT module bytes.
+    # The module byte (WDBI 0x0102) is NOT cosmetic here: the CP bootloader's
+    # RequestDownload window validator gates the allowed address range on the
+    # currently-selected module —
+    #     module 0x00 -> [0x8000, 0xe0000]    (CP app)
+    #     module 0x06 -> [0xe0000, 0x100000]  (cpPlcPib, loads @ 0xe0000)
+    #     module 0x08 -> [0x100000, 0x200000] (cpPlcFw,  loads @ 0x100000)
+    # so a RequestDownload for cpPlcFw/cpPlcPib under module 0x00 is rejected
+    # NRC 0x31 (requestOutOfRange). cpPlcFw is stored in CP flash @0x100000 and
+    # loaded into the QCA7420 PLC modem at boot; cpPlcPib (@0xe0000) is the modem
+    # PIB (Personality Identifier Block — modem config). Fails safe: a wrong
+    # module byte NRCs, it can't mis-target another region.
+    "cpplcfw":  (SCRIPT_STANDARD, 0x08),
+    "cpplcpib": (SCRIPT_STANDARD, 0x06),
 
     # vcfront / ibstcal (0x00651000)
     "vcfront": (SCRIPT_VCFRONT, 0x00),

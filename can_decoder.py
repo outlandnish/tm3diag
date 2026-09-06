@@ -163,15 +163,21 @@ def decode_signal(data: bytes, sig: dict[str, Any], name: str = "") -> tuple[flo
 class CanDatabase:
     """Parsed representation of a compact JSON or DBC CAN database."""
 
-    def __init__(self, path: Path = _ETH_COMPACT) -> None:
+    def __init__(self, path: Path | None = _ETH_COMPACT) -> None:
+        self.messages: dict[int, dict[str, Any]] = {}  # msg_id -> msg
+        self._by_node: dict[str, list[int]] = {}
+        self._cantools_db = None
+
+        # No compact JSON configured (no firmware root / TM3_ROOT) -> an empty DB.
+        # Callers still work: can_live shows raw undecoded frames, and a DBC can be
+        # supplied instead via CanDatabase.from_dbc(). Decoding just names nothing.
+        if path is None:
+            return
+
         # Use the same loader as uds_local/node_config.py so an encrypted .bin
         # twin (Model3_ETH.compact.json.bin) is auto-decrypted instead of being
         # fed raw to json.load (which fails with a UnicodeDecodeError).
         raw = _load_json(Path(path))
-
-        self.messages: dict[int, dict[str, Any]] = {}  # msg_id -> msg
-        self._by_node: dict[str, list[int]] = {}
-        self._cantools_db = None
 
         for name, msg in raw["messages"].items():
             mid = msg["message_id"]

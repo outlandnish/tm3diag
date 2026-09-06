@@ -12,6 +12,8 @@ seed_artifacts_v2/
 .vscode/
 docs/superpowers
 *.dbc
+# keep small synthetic DBC test fixtures
+!tests/fixtures/*.dbc
 immo_keys.json
 docs/private/
 # Extracted alert catalogue + per-model dumps from dump_alerts.py (real alert data)

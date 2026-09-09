@@ -21,7 +21,7 @@ def test_cp_plc_fw_selects_modem_fw_region():
     script, module = get_script("cpplcfw")
     assert script is SCRIPT_STANDARD
     assert module == 0x08, (
-        "cpPlcFw (@0x100000) must select module 0x08 -> [0x100000,0x200000]; "
+        "cpPlcFw must select module 0x08; "
         f"got 0x{module:02X} — module 0x00 is the CP app window and NRCs 0x31"
     )
 
@@ -30,7 +30,7 @@ def test_cp_plc_pib_selects_modem_pib_region():
     script, module = get_script("cpplcpib")
     assert script is SCRIPT_STANDARD
     assert module == 0x06, (
-        "cpPlcPib (@0xe0000) must select module 0x06 -> [0xe0000,0x100000]; "
+        "cpPlcPib must select module 0x06; "
         f"got 0x{module:02X} — module 0x00 is the CP app window and NRCs 0x31"
     )
 

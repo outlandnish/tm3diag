@@ -1,32 +1,24 @@
-"""Per-ECU broadcast (heartbeat) CAN IDs, decoded from update.img.
+"""Per-ECU broadcast (heartbeat) CAN IDs used to detect bootloader entry.
 
-The gateway firmware's `enter_bootloader_v0` (update.img @ `0x40000732`)
-watches each ECU's broadcast CAN ID, snapshots a counter, and short-circuits
-its keep-alive loop the instant a new broadcast frame from that ECU arrives —
-the positive signal that the ECU has rebooted into the bootloader.
+The gateway's bootloader-handover logic watches each ECU's broadcast CAN ID,
+snapshots a counter, and short-circuits its keep-alive loop the instant a new
+broadcast frame from that ECU arrives — the positive signal that the ECU has
+rebooted into the bootloader.
 
 These IDs are **independent** of the UDS request/response IDs in `nodes.json`:
   * UDS request/response only fire when we send a request.
   * Broadcasts here are emitted by the ECU itself at a fixed cadence
     (typically ~10 Hz), independent of any host activity.
 
-Source of truth: update.img's bus-0 broadcast tracker table @ `0x400331a8`
-and bus-2 table @ `0x4003325c`, walked by the CAN-receive task
-`FUN_40000c00`. Each entry: `{u16 node_id, u16 can_id, u16 counter, ...}`.
-
 Quirks captured here:
-  * **EPBR and ESP both register CAN ID `0x551` on bus 2.** `FUN_40000c00`
-    returns on the first match, so ESP's counter never advances. The firmware's
-    `enter_bootloader_v0` falls back to the full 3.34 s wait for ESP. We
-    replicate that — ESP gets `None` here.
-  * **`HVBMS` has all-zero per-node config**: no broadcast tracking at all,
-    full fixed wait.
-  * **Higher-indexed nodes** (any index ≥ 0x1e/30 in the firmware's table —
-    notably `TPMS`, all `*BU`/`*BL` bootloader variants, all `*RAMAPP`
-    variants, `OPC`, `OPCS`, `SCCMSUB`, `THS`, `LUMBAR{L,R}`, `BLEEP*`,
-    `HCM{L,R}`, `OHC`, `UBLOX`, `CBC`, `UMC`, `CC`, `ROHC`, `CPPLC*`, `TLC`,
-    `VCFRONTBU`) hit the firmware's `node_id < 0x1e` guard and return
-    `0xff` for bus — no broadcast tracking. Those entries here are also `None`.
+  * **EPBR and ESP both register CAN ID `0x551` on bus 2.** The tracker returns
+    on the first match, so ESP's counter never advances — the gateway falls back
+    to the full 3.34 s wait for ESP. We replicate that: ESP gets `None` here.
+  * **`HVBMS` has all-zero per-node config**: no broadcast tracking, full fixed wait.
+  * **Higher-indexed nodes** (notably `TPMS`, all `*BU`/`*BL` bootloader variants,
+    all `*RAMAPP` variants, `OPC`, `OPCS`, `SCCMSUB`, `THS`, `LUMBAR{L,R}`,
+    `BLEEP*`, `HCM{L,R}`, `OHC`, `UBLOX`, `CBC`, `UMC`, `CC`, `ROHC`, `CPPLC*`,
+    `TLC`, `VCFRONTBU`) aren't broadcast-tracked and return `None` for bus.
 
 For tm3diag's purpose: install a `can.Listener` filtered to the configured
 `can_id` and break Phase 1 of `wait_for_bootloader` the moment the count

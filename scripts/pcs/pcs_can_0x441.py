@@ -1,9 +1,6 @@
 #!/usr/bin/env python3
 """Encoder/validator for the PCS 0x441 VC_pcsDCDCInterface protected control frame.
 
-Derived from RE of PCS variant-411 CPU1 firmware (2024.8.9), functions:
-  - PCS_rxVC_pcsInterface_0x441  @ 0x8f7da   (RX handler / validator)
-  - PCS_canChecksum_0x441        @ 0x94f3e   (additive checksum fold)
 
 The PCS rejects a 0x441 frame (and eventually raises a107_vcPcsDCDCInterfaceMia)
 unless BOTH hold:

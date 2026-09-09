@@ -11,7 +11,7 @@ _BOARD_INFO_DIDS = (0xF012, 0xF013, 0xF014, 0xF015)
 # Flash count limits indexed by operand (0–2) matching hashpicker_sim table
 FLASH_COUNT_LIMITS = (200, 100, 50)
 
-# Seed level table from DAT_00650e08[idx*16] (uds_security_access at 0x0040c090).
+# Seed level indexed by security-access level index.
 # idx 0 is overridden to 0x01 if protocol_ver < 3.
 _SECURITY_SEED_LEVEL = {
     0: 0x05,

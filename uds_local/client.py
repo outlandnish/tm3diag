@@ -156,9 +156,9 @@ class BusUnavailableError(Exception):
 class _BroadcastWatcher(can.Listener):
     """Counts inbound frames matching a single broadcast (heartbeat) CAN ID.
 
-    Mirrors update.img's `enter_bootloader_v0` (@ `0x40000732`), which
-    snapshots a per-node counter at `0x400331a8`/`0x4003325c` and exits its
-    keep-alive loop the instant the counter advances — i.e. the moment the
+    Mirrors the gateway bootloader's handover logic, which snapshots a per-node
+    broadcast counter and exits its keep-alive loop the instant the counter
+    advances — i.e. the moment the
     target ECU resumes broadcasting after the reset, signalling that it has
     booted into the bootloader.
 
@@ -575,8 +575,8 @@ class UdsSession:
         confirm_p2_ms: int = 40,
         confirm_max_attempts: int = 14,
     ) -> None:
-        """Two-phase bootloader handover wait, mirroring update.img's
-        `enter_bootloader_v0` @ 0x40000732.
+        """Two-phase bootloader handover wait, mirroring the gateway's
+        bootloader-handover logic.
 
         **Phase 1 — keep-alive** (`keepalive_phase_s` s): send `3E 80`
         (TesterPresent fire-and-forget) at `keepalive_interval_s` cadence

@@ -313,7 +313,7 @@ class UiPowertrainControl:
 # ---------------------------------------------------------------------------
 # UiConfig control registry — single source of truth for which UiConfig fields
 # are user-controllable and the option names each accepts. Consumed by di.py's
-# `ui()` verb and can_live.py's dashboard so both drive the same knobs.
+# `ui()` verb and tm3web.py's dashboard so both drive the same knobs.
 # ---------------------------------------------------------------------------
 UI_SETTINGS: dict[str, dict] = {
     "pedal_map": {"label": "Pedal map", "options": dict(PEDAL_MAP)},
@@ -348,7 +348,7 @@ def apply_ui_setting(cfg: UiConfig, field: str, value: object) -> int:
 # ---------------------------------------------------------------------------
 # VCFRONT_LVPowerState 0x221 -- LV power / vehicle power state (50 ms, muxed,
 # counter@52 + Tesla checksum@56 magic 0x23). VCFRONT_vehiclePowerState (byte0 b5-6):
-#   off=0 conditioning=1 accessory=2 drive=3. Shared by vehicle_sim + can_live.
+#   off=0 conditioning=1 accessory=2 drive=3. Shared by vehicle_sim + tm3web.
 # NOTE: any continuous 0x221 re-pokes the immobilizer drive-readiness eval each frame.
 # ---------------------------------------------------------------------------
 VCFRONT_LVPOWERSTATE_ID = 0x221
@@ -497,7 +497,7 @@ class EpbResponder:
 
 # ---------------------------------------------------------------------------
 # VehicleController -- single source of truth for all DU-facing command state.
-# vehicle_sim builds the interactive + closed-loop frames from it; can_live mutates
+# vehicle_sim builds the interactive + closed-loop frames from it; tm3web mutates
 # it (via vehicle_sim's control server). One owner, no cross-tool frame collisions.
 # ---------------------------------------------------------------------------
 GEAR_GESTURE = {
@@ -544,7 +544,7 @@ class VehicleController:
         return self.carcfg.set(signal, value)
 
     def state(self) -> dict:
-        """JSON-able snapshot of commanded state (consumed by can_live's dashboard)."""
+        """JSON-able snapshot of commanded state (consumed by tm3web's dashboard)."""
         return {
             "commanded_gear": self.last_gear_cmd,
             "lv_state": next((k for k, v in VEHICLE_POWER_STATE.items() if v == self.lv.vps), None),

@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """odin_web.py -- aiohttp route glue exposing the ODIN runner + DID read/write over
-HTTP + WebSocket, for the can_live.
+HTTP + WebSocket, for the tm3web.
 
-All the logic lives here; can_live wires it in with a single setup_routes(app, ...)
+All the logic lives here; tm3web wires it in with a single setup_routes(app, ...)
 call, so the interface gets:
   * GET  /api/odin/procedures[?all=1]  -> the runnable (or full) procedure list
   * GET  /api/odin/requirements?procedure=<basename>
@@ -538,7 +538,7 @@ def _run_uds_op(backend, sess, node: str, op: str, args: dict) -> dict:
 
     raise ValueError(f"operation not implemented: {op!r}")  # pragma: no cover
 
-# Typed app key (aiohttp warns on bare-string keys); can_live can read the instance
+# Typed app key (aiohttp warns on bare-string keys); tm3web can read the instance
 # back via app[odin_web.ODIN_WEB], though setup_routes also returns it.
 ODIN_WEB = web.AppKey("odin_web", OdinWeb)
 
@@ -547,7 +547,7 @@ def setup_routes(
     app: web.Application, *, bundle=None, backend_factory=None, node_provider=None, prefix: str = ""
 ) -> OdinWeb:
     """Register the ODIN + DID routes on `app` and return the OdinWeb instance.
-    can_live calls this once from _build_app. See the module docstring for the
+    tm3web calls this once from _build_app. See the module docstring for the
     backend_factory / node_provider seams."""
     svc = OdinWeb(bundle=bundle, backend_factory=backend_factory, node_provider=node_provider)
     app[ODIN_WEB] = svc

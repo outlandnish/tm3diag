@@ -169,7 +169,7 @@ class CanDatabase:
         self._cantools_db = None
 
         # No compact JSON configured (no firmware root / TM3_ROOT) -> an empty DB.
-        # Callers still work: can_live shows raw undecoded frames, and a DBC can be
+        # Callers still work: tm3web shows raw undecoded frames, and a DBC can be
         # supplied instead via CanDatabase.from_dbc(). Decoding just names nothing.
         if path is None:
             return

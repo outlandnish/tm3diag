@@ -67,7 +67,7 @@ sudo ip link set vcan0 up
 
 ### 3. Firmware dump (optional)
 
-Some tools (`tm3diag.py`, `dfu.py`, `tm3uds.py`) can decode signal names and validate routines when pointed at an extracted Tesla firmware squashfs. This is **not required** for the CAN/bench tools.
+Some tools (`tm3cli.py`, `dfu.py`, `tm3uds.py`) can decode signal names and validate routines when pointed at an extracted Tesla firmware squashfs. This is **not required** for the CAN/bench tools.
 
 If you have a firmware image, extract it with `unsquash_firmware.py`, then set `TM3_ROOT` in `.env` to the resulting `squashfs-root` directory:
 
@@ -85,7 +85,7 @@ The framework contains no seed/key or immobilizer algorithms. Tools that need a 
 
 | Tool | Description |
 |---|---|
-| [`tm3diag.py`](docs/tm3diag.md) | Interactive diagnostic terminal — read DIDs, run routines, trigger firmware updates |
+| [`tm3cli.py`](docs/tm3cli.md) | Interactive diagnostic terminal — read DIDs, run routines, trigger firmware updates |
 | [`tm3uds.py`](docs/tm3uds.md) | General-purpose UDS CLI for reading/writing DIDs, routines, and session management |
 | [`dfu.py`](docs/dfu.md) | Firmware flash CLI — identity discovery, file selection, and ECU-specific flash sequence |
 | [`scripts/di/di.py`](docs/di.md) | Drive Inverter bench emulator — gear/system control + optional immobilizer responder (provider-supplied) |
@@ -96,7 +96,7 @@ The framework contains no seed/key or immobilizer algorithms. Tools that need a 
 | [`compact_to_dbc.py`](docs/compact_to_dbc.md) | Convert `Model3_ETH.compact.json` to DBC |
 | [`dump_odin.py`](docs/dump_odin.md) | Extract + decompile the odin PyInstaller binary from a firmware squashfs |
 | [`unsquash_firmware.py`](docs/unsquash_firmware.md) | Unsquash a firmware image and expand its nested `.dirsquashed` parts |
-| [`can_live.py`](docs/can_live.md) | Web-based live CAN signal viewer |
+| [`tm3web.py`](docs/tm3web.md) | Web-based live CAN signal viewer |
 
 ## Reference
 

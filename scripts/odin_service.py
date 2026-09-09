@@ -4,7 +4,7 @@
 Thin layer over the engine (odin_runner) + coverage (odin_coverage): it turns
 "which procedures can I run and what are they" and "run this one, streaming
 progress" into plain functions returning JSON-friendly data, so both the
-odin_runner CLI and the can_live call the SAME core.
+odin_runner CLI and the tm3web call the SAME core.
 
   * list_procedures(...)  -> [{basename, name, title, principals, valid_states,
                                description, runnable, missing_types, has_dynamic}]
@@ -365,7 +365,7 @@ def run_procedure(
 # name-or-id off the node's ODJ (NodeConfig.dids), decode a read response and encode
 # a write payload via odj_codec (the SAME table-driven codec the ODIN runner's odx.*
 # nodes use), and run SecurityAccess when the DID's subspec demands a level. Both the
-# terminal menus and the coming can_live/CLI DID surface call these, so there is one
+# terminal menus and the coming tm3web/CLI DID surface call these, so there is one
 # encode/decode path (no hand-packed duplicate). Functions take an already-opened
 # (sess, cfg): sess is a uds_local.UdsSession (or any object with read_did/write_did/
 # diagnostic_session/security_access), cfg a NodeConfig.

@@ -46,7 +46,7 @@ class Di(Node):
 
 # ---------------------------------------------------------------------------
 # DI_systemStatus (0x118) decode -- the DI's OWN status frame. These maps are the DI's
-# domain knowledge, shared by CONSUMERS that watch what the inverter reports (can_live's
+# domain knowledge, shared by CONSUMERS that watch what the inverter reports (tm3web's
 # driver HUD, an orchestrator 0x118 watch). Enum labels + the bit overlay for signals Tesla
 # STRIPPED from the 2022+ compact.json but the firmware still transmits at their 2020
 # positions (recovered by overlaying the 2020 layout).

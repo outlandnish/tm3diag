@@ -19,20 +19,20 @@ Three rules keep it from saturating:
 
 The read-only viewer lives at ``/``. A separate driver-HUD dashboard (speed,
 gear control + reported gear, immobilizer, telltales, faults, LV/pedal/car-config)
-lives at ``/dash``. can_live is the command SURFACE + viewer: with ``--control``,
+lives at ``/dash``. tm3web is the command SURFACE + viewer: with ``--control``,
 gear/pedal/LV/car-config actions from the dashboard are FORWARDED to vehicle_sim's
 control server (``--sim-url``). vehicle_sim is the single bus owner — it transmits
 everything and runs the closed-loop responses (e.g. EPB) — so there's no two-writer
 collision and no ``--exclude`` juggling.
 
 Usage:
-  python can_live.py --channel vcan0
-  python can_live.py --channel can0 --channel2 can1 --ui-rate 30
+  python tm3web.py --channel vcan0
+  python tm3web.py --channel can0 --channel2 can1 --ui-rate 30
   # driver HUD with gear/pedal/car-config/LV control (open http://localhost:8765/dash):
   #   1) the sim owns the bus + serves its control server on :8770:
   python scripts/vehicle_sim.py --channel can0 --party-channel can1
   #   2) the viewer/HUD, forwarding /dash commands to the sim:
-  python can_live.py --channel can0 --control
+  python tm3web.py --channel can0 --control
 """
 
 from __future__ import annotations
@@ -64,7 +64,7 @@ sys.path.insert(0, str(Path(__file__).parent / "scripts"))
 # itself on sys.path would make di.py shadow the package and break sim_registry's
 # `from di.di_node import NODE` (di.py deliberately strips scripts/di from the path).
 # All command TX + the shared frame builders live in vehicle_sim + tesla_frames now;
-# can_live forwards commands to vehicle_sim's control server (--sim-url) and views.
+# tm3web forwards commands to vehicle_sim's control server (--sim-url) and views.
 from di.di import (  # noqa: E402
     _DI_0X118_RECOVERED,
     DI_GEAR_LABELS,
@@ -72,10 +72,10 @@ from di.di import (  # noqa: E402
     DI_SYS_LABELS,
 )
 
-_STATIC_DIR = Path(__file__).parent / "can_live_ui"
+_STATIC_DIR = Path(__file__).parent / "tm3web_ui"
 _DB: CanDatabase | None = None
 
-log = logging.getLogger("can_live")
+log = logging.getLogger("tm3web")
 
 # --- dashboard: DI signals we surface as a driver HUD (2020 Model3_ETH DB) -----
 # Decoded every flush tick regardless of viewer subscriptions so the dashboard
@@ -195,9 +195,9 @@ def parse_can_ids(spec: str | None) -> set[int]:
 
 
 # ---------------------------------------------------------------------------
-# Command forwarding -- can_live is the command surface; vehicle_sim is the single
+# Command forwarding -- tm3web is the command surface; vehicle_sim is the single
 # bus owner. Gear/pedal/LV/car-config are POSTed to vehicle_sim's control server
-# (--sim-url); it mutates its VehicleController and transmits. can_live only reads
+# (--sim-url); it mutates its VehicleController and transmits. tm3web only reads
 # the bus (below) for visualization + pulls commanded state from the sim.
 # ---------------------------------------------------------------------------
 _SIM_TIMEOUT = aiohttp.ClientTimeout(total=1.5)
@@ -926,7 +926,7 @@ async def _index(request: web.Request) -> web.FileResponse:
 
 
 async def _alerts_js(request: web.Request) -> web.FileResponse:
-    """The alert renderer shared by the viewer and the HUD (can_live_ui/alerts.js)."""
+    """The alert renderer shared by the viewer and the HUD (tm3web_ui/alerts.js)."""
     return web.FileResponse(_STATIC_DIR / "alerts.js")
 
 
@@ -941,17 +941,17 @@ async def _dash_index(request: web.Request) -> web.FileResponse:
 
 # ---------------------------------------------------------------------------
 # ODIN (procedure runner + DID read/write) — endpoints only; the ODIN and DID
-# panes are tabs on the main viewer page (can_live_ui/index.html).
+# panes are tabs on the main viewer page (tm3web_ui/index.html).
 # ---------------------------------------------------------------------------
 
 
 def _odin_backend(app: web.Application):
     """Lazily build the shared ODIN bench backend on the configured VEHICLE bus
-    (config.VEHICLE_CHANNEL / TM3_VEHICLE_CHANNEL), falling back to can_live's own
-    --channel. ODIN transmits UDS, so it needs a CONCRETE interface: can_live can
+    (config.VEHICLE_CHANNEL / TM3_VEHICLE_CHANNEL), falling back to tm3web's own
+    --channel. ODIN transmits UDS, so it needs a CONCRETE interface: tm3web can
     read on the socketcan 'any' interface (an empty channel), but UDS TX cannot.
     Shared by procedure runs (backend_factory) + DID ops (node_provider); closed in
-    _stop_reader. Lazy import so a view-only can_live pays nothing."""
+    _stop_reader. Lazy import so a view-only tm3web pays nothing."""
     be = app.get("odin_bench")
     if be is None:
         import odin_runner
@@ -960,8 +960,8 @@ def _odin_backend(app: web.Application):
         if not channel:
             raise RuntimeError(
                 "ODIN needs a concrete vehicle CAN channel to transmit UDS. Set the "
-                "config bus TM3_VEHICLE_CHANNEL, or start can_live with --channel "
-                "<iface> (can_live reads on the 'any' interface, but UDS TX cannot)."
+                "config bus TM3_VEHICLE_CHANNEL, or start tm3web with --channel "
+                "<iface> (tm3web reads on the 'any' interface, but UDS TX cannot)."
             )
         be = odin_runner.BenchBackend(channel, app.get("can_interface") or "socketcan")
         app["odin_bench"] = be
@@ -1134,7 +1134,7 @@ def _build_app(
     # ODIN: procedure list/run (+ /ws/odin progress), DID read/write, and the
     # low-level UDS ops -- all driven from the ODIN/DID tabs on the viewer page.
     # Runs against a lazily-built bench backend (this app's CAN channel); see
-    # scripts/odin_web.py. can_live keeps only the viewer/HUD.
+    # scripts/odin_web.py. tm3web keeps only the viewer/HUD.
     import odin_web
 
     odin_web.setup_routes(

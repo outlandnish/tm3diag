@@ -2,9 +2,9 @@
 """Interactive diagnostic terminal for Tesla Model 3 ECUs.
 
 Usage:
-  python tm3diag.py --channel vcan0
-  python tm3diag.py --node PCS --channel vcan0
-  python tm3diag.py --node PCS --channel vcan0 --artifacts ~/seed_artifacts_v2
+  python tm3cli.py --channel vcan0
+  python tm3cli.py --node PCS --channel vcan0
+  python tm3cli.py --node PCS --channel vcan0 --artifacts ~/seed_artifacts_v2
 """
 
 from __future__ import annotations

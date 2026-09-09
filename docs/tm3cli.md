@@ -1,11 +1,11 @@
-# tm3diag.py — Interactive diagnostic terminal
+# tm3cli.py — Interactive diagnostic terminal
 
 Interactive terminal for exploring ECU state. When run without `--node`, opens a pre-connection menu where you can scan the bus for live nodes before connecting. Once connected, reads identity on startup then lets you read DIDs by name (with tab completion), run routines by name or hex ID, switch sessions, and trigger a firmware update — all in one session.
 
 ```
-python tm3diag.py --channel vcan0                          # opens pre-connection menu (scan / connect)
-python tm3diag.py --node PCS --channel vcan0
-python tm3diag.py --node PCS --channel vcan0 --artifacts ~/seed_artifacts_v2
+python tm3cli.py --channel vcan0                          # opens pre-connection menu (scan / connect)
+python tm3cli.py --node PCS --channel vcan0
+python tm3cli.py --node PCS --channel vcan0 --artifacts ~/seed_artifacts_v2
 ```
 
 ## Options

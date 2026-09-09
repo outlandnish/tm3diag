@@ -353,7 +353,7 @@ class AlertLogDecode:
         return out
 
     def to_dict(self) -> dict:
-        """JSON-friendly decode (what can_live serves to the alert panels)."""
+        """JSON-friendly decode (what tm3web serves to the alert panels)."""
         d = dict(self.view) if self.view else alert_view(
             self.alert or f"{self.node}_a{self.alert_code:03d}")
         d.update(

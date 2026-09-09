@@ -1,0 +1,3 @@
+# Normalize line endings to LF on commit (prevents Windows/IDE CRLF flips
+# from showing the whole tree as modified).
+* text=auto eol=lf

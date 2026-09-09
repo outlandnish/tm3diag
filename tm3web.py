@@ -1,38 +1,15 @@
 #!/usr/bin/env python3
-"""Live CAN viewer — aiohttp backend with WebSocket streaming.
+"""tm3web — local web console for tm3diag (aiohttp + WebSocket).
 
-Pipeline (sized for a full vehicle bus, not just a quiet bench):
-
-    bus.recv() in a dedicated OS thread per bus
-        -> per-ID coalescing buffer (latest frame wins, arrivals counted)
-        -> asyncio flusher at --ui-rate Hz
-        -> ONE batched JSON message per tick
-        -> per-client writer task with a latest-wins outbox
-
-Three rules keep it from saturating:
-  * The CAN reader never touches asyncio, JSON, or a socket — it only buffers,
-    so nothing on the browser side can stall bus ingest and overflow the RX queue.
-  * Within a flush tick only the newest frame per (bus, ID) survives; the frames
-    coalesced away are still counted, so the displayed rate stays truthful even
-    though a 100 Hz message only paints 20 times a second.
-  * A slow client drops stale batches instead of applying backpressure.
-
-The read-only viewer lives at ``/``. A separate driver-HUD dashboard (speed,
-gear control + reported gear, immobilizer, telltales, faults, LV/pedal/car-config)
-lives at ``/dash``. tm3web is the command SURFACE + viewer: with ``--control``,
-gear/pedal/LV/car-config actions from the dashboard are FORWARDED to vehicle_sim's
-control server (``--sim-url``). vehicle_sim is the single bus owner — it transmits
-everything and runs the closed-loop responses (e.g. EPB) — so there's no two-writer
-collision and no ``--exclude`` juggling.
+Serves a browser UI on localhost: live CAN signals, alerts, DB explorer, raw
+frames, ODIN/DID, plus a driver HUD at /dash. With --control, the HUD's
+gear/pedal/LV/car-config actions are forwarded to vehicle_sim's control server
+(--sim-url), which owns the bus.
 
 Usage:
   python tm3web.py --channel vcan0
   python tm3web.py --channel can0 --channel2 can1 --ui-rate 30
-  # driver HUD with gear/pedal/car-config/LV control (open http://localhost:8765/dash):
-  #   1) the sim owns the bus + serves its control server on :8770:
-  python scripts/vehicle_sim.py --channel can0 --party-channel can1
-  #   2) the viewer/HUD, forwarding /dash commands to the sim:
-  python tm3web.py --channel can0 --control
+  python tm3web.py --channel can0 --control   # HUD control; run vehicle_sim too
 """
 
 from __future__ import annotations
@@ -59,12 +36,8 @@ import config as _cfg
 from can_decoder import CanDatabase
 
 sys.path.insert(0, str(Path(__file__).parent / "scripts"))
-# Reuse di.py's DI-report decode maps (for the RX side / dashboard visualization).
-# Import via the `di` PACKAGE (scripts/di/) -> di.di module; putting scripts/di
-# itself on sys.path would make di.py shadow the package and break sim_registry's
-# `from di.di_node import NODE` (di.py deliberately strips scripts/di from the path).
-# All command TX + the shared frame builders live in vehicle_sim + tesla_frames now;
-# tm3web forwards commands to vehicle_sim's control server (--sim-url) and views.
+# di report-decode maps for the dashboard. Import via the di package — adding
+# scripts/di to the path would shadow it and break other di.* imports.
 from di.di import (  # noqa: E402
     _DI_0X118_RECOVERED,
     DI_GEAR_LABELS,

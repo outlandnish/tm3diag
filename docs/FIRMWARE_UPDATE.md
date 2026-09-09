@@ -1051,18 +1051,15 @@ to the ECU (via `RequestDownload`).
 
 ### `tesla_hash` (most ECUs, security level idx 0 and 3)
 
-Stateless, no secret key. Each seed byte XOR'd with `0x35`:
-
-```
-key[i] = seed[i] ^ 0x35   for i in 0..15
-```
+Stateless, no secret key. The seed→key transform is **not shipped** — supply it through your
+security provider ([SECURITY_PROVIDER.md](SECURITY_PROVIDER.md)).
 
 16-byte seed from `27 xx` response. 16-byte key sent as `27 xx+1` payload.
 
 ### Other algorithms
 
-- **`baolong_hash`** (tpms, security idx 4): different algorithm, 2-byte buffer
-- **`FUN_0040be8e`** (cmp, security idx 7): pektron-style, different algorithm
+- **`baolong_hash`** (tpms, security idx 4) and **`FUN_0040be8e`** (cmp, security idx 7) —
+  distinct algorithms, likewise provider-supplied and not shipped.
 
 ---
 

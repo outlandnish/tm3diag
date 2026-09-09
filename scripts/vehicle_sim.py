@@ -166,7 +166,7 @@ def _parse_set_overrides(spec: str | None) -> dict[int, list[tuple[int, int, int
 
 
 def _start_control_server(controller, port: int) -> ThreadingHTTPServer:
-    """Tiny stdlib HTTP server so can_live can push new command states into the sim.
+    """Tiny stdlib HTTP server so tm3web can push new command states into the sim.
 
     POST /cmd {"type":"gear"|"lv"|"ui"|"carconfig", ...}; GET /state (commanded state);
     GET /carconfig (the GTW schema for the dashboard editor). Runs in a daemon thread.
@@ -220,8 +220,8 @@ def _start_control_server(controller, port: int) -> ThreadingHTTPServer:
 
 
 class _ControlFacade:
-    """Routes control-server commands (from can_live) to the node that owns each piece of
-    state, so _start_control_server + can_live don't need to know the command state was
+    """Routes control-server commands (from tm3web) to the node that owns each piece of
+    state, so _start_control_server + tm3web don't need to know the command state was
     decentralized from one VehicleController into the nodes. A command for a deselected node
     raises KeyError -> the server returns 400."""
 
@@ -493,7 +493,7 @@ def main() -> None:
         "--control-port",
         type=int,
         default=8770,
-        help="HTTP port for the can_live command server (gear/lv/pedal/car-config); 0 disables it",
+        help="HTTP port for the tm3web command server (gear/lv/pedal/car-config); 0 disables it",
     )
     _cfg.apply_defaults(p)
     args = p.parse_args()
@@ -617,7 +617,7 @@ def main() -> None:
         except (ValueError, KeyError, TypeError) as e:
             p.error(f"[scenario.{scen_node}]: {e}")
 
-    # can_live pushes commands via the control server; a facade routes each to the node that
+    # tm3web pushes commands via the control server; a facade routes each to the node that
     # owns that state (SCCM gear / VCFRONT LV / UI knobs / GTW car-config).
     ctrl_srv = (
         _start_control_server(_ControlFacade(by_name), args.control_port)

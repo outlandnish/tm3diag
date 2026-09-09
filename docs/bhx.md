@@ -25,8 +25,6 @@ bhx.build_file(bhx_file, "out.bhx")
 
 ## File format
 
-## BHX File Format
-
 BHX is a big-endian container. Headers are parsed locally — **never sent over UDS**.
 Only the raw SHDR payload bytes are transmitted.
 

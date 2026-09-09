@@ -1,6 +1,6 @@
 # Firmware Extraction Guide
 
-This guide walks through getting from a raw Tesla firmware download to an extracted directory tree that tools like `tm3diag.py`, `dfu.py`, and `tm3uds.py` can read.
+This guide walks through getting from a raw Tesla firmware download to an extracted directory tree that tools like `tm3cli.py`, `dfu.py`, and `tm3uds.py` can read.
 
 ## Compatibility
 
@@ -84,7 +84,7 @@ Open (or create) `.env` in the project root and set `TM3_ROOT` to the `squashfs-
 TM3_ROOT=~/dev/tesla-fw/2024.44.x.ice.extracted
 ```
 
-Tools that need the firmware dump (`tm3diag.py`, `dfu.py`, `tm3uds.py`) will automatically find `nodes.json`, the ETH compact DB, ODJ files, and seed artifacts from this path.
+Tools that need the firmware dump (`tm3cli.py`, `dfu.py`, `tm3uds.py`) will automatically find `nodes.json`, the ETH compact DB, ODJ files, and seed artifacts from this path.
 
 ## Step 3 — Decryption key (if needed)
 
@@ -93,8 +93,8 @@ On some builds the compact DB and ODJ files are stored as encrypted `.bin` files
 The key is a base64-encoded constant stored inside the `odin` binary shipped with the firmware. To extract it:
 
 1. Pull `opt/odin/odin` from the extraction
-2. Decompile it with `pyinstxtractor` + `xdis`
-3. Find the constant `C` in `odin/platforms/binary_metadata_utils.py` (look for a `STORE_NAME C` instruction)
+2. Decompile it with `pyinstxtractor` + `pycdc`
+3. Find the constant `C` in `odin/platforms/binary_metadata_utils.py`
 
 Then set it in `.env`:
 
@@ -102,7 +102,7 @@ Then set it in `.env`:
 TM3_BIN_KEY=<base64-encoded value>
 ```
 
-`dump_odin.py` automates the pyinstxtractor + xdis step — see [dump_odin.md](dump_odin.md).
+`dump_odin.py` automates the pyinstxtractor + pycdc step — see [dump_odin.md](dump_odin.md).
 
 ## Verifying the extraction
 

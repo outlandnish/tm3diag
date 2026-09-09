@@ -4,7 +4,7 @@ The bootloader-version DID 0xF180 carries the board's identity tuple. Several
 tools need the same parse + lookup-key derivation:
 
   * dfu.py — to pick the matching firmware row in signed_metadata_map.tsv
-  * tm3diag.py — to show the lookup key in the connection banner
+  * tm3cli.py — to show the lookup key in the connection banner
   * tm3uds.py — the `identity` subcommand
 
 This module is the single source of truth for that decode so the lookup key is

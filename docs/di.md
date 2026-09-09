@@ -2,7 +2,7 @@
 
 Interactive bench emulator for a standalone Tesla Model 3 Drive Inverter (DI / rear drive unit). Continuously transmits the control frames the inverter expects, answers the immobilizer challenge, and gives you a live shell to command gear, system mode, and regen.
 
-> **Requires a firmware dump** (`TM3_ROOT` set in `.env`) to look up the DI node's UDS addresses. The immobilizer key must already be paired — run `scripts/di/immobilizer_handshake.py pair` first if you haven't.
+> **Requires a firmware dump** (`TM3_ROOT` set in `.env`) to look up the DI node's UDS addresses. The immobilizer responder needs a key-derivation provider — this repo ships none, so supply one (or pass `--no-immo` for liveness only). See [SECURITY_PROVIDER.md](SECURITY_PROVIDER.md).
 
 ```
 python scripts/di/di.py
@@ -16,7 +16,7 @@ On startup the script:
 1. Opens the CAN bus and starts transmitting two control frames at 100 ms:
    - `0x64` `PRND_command_for_control` — gear, drive mode, regen, rolling counter
    - `0x54` `System_for_control` — system mode (off / drive / charge)
-2. Starts the immobilizer responder (unless `--no-immo`) — listens for `0x276` challenges and answers with `0x3D9` using the key from `immo_keys.json`
+2. Starts the immobilizer responder (unless `--no-immo`) — answers the runtime handshake on `0x3D9` using a key from your key-derivation provider ([SECURITY_PROVIDER.md](SECURITY_PROVIDER.md))
 3. Listens for `0x118` `DI_systemStatus` from the inverter and caches its signals
 4. Opens an interactive shell where you can call control functions
 
@@ -111,13 +111,10 @@ watch(10)
 ## Typical startup sequence
 
 ```bash
-# 1. Pair the key if you haven't already (once per inverter)
-python scripts/di/immobilizer_handshake.py pair
-
-# 2. Start the bench
+# 1. Start the bench (immobilizer answered via your provider; --no-immo to skip)
 python scripts/di/di.py
 
-# 3. In the shell — wait for DISARMED, then enable drive
+# 2. In the shell — wait for DISARMED, then enable drive
 watch(15)
 gear("D")
 system("drive")

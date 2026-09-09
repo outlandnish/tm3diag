@@ -315,7 +315,7 @@ function render(s){
   const banner = $("#banner");
   if(!s.control){
     banner.style.display = "";
-    banner.textContent = "Read-only — start can_live with --control to drive gear / settings. " +
+    banner.textContent = "Read-only — start tm3web with --control to drive gear / settings. " +
       "Run vehicle_sim --no-shifter --exclude 334 alongside for immobilizer + liveness.";
   } else banner.style.display = "none";
 

@@ -1114,7 +1114,8 @@ Byte   Field
 ## Tools
 
 ```bash
-python3 tools/bhx_parser.py <file.bhx>
-python3 tools/bhx_parser.py --json <file.bhx>
-python3 tools/bhx_parser.py --extract-dir /tmp/out/ <file.bhx>
+python bhx.py info    <file.bhx>       # segment target address + payload size
+python bhx.py extract <file.bhx> out/  # write the SHDR payload to out/
 ```
+
+See [bhx.md](bhx.md) for the container format and library API.

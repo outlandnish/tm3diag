@@ -1,17 +1,9 @@
 #!/usr/bin/env python3
-"""DIR node — the REAR drive inverter (originNode=dir): the physical rear power stage.
-
-DIR_torque (0x108), DIR_status (0x256), DIR_power (0x266), DIR_hvStatus, temperatures,
-alert matrices, etc. -- the per-axle inverter, distinct from the vehicle-level DI aggregate
-(see scripts/di/di_node.py). On the RWD drive bench the DIR is the real hardware, so mark it
-(with PMR + DI) ``real`` in the config and the sim won't transmit these IDs. With no inverter
-connected, the sim broadcasts them (a virtual rear inverter).
+"""DIR node — the REAR drive inverter (originNode=dir), distinct from the vehicle-level
+DI aggregate (scripts/di/di_node.py).
 
 Frames = the originNode=dir cyclic set from Model3_ETH.compact.json (2020.8.1); the
-event-driven DIR_udsResponse (0x616) is not a periodic broadcast, so it's omitted. Payloads
-are skeleton (all-zero) for now -- the layout matters; fill in real signal content when a
-virtual inverter must report meaningful torque/status. Bus defaults to vehicle (provisional).
-The front inverter (DIF/PMF) is the AWD follow-up.
+event-driven DIR_udsResponse (0x616) is omitted. Payloads are all-zero skeletons.
 """
 from __future__ import annotations
 

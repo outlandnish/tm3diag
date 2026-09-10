@@ -15,9 +15,7 @@ _PROJECT_DIR = Path(__file__).parent
 
 load_dotenv(_PROJECT_DIR / ".env")
 
-# ---------------------------------------------------------------------------
-# Data paths — resolved once at import time
-# ---------------------------------------------------------------------------
+# Data paths — resolved once at import time.
 
 def _resolve(env_key: str, default: Path | None) -> Path | None:
     val = os.environ.get(env_key)
@@ -36,11 +34,7 @@ _DEJ_DIR   = _DATA_DIR / "dej" if _DATA_DIR else None
 
 
 def _prefer_decrypted(path: Path) -> Path:
-    """Given a .compact.json path, prefer it over its .bin twin when present.
-
-    The encrypted twin appends .bin (Model3_ETH.compact.json.bin), so build it
-    by suffixing rather than Path.with_suffix (which would replace .json).
-    """
+    """Prefer a .compact.json over its .bin twin (Model3_ETH.compact.json.bin) when present."""
     bin_twin = path.with_name(path.name + ".bin")
     if not path.exists() and bin_twin.exists():
         return bin_twin
@@ -49,11 +43,10 @@ def _prefer_decrypted(path: Path) -> Path:
 
 def _resolve_compact(bus: str, dej_dir: Path | None = None,
                      product: str | None = None) -> Path | None:
-    """Return the compact DB path for a given bus, preferring .json over .bin.
+    """Return the compact DB path for a bus, preferring .json over .bin.
 
     bus is the uppercased bus token in the filename, e.g. "ETH", "VCRIGHTV".
-    product defaults to the module-level PRODUCT but is passed explicitly by
-    FwPaths so each product resolves its own `<product>_<bus>.compact.json`.
+    product defaults to module-level PRODUCT.
     """
     dej_dir = dej_dir if dej_dir is not None else _DEJ_DIR
     product = product if product is not None else PRODUCT
@@ -127,11 +120,7 @@ def resolve_odin_bundle(root: Path | None,
 
 
 class FwPaths:
-    """Resolved firmware data paths for a specific product.
-
-    All paths derive from TM3_ROOT (and the chosen product); there are no
-    per-path env overrides, so each product resolves to its own data tree.
-    """
+    """Resolved firmware data paths for a specific product (all derive from TM3_ROOT)."""
     def __init__(self, product: str) -> None:
         self.product = product
         data_dir = _ROOT / "opt/odin/data" / product if _ROOT else None
@@ -146,9 +135,7 @@ class FwPaths:
         self.compact_dbs: dict[str, Path] = compact_dbs(dej_dir, product)
 
 
-# Module-level paths for the default product. All derive from TM3_ROOT
-# (and TM3_PRODUCT) — there are no per-path env overrides; use FwPaths to
-# resolve a non-default product.
+# Module-level paths for the default product; use FwPaths for another product.
 ROOT:          Path | None = _ROOT  # squashfs-root of the firmware extraction
 NODES_JSON:    Path | None = _DATA_DIR / "nodes.json" if _DATA_DIR else None
 ETH_COMPACT:   Path | None = _resolve_compact("ETH")
@@ -160,13 +147,9 @@ ODIN_BUNDLE:   Path | None = resolve_odin_bundle(_ROOT, os.environ.get("TM3_ODIN
 # All compact DBs for the selected product, keyed by bus token (ETH, VCRIGHTV, ...).
 COMPACT_DBS: dict[str, Path] = compact_dbs()
 
-# ---------------------------------------------------------------------------
-# CAN channels — the three Model 3 buses
-# ---------------------------------------------------------------------------
-# Downstream tools (odin_runner, ...) pick the right channel per bus.
-# TM3_VEHICLE_CHANNEL is the vehicle bus (and the default --channel for every
-# tool). Party/charge are None unless configured (a simple bench has only the
-# vehicle bus, and callers fall back to it).
+# CAN channels — the three Model 3 buses. TM3_VEHICLE_CHANNEL is the vehicle
+# bus and the default --channel for every tool; party/charge are None unless
+# configured (callers fall back to the vehicle bus).
 VEHICLE_CHANNEL: str | None = os.environ.get("TM3_VEHICLE_CHANNEL")
 PARTY_CHANNEL:   str | None = os.environ.get("TM3_PARTY_CHANNEL")
 CHARGE_CHANNEL:  str | None = os.environ.get("TM3_CHARGE_CHANNEL")
@@ -189,9 +172,8 @@ _BUS_ALIASES = {
 
 
 def canonical_bus(bus: str | None = None) -> str:
-    """Normalize an ODIN/Tesla bus token to a canonical key: 'vehicle', 'party', or
-    'charge'. ETH (the vehicle backbone) and any unknown/empty token map to 'vehicle'
-    -- i.e. assume the vehicle bus unless another is explicitly named.
+    """Normalize an ODIN/Tesla bus token to 'vehicle', 'party', or 'charge'.
+    ETH and any unknown/empty token map to 'vehicle'.
     """
     return _BUS_ALIASES.get(str(bus or "").strip().lower(), "vehicle")
 
@@ -204,9 +186,7 @@ def can_channel(bus: str | None = None) -> str | None:
     return CAN_CHANNELS.get(canonical_bus(bus))
 
 
-# ---------------------------------------------------------------------------
 # CAN / argparse defaults
-# ---------------------------------------------------------------------------
 
 _ENV_MAP = {
     "channel":       ("TM3_VEHICLE_CHANNEL", str, "vcan0"),

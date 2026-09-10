@@ -32,10 +32,7 @@ def load_node_config(
     eth = _load_json(Path(eth_compact_path))
     odj_dir = Path(odj_dir)
 
-    # Node names are matched case-insensitively: callers may pass "pmr", "PMR",
-    # or "Pmr" and all resolve to the canonical key in nodes.json (which is
-    # uppercase). Build a case-folded index so we don't depend on the JSON
-    # keys being any particular case either.
+    # Match node names case-insensitively.
     by_upper = {str(k).upper(): k for k in nodes}
     canonical = by_upper.get(node_name.upper())
     if canonical is None:

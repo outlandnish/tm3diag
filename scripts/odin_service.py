@@ -1,22 +1,17 @@
 #!/usr/bin/env python3
 """odin_service.py -- one import surface for driving ODIN from a CLI or web app.
 
-Thin layer over the engine (odin_runner) + coverage (odin_coverage): it turns
-"which procedures can I run and what are they" and "run this one, streaming
-progress" into plain functions returning JSON-friendly data, so both the
-odin_runner CLI and the tm3web call the SAME core.
+Thin layer over the engine (odin_runner) + coverage (odin_coverage) returning
+JSON-friendly data, so the odin_runner CLI and tm3web share one core.
 
   * list_procedures(...)  -> [{basename, name, title, principals, valid_states,
                                description, runnable, missing_types, has_dynamic}]
-    Reuses odin_coverage's handled-set + transitive walk to decide runnable-now,
-    and pulls the title/valid_states/principals off each entry proc's
-    comments.TaskInfo node (bench preconditions + a human-readable picker).
+    Uses odin_coverage to decide runnable-now; pulls metadata off each entry proc's
+    comments.TaskInfo node.
 
   * run_procedure(basename, *, backend, ..., on_event) -> RunResult-as-dict
-    Wraps Engine.run_procedure. on_event(kind, payload) streams the node trace
-    ('trace'), each captured metric ('metric'), and a terminal 'done'/'error'
-    event -- the runner's _log/CaptureMetric fed through a callback instead of
-    stdout, so long procs report progress live.
+    Wraps Engine.run_procedure. on_event(kind, payload) streams 'trace' / 'metric'
+    events and a terminal 'done'/'error'.
 
 The ODIN bundle is NOT vendored into this (public) repo; it resolves from
 config.ODIN_BUNDLE (.env: TM3_ROOT / TM3_ODIN_BUNDLE) unless `bundle=` is passed.
@@ -35,9 +30,7 @@ import odin_runner
 DEFAULT_ENTRIES = "Model3/tasks"
 
 
-# =====================================================================================
 # bundle / TaskInfo helpers
-# =====================================================================================
 def _resolve_bundle(bundle) -> Path:
     """The networks/ bundle dir: the given `bundle`, else config.ODIN_BUNDLE."""
     if bundle is not None:
@@ -50,8 +43,7 @@ def _resolve_bundle(bundle) -> Path:
 
 
 def _load_network(path: Path) -> dict | None:
-    """Exec a bundle graph file and return its top-level `network` dict (or None if
-    it doesn't parse / has no dict network). Tolerant -- used only for TaskInfo."""
+    """Exec a bundle graph file and return its top-level `network` dict (or None)."""
     ns: dict = {}
     try:
         exec(compile(path.read_text(encoding="utf-8"), str(path), "exec"), ns)  # noqa: S102
@@ -97,18 +89,15 @@ def _proc_meta(info: dict | None) -> dict:
     }
 
 
-# =====================================================================================
 # discovery
-# =====================================================================================
 def list_procedures(
     *, bundle=None, entries: str = DEFAULT_ENTRIES, runnable_only: bool = True
 ) -> list[dict]:
-    """Every entry procedure in <bundle>/<entries>, each annotated with whether the
-    engine can run it now (all node types handled) and its TaskInfo metadata.
+    """Every entry procedure in <bundle>/<entries>, annotated with whether the engine can
+    run it now (all node types handled) and its TaskInfo metadata.
 
-    runnable_only=True (default) returns just the runnable set -- the picker's
-    happy path; False returns all procs with `runnable`/`missing_types` so a UI
-    can show why a proc is blocked.
+    runnable_only=True (default) returns just the runnable set; False returns all procs
+    with `runnable`/`missing_types`.
     """
     bundle = _resolve_bundle(bundle)
     handled = odin_coverage.handled_types()
@@ -139,9 +128,7 @@ def list_procedures(
     return out
 
 
-# =====================================================================================
-# requirements  ("what must be on the bus before this proc will run")
-# =====================================================================================
+# requirements: what must be on the bus before this proc will run
 _DYNAMIC = object()  # a connection-sourced field: its value is only known at run time
 
 # CAN signal-read node types -> the "kind" label shown in the readout.
@@ -155,16 +142,12 @@ _CID_READ_DATANAME = ("cid.GetDataValue", "cid.GetDataValueUntil")
 
 
 def _field_value(node: dict, key: str):
-    """Static value of a node input field: the literal it carries, None if the field
-    is absent/empty, or _DYNAMIC if it is purely a {'connection': ...} (runtime-sourced
-    with no static default).
+    """Static value of a node input field: the literal it carries, None if absent/empty,
+    or _DYNAMIC if it is purely a {'connection': ...} with no static default.
 
-    Many ODIN fields carry BOTH a 'connection' and a 'value': the connection is the
-    runtime source, 'value' the declared default used when that connection resolves to
-    None (the networks.Input None->default fallback). We prefer that default -- it's a
-    useful, usually-correct static hint (e.g. a UDS node_name defaulting to 'PMR') --
-    so only a connection with NO default reads as _DYNAMIC. ODIN literals wrap as
-    {'value': X}; a few fields are bare (accepted as-is, mirroring _unwrap/_pull)."""
+    A field with both 'connection' and 'value' uses the 'value' as the static default
+    (the networks.Input None->default fallback). Literals wrap as {'value': X}; bare
+    fields are accepted as-is."""
     fld = node.get(key)
     if isinstance(fld, dict):
         if "value" in fld:
@@ -182,22 +165,16 @@ def _lit_str(node: dict, key: str) -> str | None:
 
 
 def procedure_requirements(basename: str, *, bundle=None) -> dict:
-    """Statically list what an ODIN procedure expects to be present before it runs.
-
-    Transitive over the proc's whole graph (the same referenced/inline-subnet descent
-    odin_coverage.collect uses), it gathers:
-      * signals -- CAN signals the proc READS, grouped by bus token, each with a
-        kind (read/monitor/compare).
+    """Statically list what an ODIN procedure expects on the bus before it runs, transitive
+    over the proc's whole graph:
+      * signals -- CAN signals the proc READS, grouped by bus token, each with a kind
+        (read/monitor/compare).
       * alerts  -- alert buses/prefixes it inspects (can.ActiveAlerts).
       * nodes   -- ECU node_name(s) it does UDS to (odx.*/uds.*/EnsureApplicationState).
       * preconditions -- valid_states (off the entry TaskInfo), the ensured
         application_state / power_state, and MCU data-value deps (cid_values).
-      * dynamic_count -- CAN reads whose signal name is connection-sourced with no
-        declared default (only known at run time), so the signal list is a LOWER BOUND.
-
-    Bench use: a PMR/DIR bench has no gateway, so a proc that reads e.g.
-    'GTW_drivetrainType' hangs unless the operator provides it (vehicle_sim or a real
-    ECU). This readout says exactly which signals to put on the bus first.
+      * dynamic_count -- CAN reads whose signal name is connection-sourced with no declared
+        default, so the signal list is a LOWER BOUND.
     """
     import config
 
@@ -281,9 +258,7 @@ def procedure_requirements(basename: str, *, bundle=None) -> dict:
     }
 
 
-# =====================================================================================
 # run
-# =====================================================================================
 def _resolve_backend(backend, *, scenario, channel, interface):
     """Return (backend_instance, we_created_it). Accepts a Backend instance (used
     as-is, caller owns it) or a string 'mock'/'bench' (built with .env defaults)."""
@@ -330,11 +305,9 @@ def run_procedure(
     """Run one ODIN procedure and return its RunResult as a JSON-friendly dict
     ({basename, exit_code, passed, metrics, outputs}).
 
-    backend: a odin_runner.Backend instance, or 'mock'/'bench'. A bench backend
-    talks real UDS/CAN (needs channel); mock scripts the resolver-learn
-    choreography offline. on_event(kind, payload) streams 'trace'/'metric' events
-    during the run and a final 'done' (or 'error') event. time_scale defaults to
-    real timings on the bench and instant (no sleeps) otherwise.
+    backend: a odin_runner.Backend instance, or 'mock'/'bench' (bench needs channel).
+    on_event(kind, payload) streams 'trace'/'metric' events and a final 'done'/'error'.
+    time_scale defaults to real timings on the bench, instant otherwise.
     """
     bundle = _resolve_bundle(bundle)
     be, owns = _resolve_backend(backend, scenario=scenario, channel=channel, interface=interface)
@@ -358,16 +331,10 @@ def run_procedure(
     return out
 
 
-# =====================================================================================
 # DID read / write (0x22 / 0x2E)
-# =====================================================================================
-# The non-interactive core of tm3diag's _did_menu / _did_write_menu: resolve a DID
-# name-or-id off the node's ODJ (NodeConfig.dids), decode a read response and encode
-# a write payload via odj_codec (the SAME table-driven codec the ODIN runner's odx.*
-# nodes use), and run SecurityAccess when the DID's subspec demands a level. Both the
-# terminal menus and the coming tm3web/CLI DID surface call these, so there is one
-# encode/decode path (no hand-packed duplicate). Functions take an already-opened
-# (sess, cfg): sess is a uds_local.UdsSession (or any object with read_did/write_did/
+# Resolve a DID name-or-id off the node's ODJ (NodeConfig.dids), decode/encode via
+# odj_codec, and run SecurityAccess when the DID's subspec demands a level. Functions
+# take an already-opened (sess, cfg): sess a uds_local.UdsSession (read_did/write_did/
 # diagnostic_session/security_access), cfg a NodeConfig.
 def _resolve_did(cfg, name_or_id):
     """Resolve a DID name or id (int, '0xNNNN', or decimal str) to
@@ -459,8 +426,7 @@ def _encode_write(entry, values) -> bytes:
 
 
 def encode_did_write(cfg, name_or_id, values) -> tuple:
-    """Build the write payload for a DID -> (name, did_id, bytes), without sending.
-    Exposed so a caller can show/confirm the exact bytes before the write goes out."""
+    """Build the write payload for a DID -> (name, did_id, bytes), without sending."""
     name, entry, did_id = _resolve_did(cfg, name_or_id)
     return name, did_id, _encode_write(entry, values)
 

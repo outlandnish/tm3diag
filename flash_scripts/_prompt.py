@@ -34,11 +34,7 @@ def _read_key() -> bytes:
 
 
 def prompt_confirm(question: str, default: bool, display: StatusDisplay) -> bool:
-    """Yes/No prompt — ↑↓ or ←→ to toggle, Enter to confirm.
-
-    Line 1: question
-    Line 2: [Yes]  No   or   Yes  [No]   (brackets = current selection)
-    """
+    """Yes/No prompt — ↑↓ or ←→ to toggle, Enter to confirm."""
     idx = 0 if default else 1  # 0=Yes 1=No
 
     while True:
@@ -65,11 +61,7 @@ def prompt_select(
     default: int = 0,
     display: StatusDisplay | None = None,
 ) -> int:
-    """Cycle-select from a list — ↑↓ to move, Enter to confirm.
-
-    Line 1: question
-    Line 2: [n/total]  current label    ↑↓ · Enter
-    """
+    """Cycle-select from a list — ↑↓ to move, Enter to confirm."""
     if display is None:
         display = StatusDisplay()
     idx = default

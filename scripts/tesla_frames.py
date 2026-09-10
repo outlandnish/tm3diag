@@ -1,10 +1,7 @@
 #!/usr/bin/env python3
 """Shared Tesla Model 3 CAN frame builders (2020 / 12603 gen-26).
 
-Canonical, single-source builders shared by ``vehicle_sim.py`` (rest-of-car
-liveness) and ``di.py`` (the interactive dashboard). Keeping one copy avoids the
-two tools drifting — and, more importantly, avoids two *different* encoders for
-the same arbitration ID.
+Single-source builders shared by ``vehicle_sim.py`` and ``di.py``.
 
 Contents:
   * bit/counter/checksum helpers (Tesla additive checksum)
@@ -12,9 +9,8 @@ Contents:
     (AutoSAR E2E Profile-2 CRC), with gesture actuation for gear changes
   * ``UiConfig`` + UI builders — UI_powertrainControl 0x334 pedal map etc.
 
-Gear-via-stalk is firmware-confirmed: both PMR and
-DIR receive 0x229; the DIR runs the authoritative gear FSM and publishes the
-gear to the PMR over IPC, which reports it as DI_gear on 0x118.
+Both PMR and DIR receive 0x229; the DIR runs the gear FSM and publishes the gear to the
+PMR over IPC, which reports it as DI_gear on 0x118.
 """
 
 from __future__ import annotations
@@ -22,9 +18,7 @@ from __future__ import annotations
 import time
 from dataclasses import dataclass
 
-# ---------------------------------------------------------------------------
-# bit packing (compact.json convention: LITTLE-endian, start_position = LSB bit)
-# ---------------------------------------------------------------------------
+# bit packing (compact.json convention: little-endian, start_position = LSB bit)
 
 
 def pack_le(signals: list[tuple[int, int, float]], length: int = 8) -> bytearray:
@@ -43,7 +37,7 @@ def magic(msg_id: int) -> int:
 
 
 def place_counter(frame: bytearray, start_bit: int, ctr: int, width: int = 4) -> None:
-    bi, sh = start_bit // 8, start_bit % 8  # assumes the counter fits within one byte
+    bi, sh = start_bit // 8, start_bit % 8
     mask = (1 << width) - 1
     frame[bi] = (frame[bi] & ~(mask << sh) & 0xFF) | ((ctr & mask) << sh)
 
@@ -62,24 +56,17 @@ def set_bitfield(frame: bytearray, start_bit: int, width: int, value: int) -> No
     frame[:] = acc.to_bytes(len(frame), "little")
 
 
-# ---------------------------------------------------------------------------
-# SCCM_rightStalk 0x229 -- the gear stalk (bus A / CANA, len 3, 100 ms)
-# ---------------------------------------------------------------------------
-# UNLIKE the other chassis frames this uses an AutoSAR E2E Profile-2 CRC, NOT the
-# Tesla additive checksum -- firmware-confirmed:
-# CRC@byte0 + counter@byte1 lo-nibble, CRC-8/H2F (poly 0x2F, init 0xFF, xorout
-# 0xFF) over the data bytes + DataID[counter]. The DataIDs match
-# compact.json SCCM_rightStalk.autosarDataIds.
+# SCCM_rightStalk 0x229 -- the gear stalk (bus A / CANA, len 3, 100 ms).
+# AutoSAR E2E Profile-2 CRC (not the Tesla additive checksum): CRC@byte0 + counter@byte1
+# lo-nibble, CRC-8/H2F (poly 0x2F, init 0xFF, xorout 0xFF) over the data bytes + DataID[counter].
+# DataIDs match compact.json SCCM_rightStalk.autosarDataIds.
 # Layout: byte0=CRC, byte1=counter(b0-3)+rightStalkStatus(b4-6), byte2=parkButton(b0-1).
-#
 # Gear mapping (DIR authoritative):
 #   UP_2 (2, full up)      -> Reverse
 #   DOWN_2 (4, full down)  -> Drive
-#   UP_1/DOWN_1 (1/3, first detent, HELD) -> Neutral
+#   UP_1/DOWN_1 (1/3, first detent, held) -> Neutral
 #   park button (byte2 b0-1 == 1)         -> Park
-# The DIR requires the detent be held through a multi-tick debounce (a single
-# 100 ms frame won't commit); on the bench (motor not spinning) all gears are
-# permitted, so only the hold matters. Verify via DI_gear on 0x118.
+# Detent must be held through a debounce. Verify via DI_gear on 0x118.
 SCCM_RIGHTSTALK_ID = 0x229
 SCCM_RIGHTSTALK_DATA_IDS = [
     124,
@@ -107,8 +94,7 @@ STALK_UP_2 = 2
 STALK_DOWN_1 = 3
 STALK_DOWN_2 = 4
 
-# Default gesture hold durations (seconds). The DIR debounce tick rate is not
-# pinned; ~0.6 s reliably clears it on the bench. Neutral wants a longer hold.
+# Default gesture hold durations (seconds).
 HOLD_DRIVE_S = 0.6
 HOLD_REVERSE_S = 0.6
 HOLD_NEUTRAL_S = 1.0
@@ -128,9 +114,8 @@ def e2e_p02_crc8(data: bytes, data_id: int) -> int:
 def j1850_crc8(data: bytes) -> int:
     """SAE J1850 CRC-8 (poly 0x1D, init 0xFF, xorout 0xFF) over ``data``.
 
-    The DIR validates ESP_party3 0x38D and IBST 0x38E with it (CRC table @DIR
-    0xb7d24 entry[1]=0x1D); cf. ``e2e_p02_crc8`` (AutoSAR E2E-P02, poly 0x2F) used
-    by SCCM_rightStalk 0x229 — three distinct CRC/checksum schemes coexist on this bus.
+    The DIR validates ESP_party3 0x38D and IBST 0x38E with it; cf. ``e2e_p02_crc8`` (AutoSAR
+    E2E-P02, poly 0x2F) used by SCCM_rightStalk 0x229.
     """
     crc = 0xFF
     for b in bytes(data):
@@ -141,10 +126,8 @@ def j1850_crc8(data: bytes) -> int:
 
 
 class J1850Frame:
-    """CANB liveness frame with J1850 CRC@byte0 + 4-bit rolling counter@byte1
-    lo-nibble (ESP_party3 0x38D len7, IBST 0x38E len6). The CRC covers bytes
-    1..len-1 (all data except the CRC byte). Own rolling counter, like the other
-    validated-frame builders here."""
+    """CANB liveness frame with J1850 CRC@byte0 + 4-bit rolling counter@byte1 lo-nibble
+    (ESP_party3 0x38D len7, IBST 0x38E len6). The CRC covers bytes 1..len-1."""
 
     def __init__(self, length: int) -> None:
         self._ctr = 0
@@ -158,22 +141,17 @@ class J1850Frame:
         return bytes(data)
 
     def rollback(self) -> None:
-        """Undo the last frame()'s counter advance. Called (via SimFrame.note_send) when the
-        send DROPPED: the counter value never reached the wire, so reusing it on the next frame
-        keeps the on-wire sequence gapless -- else the DIR sees a jump and its validated-frame
-        MIA won't reset until resync. The counter lives here (not in SimFrame) because the J1850
-        CRC is computed over it, so the rollback must live here too."""
+        """Undo the last frame()'s counter advance on a dropped send (keeps the on-wire counter
+        gapless). The counter lives here because the J1850 CRC is computed over it."""
         self._ctr = (self._ctr - 1) & 0xF
 
 
 class SccmRightStalk:
     """0x229 builder: own rolling counter + AutoSAR E2E-P02 CRC.
 
-    Call ``frame()`` every 100 ms. By default it emits a steady IDLE stalk (keeps
-    sccmMIA cleared, changes no gear). To actuate a gear change, call one of the
-    gesture methods (``drive``/``reverse``/``neutral``/``park``) or ``pulse``:
-    the requested detent is held for ``duration_s`` and then auto-returns to IDLE,
-    exactly like a momentary stalk press.
+    Call ``frame()`` every 100 ms. Default emits a steady IDLE stalk. The gesture methods
+    (``drive``/``reverse``/``neutral``/``park``) or ``pulse`` hold the requested detent for
+    ``duration_s`` then auto-return to IDLE.
     """
 
     def __init__(self, status: int = STALK_IDLE, park: int = 0) -> None:
@@ -222,9 +200,7 @@ class SccmRightStalk:
         self._ctr = (self._ctr - 1) & 0xF
 
 
-# ---------------------------------------------------------------------------
 # UI command frames -- the DI acts on these (pedal map, stopping mode, ...)
-# ---------------------------------------------------------------------------
 PEDAL_MAP = {"chill": 0, "sport": 1, "performance": 2}
 STOPPING_MODE = {"standard": 0, "creep": 1, "hold": 2}
 MOTOR_ON_MODE = {"normal": 0, "front": 1, "rear": 2}
@@ -270,7 +246,6 @@ def ui_track_mode_settings(c: UiConfig) -> bytearray:  # 0x313, DLC8
 
 
 def ui_powertrain_control(c: UiConfig) -> bytearray:  # 0x334, DLC8 (raw payload)
-    # limits -> SNA so the DI is NOT power/torque/speed capped by the UI on the bench.
     return pack_le(
         [
             (0, 5, 31),  # UI_systemPowerLimit  = SNA
@@ -288,11 +263,7 @@ UI_POWERTRAIN_CONTROL_ID = 0x334
 
 
 class UiPowertrainControl:
-    """0x334 builder: reads a UiConfig live + own rolling counter/checksum.
-
-    Used by di.py's periodic scheduler. vehicle_sim.py applies the counter/checksum
-    via its own SimFrame wrapper instead, so it uses ``ui_powertrain_control`` raw.
-    """
+    """0x334 builder: reads a UiConfig live + own rolling counter/checksum."""
 
     def __init__(self, cfg: UiConfig) -> None:
         self.cfg = cfg
@@ -310,11 +281,8 @@ class UiPowertrainControl:
         self._ctr = (self._ctr - 1) & 0xF
 
 
-# ---------------------------------------------------------------------------
-# UiConfig control registry — single source of truth for which UiConfig fields
-# are user-controllable and the option names each accepts. Consumed by di.py's
-# `ui()` verb and tm3web.py's dashboard so both drive the same knobs.
-# ---------------------------------------------------------------------------
+# UiConfig control registry: which UiConfig fields are user-controllable and the option names
+# each accepts. Consumed by di.py's `ui()` verb and tm3web.py's dashboard.
 UI_SETTINGS: dict[str, dict] = {
     "pedal_map": {"label": "Pedal map", "options": dict(PEDAL_MAP)},
     "stopping_mode": {"label": "Stopping mode", "options": dict(STOPPING_MODE)},
@@ -345,12 +313,9 @@ def apply_ui_setting(cfg: UiConfig, field: str, value: object) -> int:
     return ival
 
 
-# ---------------------------------------------------------------------------
 # VCFRONT_LVPowerState 0x221 -- LV power / vehicle power state (50 ms, muxed,
 # counter@52 + Tesla checksum@56 magic 0x23). VCFRONT_vehiclePowerState (byte0 b5-6):
-#   off=0 conditioning=1 accessory=2 drive=3. Shared by vehicle_sim + tm3web.
-# NOTE: any continuous 0x221 re-pokes the immobilizer drive-readiness eval each frame.
-# ---------------------------------------------------------------------------
+#   off=0 conditioning=1 accessory=2 drive=3.
 VCFRONT_LVPOWERSTATE_ID = 0x221
 VEHICLE_POWER_STATE = {"off": 0, "conditioning": 1, "accessory": 2, "drive": 3}
 _LV_MUX0_BITS = (8, 10, 12, 14, 16, 18, 20, 22, 24, 26, 28, 30, 32, 34, 36, 38, 40, 42, 44, 46, 48)
@@ -381,15 +346,12 @@ class LvPowerState:
 
     def rollback(self) -> None:
         """Undo the last frame()'s counter + mux advance on a dropped send (see
-        J1850Frame.rollback) so the reused frame is byte-identical to the one that dropped."""
+        J1850Frame.rollback)."""
         self._ctr = (self._ctr - 1) & 0xF
         self._mux ^= 1
 
 
-# ---------------------------------------------------------------------------
-# GTW_carConfig 0x7FF -- multiplexed car config, built from NAMED signals via the
-# DB encoder (every field configurable) instead of a canned frame.
-# ---------------------------------------------------------------------------
+# GTW_carConfig 0x7FF -- multiplexed car config, built from named signals via the DB encoder.
 GTW_CARCONFIG_ID = 0x7FF
 GTW_DEFAULTS = {"GTW_chassisType": 2, "GTW_drivetrainType": 0}  # RWD Model 3
 
@@ -458,10 +420,8 @@ class MuxedConfigTx:
         return {"msg": self.msg.get("name", ""), "id": self.msg_id, "pages": pages}
 
 
-# ---------------------------------------------------------------------------
 # EPB closed-loop responder -- answers DI_epbRequest (0x118) with EPBL/EPBR status.
 # DI_epbRequest: 0=NO_REQUEST 1=PARK 2=UNPARK.  systemStatus @0 w4.
-# ---------------------------------------------------------------------------
 EPBL_STATUS_ID = 0x2A8
 EPBR_STATUS_ID = 0x2E8
 EPB_RELEASED = 1
@@ -473,13 +433,12 @@ class EpbResponder:
     ``payload()`` for the EPBL/EPBR_status bytes. The rolling counter + checksum are
     added by the frame wrapper (vehicle_sim ctr@52/cksum@56).
 
-    Fields the DIR actually unpacks from EPBL/EPBR_status (layout symmetric):
+    Fields the DIR unpacks from EPBL/EPBR_status (layout symmetric):
       bits0-3  systemStatus       (RELEASED/PARKED, driven by DI_epbRequest)
-      bits4-5  freeRollModeStatus (UNAVAILABLE=0, left 0 = correct)
-      bit17    summonEnabled      (not summoning=0, left 0)
+      bits4-5  freeRollModeStatus (UNAVAILABLE=0)
+      bit17    summonEnabled      (not summoning=0)
       bit47    okToPark           (EPBL/EPBR)
-    A healthy stationary EPB asserts okToPark; the old zeros-except-status payload left it 0.
-    telltale(bits12-14) is UI-only (not DIR-consumed) -- tracked here only for HUD fidelity."""
+    telltale(bits12-14) is UI-only (not DIR-consumed)."""
 
     def __init__(self) -> None:
         self.status = EPB_RELEASED
@@ -495,11 +454,8 @@ class EpbResponder:
         return pack_le([(0, 4, self.status), (12, 3, telltale), (47, 1, 1)], 8)  # +okToPark=1
 
 
-# ---------------------------------------------------------------------------
 # VehicleController -- single source of truth for all DU-facing command state.
-# vehicle_sim builds the interactive + closed-loop frames from it; tm3web mutates
-# it (via vehicle_sim's control server). One owner, no cross-tool frame collisions.
-# ---------------------------------------------------------------------------
+# vehicle_sim builds the interactive + closed-loop frames from it; tm3web mutates it.
 GEAR_GESTURE = {
     "P": "park",
     "PARK": "park",

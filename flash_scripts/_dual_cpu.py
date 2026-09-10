@@ -1,10 +1,9 @@
-"""Dual-CPU prog 1 runner for the PCS family (script 0x00651070 prog 1).
+"""Dual-CPU prog-1 runner for the PCS family.
 
-Script `0x00651070` prog 1 flashes both CPUs of a PCS-family ECU in a single
-authenticated session. CPU2 (the secondary, ecu_type=pcscpu2/di/dis) is
-flashed first with bootloader-internal module byte 0x04, then CPU1
-(ecu_type=pcs/pm/pms) with module byte 0x00. The 0x04/0x00 codes are
-distinct from the prog-0 node module bytes (0x0C / 0x00) — see
+Flashes both CPUs of a PCS-family ECU in a single authenticated session. CPU2
+(the secondary, ecu_type=pcscpu2/di/dis) is flashed first with bootloader-internal
+module byte 0x04, then CPU1 (ecu_type=pcs/pm/pms) with module byte 0x00. The
+0x04/0x00 codes are distinct from the prog-0 node module bytes (0x0C / 0x00) — see
 FIRMWARE_UPDATE.md "Prog 1 module bytes vs node module bytes".
 
 When find_firmware returns both a primary and a secondary entry for the same
@@ -43,7 +42,7 @@ _PCS_SECONDARY_TYPES = frozenset({"pcscpu2", "di", "dis", "dir", "dirs"})
 
 # Fallback module bytes for secondary-CPU / secondary-region flashes — tried if
 # the primary byte gets NRC 0x10/0x31/0x22. The two known secondary-select bytes
-# are 0x0C (the EcuNodeEntry+0x20 / node-table value) and 0x04; which one a given bootloader accepts is firmware-dependent, so
+# are 0x0C (the node-table value) and 0x04; which one a given bootloader accepts is firmware-dependent, so
 # we lead with one and fall back to the other.
 _SECONDARY_MODULE_FALLBACK: dict[str, int] = {
     "pcscpu2": 0x04,
@@ -92,9 +91,9 @@ def run_pcs_dual_cpu(
     secondary_bhx: object,
     secondary_entry: object,
 ) -> None:
-    """Execute script 0x00651070 prog 1 — both CPUs in one authenticated session.
+    """Execute prog 1 — both CPUs in one authenticated session.
 
-    Sequence (matches the decoded VM bytecode at 0x00651070+0x30):
+    Sequence:
       reset(soft) + enterBootloader(0)
       diagnosticSession(2)
       varifyCompAndFirmwareType(1)

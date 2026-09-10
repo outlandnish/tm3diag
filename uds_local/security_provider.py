@@ -2,32 +2,28 @@
 
 This published tree ships **no** seed/key algorithms, immobilizer response
 derivation, or decryption keys. Every computation is delegated to a provider you
-supply for hardware you are lawfully entitled to service. When no provider is
-configured the seam is *fail-closed*: the call raises :class:`NotImplementedError`
+supply for hardware you are lawfully entitled to service. With no provider
+configured the seam is fail-closed: the call raises :class:`NotImplementedError`
 pointing at ``docs/SECURITY_PROVIDER.md``.
 
-Two provider surfaces are defined here:
+Two provider surfaces:
 
 * **security-access** — ``compute_key(algorithm, seed, kw) -> bytes`` for the UDS
   SecurityAccess seed→key exchange. Consumed by :mod:`uds_local.client`.
-* **key-derivation** — an optional, interface-only hook for immobilizer response
-  derivation and keystore access. Consumed by the DI bench tooling. The framework
-  ships only the interface; there is no bundled implementation.
+* **key-derivation** — optional, interface-only hook for immobilizer response
+  derivation and keystore access. Interface only; no bundled implementation.
 
 Resolution order for each surface:
 
-1. If ``TM3_SECURITY_PROVIDER`` is set, import that module. A misconfigured value
-   (unimportable module) raises loudly — it is not silently ignored.
-2. Otherwise, try the conventional local drop-in module, if present:
-   ``uds_local.security_impl`` (security-access) / ``uds_local.immobilizer``
-   (key-derivation). Both are gitignored; absence is silent.
+1. ``TM3_SECURITY_PROVIDER``, if set, is imported (an unimportable value raises).
+2. Otherwise the local drop-in module, if present: ``uds_local.security_impl``
+   (security-access) / ``uds_local.immobilizer`` (key-derivation). Both gitignored.
 3. Otherwise, fail closed.
 
 A provider module may expose either module-level callables matching the names
 below, or a ``get_security_access_provider()`` / ``get_key_derivation_provider()``
 factory returning an object with the same attributes. See
-``docs/SECURITY_PROVIDER.md`` for the exact signatures (signatures only — the doc
-describes no algorithm).
+``docs/SECURITY_PROVIDER.md`` for the exact signatures.
 """
 
 from __future__ import annotations
@@ -45,10 +41,9 @@ __all__ = [
     "ProviderUnavailable",
 ]
 
-# The immobilizer key-derivation facade names (see ``_KD_FACADE`` below) are also
-# importable from this module, e.g. ``from uds_local.security_provider import
-# Keystore``. They are resolved lazily from the configured provider via
-# ``__getattr__`` (PEP 562), so they are intentionally omitted from ``__all__``.
+# The immobilizer key-derivation facade names (``_KD_FACADE`` below) are also
+# importable from this module and resolved lazily via ``__getattr__`` (PEP 562),
+# so they are intentionally omitted from ``__all__``.
 
 _ENV = "TM3_SECURITY_PROVIDER"
 _DOC = "docs/SECURITY_PROVIDER.md"
@@ -95,11 +90,6 @@ class KeyDerivationProvider(Protocol):
         ...
 
 
-# ---------------------------------------------------------------------------
-# Loader
-# ---------------------------------------------------------------------------
-
-
 def _import_provider_module(local_name: str):
     """Return the configured provider module, or None if the local drop-in is
     simply absent. A set-but-unimportable ``TM3_SECURITY_PROVIDER`` raises."""
@@ -107,7 +97,7 @@ def _import_provider_module(local_name: str):
     if env_name:
         try:
             return importlib.import_module(env_name)
-        except ImportError as exc:  # misconfiguration — be loud
+        except ImportError as exc:
             raise ImportError(
                 f"{_ENV}={env_name!r} could not be imported ({exc}). Point it at an "
                 f"importable provider module or unset it. See {_DOC}."
@@ -115,9 +105,9 @@ def _import_provider_module(local_name: str):
     try:
         return importlib.import_module(local_name)
     except ModuleNotFoundError as exc:
-        if exc.name == local_name:  # the drop-in itself is absent — fail closed
+        if exc.name == local_name:  # the drop-in itself is absent
             return None
-        raise  # a real import error inside the drop-in must surface
+        raise
 
 
 _sa_cache: object | None = None
@@ -138,7 +128,7 @@ def get_security_access_provider() -> SecurityAccessProvider:
         if hasattr(mod, "get_security_access_provider"):
             _sa_cache = mod.get_security_access_provider()
         else:
-            _sa_cache = mod  # duck-typed: exposes compute_key
+            _sa_cache = mod
     return _sa_cache  # type: ignore[return-value]
 
 
@@ -173,14 +163,8 @@ def compute_key(algorithm: str, seed: bytes, kw: dict | None = None) -> bytes:
     return fn(algorithm, seed, kw)
 
 
-# ---------------------------------------------------------------------------
-# Immobilizer key-derivation facade
-#
-# These names are resolved lazily from the configured key-derivation provider so
-# that importing this module — and therefore the whole framework — succeeds with
-# no provider present. Attribute access raises only when a name is actually used
-# without a provider (callables/classes fail closed on call/instantiation).
-# ---------------------------------------------------------------------------
+# Immobilizer key-derivation facade — names resolved lazily from the configured
+# provider; fail closed on call/instantiation when no provider is present.
 
 _KD_FACADE = {
     "Keystore",

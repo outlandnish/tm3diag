@@ -15,12 +15,9 @@ _ETH_COMPACT = _cfg.ETH_COMPACT
 def _warn_extended_mux(msg_name: str, sig_name: str, mux_ids: list) -> None:
     """Warn when a muxed signal is valid for more than one selector value.
 
-    Both the compact-JSON and DBC decode paths model multiplexing with a single
-    scalar mux_id per signal (decode_frame matches mux_id == muxer_value). Tesla
-    Model 3 firmware only ever uses scalar mux_ids, but Model S/X (or a future
-    build) may use extended/nested multiplexing where one signal spans several
-    selector values. That case would be silently flattened to the first id, so
-    surface it loudly instead of decoding incorrectly.
+    The decoder models multiplexing with a single scalar mux_id per signal;
+    extended/nested multiplexing (one signal spanning several selectors) is not
+    supported and would be flattened to the first id.
     """
     warnings.warn(
         f"extended multiplexing not supported: signal {msg_name}.{sig_name} is "
@@ -41,10 +38,7 @@ def _extract_bits_big(data: bytes, start_bit: int, width: int) -> int:
 
     The start_bit is the MSB position in Motorola byte-swapped notation.
     """
-    # Convert Motorola start bit to a linear bit offset within the frame bytes
-    # Motorola start_bit: byte_index * 8 + (7 - bit_within_byte) but stored as
-    # the bit position of the MSBit within a big-endian view.
-    # Standard approach: walk bits from MSB downward.
+    # Motorola start_bit = byte_index*8 + (7 - bit_within_byte); walk bits MSB-first.
     byte_order = start_bit // 8
     bit_in_byte = start_bit % 8
 
@@ -104,8 +98,7 @@ def _pack_bits(raw: int, sig: dict[str, Any], length: int) -> int:
     if endian == "LITTLE":
         return raw << start
 
-    # Big-endian (Motorola): walk bits MSB-first from (byte, bit) like the
-    # decoder, setting each bit in the little-endian frame integer.
+    # Big-endian (Motorola): walk bits MSB-first.
     out = 0
     b = start // 8
     bit = start % 8
@@ -168,15 +161,12 @@ class CanDatabase:
         self._by_node: dict[str, list[int]] = {}
         self._cantools_db = None
 
-        # No compact JSON configured (no firmware root / TM3_ROOT) -> an empty DB.
-        # Callers still work: tm3web shows raw undecoded frames, and a DBC can be
-        # supplied instead via CanDatabase.from_dbc(). Decoding just names nothing.
+        # No compact JSON configured -> empty DB (callers still work; a DBC can be
+        # supplied via CanDatabase.from_dbc(); decoding just names nothing).
         if path is None:
             return
 
-        # Use the same loader as uds_local/node_config.py so an encrypted .bin
-        # twin (Model3_ETH.compact.json.bin) is auto-decrypted instead of being
-        # fed raw to json.load (which fails with a UnicodeDecodeError).
+        # _load_json auto-decrypts an encrypted .bin twin (Model3_ETH.compact.json.bin).
         raw = _load_json(Path(path))
 
         for name, msg in raw["messages"].items():
@@ -187,8 +177,7 @@ class CanDatabase:
             self._by_node.setdefault(node, []).append(mid)
 
             for sname, sig in msg.get("signals", {}).items():
-                # mux_ids lists a muxer's valid selectors (expected); a non-muxer
-                # carrying >1 id means extended multiplexing we don't model.
+                # non-muxer with >1 mux_id = extended multiplexing (unsupported).
                 ids = sig.get("mux_ids")
                 if not sig.get("is_muxer") and isinstance(ids, list) and len(ids) > 1:
                     _warn_extended_mux(name, sname, ids)
@@ -209,8 +198,7 @@ class CanDatabase:
             for sig in ct_msg.signals:
                 vd = None
                 if sig.choices:
-                    # cantools choices: {int_value: "label"} — invert to match
-                    # compact JSON convention {label: int_value}
+                    # cantools {int: label} -> compact JSON {label: int}
                     vd = {str(label): int(val) for val, label in sig.choices.items()}
                 if not sig.is_multiplexer and sig.multiplexer_ids and len(sig.multiplexer_ids) > 1:
                     _warn_extended_mux(ct_msg.name, sig.name, sig.multiplexer_ids)
@@ -259,10 +247,9 @@ class CanDatabase:
 
         ``msg`` is a message id or name. ``signal_values`` maps signal name ->
         physical value; unspecified signals are left at 0. Returns the frame
-        bytes (length from the DB's ``length_bytes``, default 8).
-
-        With ``strict`` (default), an unknown signal name raises KeyError so a
-        typo doesn't silently no-op. A muxer signal value selects the slot.
+        bytes (length from the DB's ``length_bytes``, default 8). With ``strict``
+        (default), an unknown signal name raises KeyError. A muxer signal value
+        selects the slot.
         """
         m = self.messages.get(msg) if isinstance(msg, int) else self.message_by_name(msg)
         if m is None:
@@ -337,7 +324,6 @@ class CanDatabase:
         if msg is None:
             return overlay or None
 
-        # Determine muxer value if present
         muxer_value: int | None = None
         for sig in msg["signals"].values():
             if sig.get("is_muxer"):
@@ -355,10 +341,10 @@ class CanDatabase:
                 continue  # don't surface the mux selector itself
             mux_id = sig.get("mux_id")
             if mux_id is not None and mux_id != muxer_value:
-                continue  # wrong mux slot
+                continue
 
             if len(data) * 8 < sig["start_position"] + sig["width"]:
-                continue  # frame too short
+                continue
 
             phys, label = decode_signal(data, sig, sname)
             results.append(

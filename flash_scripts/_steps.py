@@ -1,8 +1,6 @@
 """Step functions — atoms composed into FlashScript instances.
 
-Each step is `(sess, ctx) -> None`. Steps mutate `ctx` to pass state forward
-(e.g. `step_verify_comp_fw` stashes `protocol_ver`) and call methods on `sess`
-to drive the underlying UDS transport.
+Each step is `(sess, ctx) -> None`; steps mutate `ctx` to pass state forward.
 """
 
 from __future__ import annotations
@@ -158,16 +156,11 @@ def step_verify_comp_fw(sess: UdsSession, ctx: FlashContext) -> None:
 
 
 def step_halt_if_running_boot_updater(sess: UdsSession, ctx: FlashContext) -> None:
-    """`haltIfRunningBootUpdater` guard — the bu script's leading opcode.
+    """haltIfRunningBootUpdater guard.
 
-    Decoded from update-2020.img: the bu script (0x40035EF2) opens with VM
-    opcode 0x29 = haltIfRunningBootUpdater (device handler 0x400067DE). It reads
-    DID 0x0101 and, if fw_type byte == 0x02 (BOOTLOADER), sets a per-node halt
-    bit so the flow stops — i.e. "don't re-flash the bu agent over an ECU that's
-    already running a bootloader image." On the host side this is a pre-flight
-    guard: abort the bu flash if the ECU already reports fw_type 2 (a malformed
-    or short response is treated as "not a bootloader image" and lets the flash
-    proceed, matching the device handler's `rc == 0 && len == 3` gate).
+    Reads DID 0x0101; if fw_type byte == 0x02 (bootloader image), abort the bu
+    flash. A malformed or short response is treated as "not a bootloader image"
+    and lets the flash proceed.
     """
     ctx.display.set_detail("Guard: haltIfRunningBootUpdater (DID 0x0101)...")
     try:
@@ -246,14 +239,9 @@ def _request_download_with_module_fallback(
 ) -> int:
     """RequestDownload, retrying with the fallback module byte on NRC 0x31/0x22.
 
-    A bootloader can *accept* moduleToProgram with the wrong secondary-select
-    byte but then reject RequestDownload at the target address — with either NRC
-    0x31 (requestOutOfRange) or NRC 0x22 (conditionsNotCorrect, observed on a
-    12804 PMR bootloader when the module byte and the 0x82000 secondary-region
-    address disagree) — so step_module_to_program's own NRC fallback never fires.
-    When that happens, re-select the module with the fallback byte, re-erase
-    (erase is module-scoped, so the new selection needs a fresh erase), and retry
-    the download. Only attempted once, and only for the first segment.
+    On NRC 0x31 (requestOutOfRange) or 0x22 (conditionsNotCorrect), re-select the
+    module with the fallback byte, re-erase (erase is module-scoped), and retry
+    the download. Attempted once, for the first segment only.
     """
     from uds_local.client import UdsError
     try:
@@ -272,7 +260,6 @@ def _request_download_with_module_fallback(
         )
         sess.module_to_program(ctx.fallback_module_byte)
         ctx.module_byte = ctx.fallback_module_byte
-        # Erase is module-scoped — the freshly selected module needs its own erase.
         sess.start_tester_present()
         try:
             sess.set_timeout(ctx.erase_timeout)
@@ -294,8 +281,7 @@ def step_transfer_loop(sess: UdsSession, ctx: FlashContext) -> None:
     for seg_idx, seg in enumerate(segments):
         seg_label = f"SHDR {seg_idx + 1}/{n_segs}"
         display.set_detail(f"Requesting download: {seg_label}  addr=0x{seg.start_address:08X}")
-        # First segment may hit NRC 0x31 from a wrong (older) module byte that the
-        # newer firmware silently accepted at moduleToProgram — retry with fallback.
+        # First segment: retry with fallback module byte on NRC 0x31.
         if seg_idx == 0:
             max_block_len = _request_download_with_module_fallback(
                 sess, ctx, seg.start_address, seg.length
@@ -378,14 +364,9 @@ def step_transfer_loop_inter_shdr(sess: UdsSession, ctx: FlashContext) -> None:
 def step_verify_crc(sess: UdsSession, ctx: FlashContext) -> None:
     """RC 0x0201 checkModuleProgrammedCorrectly.
 
-    NOTE (validation in progress): the device replies 71 01 02 01 <status>, where
-    status 0x00 = CRC MATCH and 0x04 = CRC MISMATCH (both are UDS *positive*
-    responses, so routine_control() does NOT catch a mismatch). We READ and LOG the
-    status here (non-fatal) so we can finally see whether verifyCRC actually passes
-    on a real flash and what expected value the device uses. Whether the host must
-    SUPPLY the expected CRC (in the RC arg) or the device derives it from the image
-    is still UNCONFIRMED — this logging is how we find out. Do not treat a pass as
-    given until the status byte is observed = 0x00.
+    Device replies 71 01 02 01 <status>: 0x00 = CRC MATCH, 0x04 = CRC MISMATCH
+    (both UDS positive responses, so routine_control() does not raise on a
+    mismatch). Status is read and logged; non-fatal.
     """
     ctx.display.set_detail("CRC check (RC 0x0201)...")
     resp = sess.routine_control(_RC_VERIFY_CRC)
@@ -393,7 +374,6 @@ def step_verify_crc(sess: UdsSession, ctx: FlashContext) -> None:
     if status == 0x00:
         ctx.display.set_detail("CRC check: status=0x00 (MATCH)")
     else:
-        # non-fatal: surface it loudly but don't abort the (still-being-validated) pipeline
         msg = (f"CRC check: status={f'0x{status:02X}' if status is not None else 'EMPTY'} "
                f"(0x04=MISMATCH; expected 0x00). raw={resp.hex() if resp else '<none>'}")
         ctx.display.set_detail(msg)
@@ -403,10 +383,9 @@ def step_verify_crc(sess: UdsSession, ctx: FlashContext) -> None:
 def step_check_rev(sess: UdsSession, ctx: FlashContext) -> None:
     """RC 0x0202 checkCorrectComponentAndRev.
 
-    Device replies 71 01 02 02 <status>: 0x00 = OK; 1..4 = which header rev/part-id
-    field mismatched (1=part/module-id, 2=byte-pair, 3=major-rev, 4=minor-rev), all
-    positive responses. We READ + LOG the status (non-fatal) for the same reason as
-    step_verify_crc — the response was never validated before.
+    Device replies 71 01 02 02 <status>: 0x00 = OK; 1..4 = which field mismatched
+    (1=part/module-id, 2=byte-pair, 3=major-rev, 4=minor-rev). Status is read and
+    logged; non-fatal.
     """
     ctx.display.set_detail("Revision check (RC 0x0202)...")
     resp = sess.routine_control(_RC_CHECK_REV)
@@ -482,7 +461,7 @@ def step_vendor_preflight(sess: UdsSession, ctx: FlashContext) -> None:
 
 
 def step_vcright_ota_prep(sess: UdsSession, ctx: FlashContext) -> None:
-    """sub4 — VCRIGHT-side OTA prep before flashing VCFRONT bu."""
+    """VCRIGHT-side OTA prep before flashing VCFRONT bu."""
     if ctx.channel is None:
         raise RuntimeError(
             "step_vcright_ota_prep needs a CAN channel on FlashContext. "

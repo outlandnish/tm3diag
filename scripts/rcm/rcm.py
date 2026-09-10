@@ -13,12 +13,10 @@ from tesla_frames import pack_le
 
 
 def _rcm_inertial1() -> bytearray:  # 0x101, 20ms
-    # Static content captured from a known-good drive log: bytes0-5 = B8 FF F2 FF 36 40.
-    # The DIR decodes words0-2 as inertial (accel/rate); these raw values are
-    # non-SNA (SNA sentinels 0x8000 / -0x4000) so they read as valid. byte6 bit0 ->
-    # the DIR ESP signal-status "signal available" bit; byte6 bit2 is the other QF bit.
-    # counter@52(w4)/cksum@56 overlaid by SimFrame reproduce the log byte6/7 exactly
-    # (e.g. ctr=0 -> byte6=0x05, byte7=0x25, matching the log).
+    # bytes0-5 = B8 FF F2 FF 36 40 (from a known-good drive log). DIR decodes words0-2
+    # as inertial (accel/rate); these raw values are non-SNA (sentinels 0x8000 / -0x4000)
+    # so they read as valid. byte6 bit0 -> DIR ESP signal-status "available" bit; byte6
+    # bit2 is the other QF bit. counter@52(w4)/cksum@56 are overlaid by SimFrame.
     return pack_le(
         [
             (0, 16, 0xFFB8),   # word0 inertial field (raw -72; non-SNA)

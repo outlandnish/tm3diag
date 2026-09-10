@@ -77,8 +77,8 @@ def find_bootloader_entries(selected: list) -> tuple[list, list, list]:
 # _ecu_map (cpplcfw=0x08, cpplcpib=0x06); the parent bootloader validates the
 # download address against the selected module's window. Maps subcomponent
 # ecu_type → parent. The CP MCU's bootloader handles cpPlcFw (PLC modem firmware,
-# staged in CP flash @0x100000, loaded to the QCA7420 modem at boot) and cpPlcPib
-# (PLC modem Personality Identifier Block, @0xe0000).
+# loaded to the QCA7420 modem at boot) and cpPlcPib (PLC modem Personality
+# Identifier Block).
 _SUBCOMPONENT_PARENT: dict[str, str] = {
     "cpplcfw":  "cp",
     "cpplcpib": "cp",

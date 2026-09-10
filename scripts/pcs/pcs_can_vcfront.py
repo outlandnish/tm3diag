@@ -1,47 +1,35 @@
 #!/usr/bin/env python3
-"""Encoders/decoders for the three VCFRONT->PCS frames that drive a024_vcfrontMia.
+"""Encoders/decoders for the three VCFRONT->PCS frames that drive a024_vcfrontMia
+(0x321 sensors, 0x3A1 vehicleStatus, 0x545 LVPowerState) on 2024 PCS firmware.
 
-Derived from RE of PCS variant-411 CPU1 firmware (2024.8.9):
-  - PCS_rxVCFRONT_sensors_0x321        @ 0x9395e
-  - PCS_rxVCFRONT_vehicleStatus_0x3A1  @ 0x932f8
-  - PCS_rxVCFRONT_LVPowerState_0x545   @ 0x93276
-  - a024 MIA supervisors: PCS_miaTimeout_0x51E_0x217_0x321 @ 0x907fe (0x321),
-    PCS_miaTimeout_0x3A1_0x441 @ 0x91793 (0x3A1), PCS_miaTimeout_0x545 @ 0x95047,
-    scheduler FUN_0009432f @ 0x9432f.
-
-== KEY FINDING (corrects the earlier handoff assumption) ==
-NONE of the three VCFRONT handlers verify a checksum OR a rolling counter. Each
-handler, at the assembly level, does only:
-  1. buffer the frame, DLC must be >= 8 (else it's logged and ignored);
-  2. an internal "enable + freshness-slot phase" gate (firmware-maintained state,
-     NOT carried in the payload);
-  3. extract exactly ONE scaled field, compare against an SNA sentinel, range it;
-  4. age that message's MIA down-counter toward 0 and CLEAR its a024 sub-flag in
-     the shared word _DAT_14733.
+== KEY FINDING ==
+None of the three VCFRONT handlers verify a checksum or a rolling counter. Each
+one only: buffers the frame (DLC must be >= 8, else it's ignored); applies an
+internal enable/freshness gate (firmware state, not carried in the payload);
+extracts one scaled field, compares it to an SNA sentinel, and ranges it; then
+ages that message's MIA down-counter and clears its a024 sub-flag.
 
 => a024_vcfrontMia clears when 0x321 + 0x3A1 + 0x545 simply ARRIVE at rate with
-   DLC 8. There is no checksum/counter to get "wrong". The controller's
-   vehicleStatusCounter/vehicleStatusChecksum (0x3A1) and calc_checksum (0x545)
-   are HARMLESS but IRRELEVANT to the alert -- the firmware never reads them.
+   DLC 8. There's no checksum/counter to get wrong; vehicleStatusCounter/
+   vehicleStatusChecksum (0x3A1) and calc_checksum (0x545) are harmless but
+   irrelevant — the firmware never reads them.
 
-These encoders therefore exist mainly to (a) populate the one meaningful signal
-each frame carries (so the PCS sees sane values, not just to clear the alert) and
-(b) document the real 2024 bit layout. A zero payload with DLC 8 at rate already
+These encoders exist to (a) populate the one meaningful signal each frame carries
+and (b) document the 2024 bit layout. A zero payload with DLC 8 at rate already
 clears a024.
 
 == Bit layout convention ==
 C28x is word-addressed; the handler reads 16-bit words w0..w3 where
     w0 = b0 | b1<<8   w1 = b2 | b3<<8   w2 = b4 | b5<<8   w3 = b6 | b7<<8
-Signals below are expressed as standard DBC little-endian (Intel) start-bit +
-width over the 64-bit frame (bit = byte*8 + bit_in_byte).
+Signals below are standard DBC little-endian (Intel) start-bit + width over the
+64-bit frame (bit = byte*8 + bit_in_byte).
 
 == Timeout budget (why 100 ms / 50 ms TX is plenty) ==
-Each MIA counter ages +10 per supervisor tick of silence, trips at >=100 (=> ~10
-supervisor periods of grace), and is knocked DOWN ~11 per received frame.
-Supervisor prescalers off the scheduler base tick (FUN_0009432f): 0x321 every
-1000 ticks, 0x3A1 every 50, 0x545 every 33. With the ~1 ms PCS base tick that is
-roughly: 0x321 ~10 s grace, 0x3A1 ~500 ms, 0x545 ~330 ms -- so 100 ms (0x321/0x3A1)
-and 50 ms (0x545) transmit periods are comfortable.
+Each MIA counter ages +10 per supervisor tick of silence, trips at >=100 (~10
+supervisor periods of grace), and is knocked down ~11 per received frame. With
+supervisor prescalers of 0x321 every 1000 ticks, 0x3A1 every 50, 0x545 every 33
+(on the ~1 ms PCS base tick): ~10 s / ~500 ms / ~330 ms of grace respectively — so
+100 ms (0x321/0x3A1) and 50 ms (0x545) transmit periods are comfortable.
 """
 
 from __future__ import annotations

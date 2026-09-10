@@ -1,11 +1,9 @@
 #!/usr/bin/env python3
 """EPB node — electronic parking brake (0x2A8/0x2E8, feeds brakeMIA a110). Bus A / CANA.
 
-CLOSED-LOOP: the node OWNS an ``EpbResponder`` and transitions on ``DI_epbRequest`` (0x118
-@44 w2): PARK -> PARKED, UNPARK -> RELEASED. It broadcasts EPBL/EPBR_systemStatus reflecting
-that state; the rolling counter + Tesla checksum are placed by the SimFrame wrapper
-(ctr@52, cksum@56). This is the canonical example of a node that changes state on what the
-DI sends.
+The node owns an ``EpbResponder`` and transitions on ``DI_epbRequest`` (0x118 @44 w2):
+PARK -> PARKED, UNPARK -> RELEASED. It broadcasts EPBL/EPBR_systemStatus reflecting that
+state; the rolling counter + Tesla checksum are placed by the SimFrame wrapper (ctr@52, cksum@56).
 """
 from __future__ import annotations
 

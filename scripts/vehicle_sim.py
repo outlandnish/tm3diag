@@ -26,8 +26,8 @@ WHICH FRAMES — firmware- + bench-confirmed
 ------------------------------------------
 The 2020 DIR (TMS320C28x CPU2) has its OWN CAN-RX handler: the PMR (CPU1) relays
 every received frame to the DIR over IPC unfiltered, and the DIR dispatches by
-arbitration ID through binary-searched ID tables (dir32_67_2_rwd @ 0xb8278 = 48
-IDs, 0xb8a30 = 18 IDs) — the definitive list of what it consumes. The per-message
+arbitration ID through binary-searched ID tables — the definitive list of
+what it consumes. The per-message
 rationale (which MIA each feeds, checksum/counter scheme, exact DLC) now lives as a
 comment on that message's node builder; see each ``scripts/<node>/<node>.py``.
 

@@ -1,8 +1,7 @@
 """Tests for the odin_runner BenchBackend odx/uds adapters + Engine handlers.
 
-Self-contained: a FakeSession stands in for uds_local.UdsSession (records calls,
-returns canned bytes) and a synthetic NodeConfig supplies the ODJ routine/DID
-specs, so these run with no bench and no firmware data. The RESOLVER_LEARNING
+A FakeSession stands in for uds_local.UdsSession and a synthetic NodeConfig supplies
+the ODJ specs, so these run with no bench and no firmware data. The RESOLVER_LEARNING
 results spec mirrors the real DIR ODJ (see test_odj_codec).
 """
 import struct
@@ -100,10 +99,7 @@ class FakeSession:
         pass
 
 
-# ---------------------------------------------------------------------------
 # _UdsAdapter — raw payloads onto UdsSession
-# ---------------------------------------------------------------------------
-
 class TestUdsAdapter:
     def test_routine_control_hex_and_subtype(self):
         s = FakeSession()
@@ -142,10 +138,7 @@ class TestUdsAdapter:
         assert s.calls[0] == ("clear_dtc", 0xFFFFFF)
 
 
-# ---------------------------------------------------------------------------
 # _OdxAdapter — named params via the ODJ codec
-# ---------------------------------------------------------------------------
-
 class TestOdxAdapter:
     def test_start_and_wait_parses_results(self):
         s = FakeSession()
@@ -168,10 +161,8 @@ class TestOdxAdapter:
         assert a.get_value("RESOLVER_LEARNING", "LEARN_RESULT", 4, parsed=False) == 4
 
     def test_security_gated_routine_authenticates_first(self):
-        # A routine whose ODJ subspec declares a security level must trigger a
-        # programming-session SecurityAccess(seed_level) BEFORE the routine goes out
-        # (Tesla's odx layer does this from the ODJ; without it the ECU NRCs 0x33).
-        # Mirrors PMR CAN_COMM_SELF_TEST (0x3FD, level 5).
+        # A security-gated routine authenticates first: SecurityAccess(seed_level) before
+        # the routine, else the ECU NRCs 0x33. Mirrors PMR CAN_COMM_SELF_TEST (0x3FD, level 5).
         s = FakeSession()
         gated = RoutineEntry(
             name="CAN_COMM_SELF_TEST", hex_id=0x03FD, stop=None,
@@ -185,22 +176,18 @@ class TestOdxAdapter:
         _OdxAdapter(s, cfg).start_and_wait(
             "CAN_COMM_SELF_TEST", None, [], 1, time_scale=0.0)
         assert ("diagnostic_session", 0x03) in s.calls   # extended diagnostic session
-        assert ("security_access", 0, 5) in s.calls      # seed_level from the ODJ
+        assert ("security_access", 0, 5) in s.calls
         kinds = [c[0] for c in s.calls]
         assert kinds.index("security_access") < kinds.index("routine_control")
 
     def test_unsecured_routine_skips_auth(self):
-        # A level-0 routine (RESOLVER_LEARNING here) must NOT enter a session or auth.
         s = FakeSession()
         _OdxAdapter(s, _cfg()).start_and_wait(
             "RESOLVER_LEARNING", "RUNNING", [True], 1, time_scale=0.0)
         assert not any(c[0] in ("diagnostic_session", "security_access") for c in s.calls)
 
 
-# ---------------------------------------------------------------------------
 # Engine handlers end-to-end (mini-graphs through a BenchBackend + fake sessions)
-# ---------------------------------------------------------------------------
-
 def _bench(**nodes):
     """A BenchBackend with pre-seeded (cfg, FakeSession) per node — no real bus."""
     bb = BenchBackend("chan")
@@ -254,7 +241,6 @@ class TestEngineHandlers:
         assert res.metrics[0]["value"]["LEARN_RESULT"] == "LEARN_SUCCESS"
 
     def test_esp_is_stubbed(self):
-        # ESP has no session; uds('ESP') must not touch _nodes / raise.
         bb = BenchBackend("chan")
         assert isinstance(bb.uds("ESP"), odin_runner._StubUds)
         bb.uds("ESP").ecu_reset("HARD_RESET", True)  # no-op, no crash
@@ -303,7 +289,6 @@ class TestProtoReadFile:
 
 class TestReadDtcs:
     def test_udssession_parses_dtc_response(self):
-        # Real UdsSession.read_dtcs parse, bypassing __init__ (no bus needed).
         sess = UdsSession.__new__(UdsSession)
         sess._send_raw = lambda payload, **k: [
             0x59, 0x02, 0xFF, 0x12, 0x34, 0x56, 0x08, 0xAB, 0xCD, 0xEF, 0x2F]
@@ -361,8 +346,7 @@ class TestStoreOutputs:
 
 
 class _BlSession(FakeSession):
-    """FakeSession + a recording wait_for_bootloader (which UdsSession has, but the
-    plain FakeSession doesn't)."""
+    """FakeSession + a recording wait_for_bootloader."""
     def wait_for_bootloader(self, **_kw):
         self.calls.append(("wait_for_bootloader",))
 
@@ -373,7 +357,7 @@ class TestEnsureApplicationState:
         bb, _ = _bench(PMR=sess)
         bb.ensure_application_state("PMR", "BOOTLOADER")
         assert ("ecu_reset_no_wait", 0x01) in sess.calls
-        assert ("wait_for_bootloader",) in sess.calls   # same handover as the flasher
+        assert ("wait_for_bootloader",) in sess.calls
         assert "PMR" in bb._bootloader
 
     def test_idempotent_bootloader(self):

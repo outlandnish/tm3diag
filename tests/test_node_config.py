@@ -30,8 +30,6 @@ class TestLoadNodeConfig:
         assert len(cfg.dids) > 0
 
     def test_cp_dids_are_named_and_well_formed(self):
-        # Don't pin to a specific DID name/id — they vary by firmware dump.
-        # Assert every loaded DID is named and carries a plausible hex id.
         cfg = load_node_config("CP", _NODES_JSON, _ETH_COMPACT, _ODJ_DIR)
         assert cfg.dids, "CP loaded no DIDs"
         for name, entry in cfg.dids.items():
@@ -63,15 +61,11 @@ class TestLoadNodeConfig:
 
     def test_pcs_can_ids(self):
         cfg = load_node_config("PCS", _NODES_JSON, _ETH_COMPACT, _ODJ_DIR)
-        # Verify both CAN IDs are non-zero and distinct
         assert cfg.request_can_id != 0
         assert cfg.response_can_id != 0
         assert cfg.request_can_id != cfg.response_can_id
 
     def test_cp_writable_did_has_input_fields(self):
-        # At least one CP DID should be writable with named input fields, and
-        # every input field's enum_map should be a dict (empty when no enum).
-        # The exact DID/field names differ across firmware dumps, so don't pin.
         cfg = load_node_config("CP", _NODES_JSON, _ETH_COMPACT, _ODJ_DIR)
         writable = [e for e in cfg.dids.values()
                     if e.write is not None and e.write.input]
@@ -84,9 +78,7 @@ class TestLoadNodeConfig:
 
 class TestLoadAllNodes:
     def test_returns_multiple_nodes(self):
-        # Node count varies by firmware dump (e.g. 28 in 2020.8.1, 37 in
-        # 2026.8.3), so assert a plausible lower bound rather than an exact
-        # count. The remaining tests cover the shape of each entry.
+        # Node count varies by firmware dump (28 in 2020.8.1, 37 in 2026.8.3).
         nodes = load_all_nodes(_NODES_JSON, _ETH_COMPACT)
         assert len(nodes) >= 10
 

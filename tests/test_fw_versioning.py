@@ -1,14 +1,7 @@
 """Firmware-revision message selection (sim_core.FirmwareVersion / Node.frames_for).
 
-Locks the per-node, revision-keyed frame selection the driver relies on: a node emits the
-newest message set it has authored at/below the target revision, falling back to the last
-version for which it has messages (clamped to the oldest). With no target, each node emits
-its newest authored set. Today every real node has only the 2020.8.1 baseline, so a key
-invariant is that threading *any* firmware target leaves the baseline inventory unchanged
-until per-revision variants are actually authored.
-
-CI-safe: no bus, no compact DB (the resolution tests use synthetic nodes; the registry
-invariant excludes GTW, whose builder needs the compact DB, covered by the golden test).
+Fallback policy: a node emits the newest message set authored at/below the target
+revision, else the last version it has (clamped to the oldest); no target => newest.
 """
 from __future__ import annotations
 
@@ -22,11 +15,7 @@ def _sf(name: str, can_id: int) -> SimFrame:
     return SimFrame(name, can_id, 0.1, lambda: bytearray(8))
 
 
-# ---------------------------------------------------------------------------
-# FirmwareVersion
-# ---------------------------------------------------------------------------
 def test_firmware_version_parses_raw_extraction_dir_names():
-    # The ../tesla-fw directory names carry a suffix; only the leading numeric matters.
     assert str(FirmwareVersion("2020.8.1-9-ae1963092f.model3")) == "2020.8.1"
     assert str(FirmwareVersion("2024.8.9.ice.extracted")) == "2024.8.9"
     assert str(FirmwareVersion("2026.8.3")) == "2026.8.3"
@@ -35,9 +24,7 @@ def test_firmware_version_parses_raw_extraction_dir_names():
 def test_firmware_version_ordering_and_padding():
     assert FirmwareVersion("2020.8.1") < FirmwareVersion("2024.8.9")
     assert FirmwareVersion("2024.8.9") < FirmwareVersion("2025.26.8")
-    # component-wise, not lexical: 2024.8.9 < 2024.10.1 (8 < 10, not "8" > "1")
     assert FirmwareVersion("2024.8.9") < FirmwareVersion("2024.10.1")
-    # shorter version zero-pads
     assert FirmwareVersion("2020.8") == FirmwareVersion("2020.8.0")
     assert FirmwareVersion("2020.8") < FirmwareVersion("2020.8.1")
 
@@ -59,9 +46,7 @@ def test_firmware_version_rejects_non_numeric():
         FirmwareVersion("")
 
 
-# ---------------------------------------------------------------------------
 # resolve_fw_variants — the fallback policy
-# ---------------------------------------------------------------------------
 _VARIANTS = {"2020.8.1": "base", "2024.8.9": "mid", "2026.8.3": "new"}
 
 
@@ -74,7 +59,6 @@ def test_resolve_exact_match():
 
 
 def test_resolve_floors_to_newest_at_or_below_target():
-    # 2025.26.8 has no authored set -> the last version we DO have that is <= it (2024.8.9).
     assert resolve_fw_variants(_VARIANTS, "2025.26.8") == "mid"
     assert resolve_fw_variants(_VARIANTS, "2022.45.15") == "base"
 
@@ -99,9 +83,7 @@ def test_resolve_empty_raises():
         resolve_fw_variants({}, "2020.8.1")
 
 
-# ---------------------------------------------------------------------------
 # Node.frames_for / fw_variants / resolved_fw
-# ---------------------------------------------------------------------------
 class _PlainNode(Node):
     name = "PLAIN"
 
@@ -114,7 +96,7 @@ class _VersionedNode(Node):
 
     name = "VERS"
 
-    def frames(self) -> list[SimFrame]:  # the 2020.8.1 baseline
+    def frames(self) -> list[SimFrame]:
         return [_sf("v20", 0x100)]
 
     def _frames_2024(self) -> list[SimFrame]:
@@ -148,25 +130,22 @@ def test_versioned_node_resolved_fw_labels():
     assert str(n.resolved_fw("2026.8.3")) == "2024.8.9"
 
 
-# ---------------------------------------------------------------------------
-# self.fw — the seam the driver sets so reactions/frames resolve against the node's own target
-# ---------------------------------------------------------------------------
+# self.fw: the per-node target the driver sets
 def test_node_defaults_fw_to_none():
-    assert _VersionedNode().fw is None  # driver sets it; unset => newest authored
+    assert _VersionedNode().fw is None
 
 
 def test_frames_for_inherits_self_fw_by_default():
     n = _VersionedNode()
-    n.fw = "2022.45.15"  # driver-set target: floors to the 2020 baseline for this node
-    assert [f.name for f in n.frames_for()] == ["v20"]  # bare call inherits self.fw
+    n.fw = "2022.45.15"
+    assert [f.name for f in n.frames_for()] == ["v20"]
     assert str(n.resolved_fw()) == "2020.8.1"
-    # an explicit argument still overrides the inherited self.fw
     assert [f.name for f in n.frames_for("2024.8.9")] == ["v24", "v24_extra"]
     assert [f.name for f in n.frames_for(None)] == ["v24", "v24_extra"]  # None = newest
 
 
 def test_fw_inherit_sentinel_is_distinct_from_none():
-    # FW_INHERIT (default) means "use self.fw"; None means "newest authored" -- not the same.
+    # FW_INHERIT (default) means "use self.fw"; None means "newest authored".
     n = _VersionedNode()
     n.fw = "2022.45.15"
     assert n.frames_for(sim_core.FW_INHERIT)[0].name == "v20"  # inherit -> floored
@@ -178,16 +157,13 @@ def test_collect_frames_inherits_each_nodes_fw():
     a.fw = "2022.45.15"  # -> baseline set (1 frame)
     b.fw = "2024.8.9"  # -> 2024 set (2 frames)
     ids = sorted(f.can_id for f in sim_registry.collect_frames([a, b]))
-    assert ids == [0x100, 0x100, 0x101]  # a: {0x100}; b: {0x100, 0x101}
+    assert ids == [0x100, 0x100, 0x101]
 
 
-# ---------------------------------------------------------------------------
 # Registry threading + the "baseline is stable across fw" invariant
-# ---------------------------------------------------------------------------
 def _db_free_nodes():
     ctx = sim_core.NodeContext()
-    # GTW's builder needs the compact DB; every other node is DB-free. The golden test covers
-    # GTW. Exclude the rear inverter (marked real on the drive bench) as the golden test does.
+    # GTW's builder needs the compact DB; exclude it (the golden test covers GTW).
     classes = [
         c
         for c in sim_registry.select_nodes(real=["DI", "DIR", "PMR"])
@@ -201,13 +177,11 @@ def test_2022_variant_adds_exactly_the_fw_confirmed_new_ids():
     ids_none = {f.can_id for f in sim_registry.collect_frames(nodes, None)}
     ids_2020 = {f.can_id for f in sim_registry.collect_frames(nodes, "2020.8.1")}
     ids_2026 = {f.can_id for f in sim_registry.collect_frames(nodes, "2026.8.3")}
-    # Nodes with a 2022.45.15 variant add ONLY firmware-confirmed 2022-new IDs (absent in the
-    # 2020 DIR): DAS 0x289/0x39B (party) + BMS 0x452, CMP 0x2A7, APP 0x25C, CP 0x25D (vehicle).
-    # Everything else is baseline, so this is the exact 2020->>=2022 delta; nothing is dropped
-    # going forward.
+    # 2022.45.15 variants add only firmware-confirmed 2022-new IDs (absent in the 2020 DIR):
+    # DAS 0x289/0x39B (party) + BMS 0x452, CMP 0x2A7, APP 0x25C, CP 0x25D (vehicle).
     assert ids_none == ids_2026  # newest == any target >= 2022.45.15
-    # 0x392 is NOT in the delta: it reassigns owner across fw (epas3p EPAS3P_alertMatrix in 2020 ->
-    # bms BMS_packConfig in 2022) but stays in the inventory at both targets.
+    # 0x392 reassigns owner across fw (EPAS3P_alertMatrix 2020 -> BMS_packConfig 2022) but
+    # stays in the inventory at both targets.
     assert ids_none - ids_2020 == {0x289, 0x39B, 0x452, 0x2A7, 0x25C, 0x25D, 0x3B3}
     assert ids_2020 - ids_none == set()
     assert 0x392 in ids_2020 and 0x392 in ids_none, "0x392 must persist across the reassignment"
@@ -215,18 +189,15 @@ def test_2022_variant_adds_exactly_the_fw_confirmed_new_ids():
 
 
 def test_only_fw_varied_nodes_diverge_from_baseline_today():
-    # Nodes with a 2022.45.15 fw_variant. IBST's variant adds no new id -- it
-    # re-sends IBST_status 0x39D on the VEHICLE bus as well, because the 2022 DIR
-    # validates it on bus A (a110_brakeMIA) where 2020 only wanted it on party.
+    # IBST's variant adds no new id: re-sends IBST_status 0x39D on the vehicle bus
+    # (2022 DIR validates it on bus A, a110_brakeMIA).
     varied = {"DAS", "BMS", "CMP", "APP", "UI", "EPAS3P", "IBST", "CP"}
     for node in _db_free_nodes():
         expected = "2022.45.15" if node.name in varied else BASELINE_FW
         assert str(node.resolved_fw("2026.8.3")) == expected, node.name
 
 
-# ---------------------------------------------------------------------------
 # BenchConfig / load_bench_config — [firmware] version
-# ---------------------------------------------------------------------------
 def test_bench_config_default_fw_is_none():
     assert sim_registry.BenchConfig().fw is None
 

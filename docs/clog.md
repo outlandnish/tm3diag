@@ -23,8 +23,7 @@ the 11-bit CAN arbitration range (`> 0x7FF`), so these are post-decode signals
 Mapping signal ids to names needs the firmware's signal table, which is **not**
 on the card — it comes from a full computer dump (the same definitions behind
 `Model3_ETH.compact.json`). `clog.py` parses the container and exposes the raw
-varints so that name-resolution layer can be added later without re-reversing
-the framing.
+varints for that name-resolution layer.
 
 ## Format
 

@@ -1,8 +1,7 @@
 #!/usr/bin/env python3
 """Parser for Tesla gateway "cluster" logs (CL/DATA/*.CLH + *.CLB).
 
-These appear on service / ConfigLoader SD cards under CL/DATA/. Each log is a
-pair:
+Found on service / ConfigLoader SD cards under CL/DATA/. Each log is a pair:
 
   - <n>.CLH  a fixed-size index ("Poppyseed" magic + firmware git SHA, then
              32-byte segment records)
@@ -10,11 +9,9 @@ pair:
              8-byte segment header followed by a LEB128 varint stream
 
 The varint stream is a delta-encoded vehicle *signal* log keyed by an internal
-enumerated signal id (a dense, contiguous id space well above the 11-bit CAN
-range — so these are decoded signals, not raw CAN frames). Mapping signal ids
-to names requires the firmware's signal table, which is not on the card; this
-module parses the container and exposes the raw varint records so that layer
-can be added once a firmware dump is available.
+enumerated signal id (dense, contiguous, well above the 11-bit CAN range).
+Mapping signal ids to names needs the firmware's signal table (not on the card);
+this module parses the container and exposes the raw varint records.
 
 Usage:
     python clog.py info    <n>.CLH

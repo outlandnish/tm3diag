@@ -1,14 +1,7 @@
 """Shared ECU identity decode (DID 0xF180).
 
-The bootloader-version DID 0xF180 carries the board's identity tuple. Several
-tools need the same parse + lookup-key derivation:
-
-  * dfu.py — to pick the matching firmware row in signed_metadata_map.tsv
-  * tm3cli.py — to show the lookup key in the connection banner
-  * tm3uds.py — the `identity` subcommand
-
-This module is the single source of truth for that decode so the lookup key is
-computed identically everywhere.
+The bootloader-version DID 0xF180 carries the board's identity tuple; parse it
+and derive the firmware lookup key used by signed_metadata_map.tsv.
 """
 
 from __future__ import annotations
@@ -32,7 +25,7 @@ class Identity:
     lookup_key: str
 
     def as_dict(self) -> dict:
-        """Return the legacy dict shape used by dfu.py's flash phases."""
+        """Return the dict shape used by dfu.py's flash phases."""
         return {
             "f180_raw": self.f180_raw,
             "component_id": self.component_id,

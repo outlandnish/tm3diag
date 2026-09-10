@@ -1,21 +1,18 @@
 """Extract Tesla's CAN/ETH signal catalog from the MCU UI shared objects.
 
-The infotainment UI stack ships ``libQtCarCANData.so``, which embeds the full
-vehicle signal catalog as relocated data tables (no debug symbols needed --
-the tables are *exported* objects):
+``libQtCarCANData.so`` embeds the vehicle signal catalog as exported relocated
+data tables:
 
     CANBusList          -> one "ETH" pseudo-bus descriptor, count + message array
     ETH_messages        -> array of 48-byte message descriptors
     ETH_<msg>_signals   -> per-message array of 40-byte signal descriptors
     Diag_<sig>_map      -> per-signal value->label enum tables
 
-The catalog is *richer* than the per-revision ``Model3_ETH.compact.json`` (the
-2022.45.15 build exposes 446 messages here vs 140 in compact.json), but it does
-NOT carry the numeric bit-layout (start bit / width / scale / offset). Pair it
-with :mod:`candata_to_dbc` to overlay layout from a compact.json donor.
+The catalog does NOT carry the numeric bit-layout (start bit / width / scale /
+offset). Pair it with :mod:`candata_to_dbc` to overlay layout from a
+compact.json donor.
 
-Struct layouts (x86-64 LSB, reversed from the 2022.45.15 build and validated
-against known Model 3 CAN IDs, e.g. BMS_kwhCounter == 0x3D2):
+Struct layouts (x86-64 LSB):
 
     message (48 bytes)              signal (40 bytes)
       +0x00  char*  name             +0x00  char*  name
@@ -49,11 +46,7 @@ _R_X86_64_RELATIVE = 8
 
 
 class ElfImage:
-    """Minimal read-only ELF64 reader with relocation resolution.
-
-    Pure-stdlib so it runs anywhere the rest of tm3diag does. Only the pieces
-    needed to walk relocated data tables are implemented.
-    """
+    """Minimal read-only ELF64 reader with relocation resolution."""
 
     def __init__(self, path: str | Path):
         self.path = Path(path)
@@ -84,7 +77,7 @@ class ElfImage:
         self.syms: dict[str, dict] = {}     # name -> {value, size}
         self._symlist: list[tuple[str, int]] = []  # dynsym order (for relocs)
         self._load_syms(".dynsym", ".dynstr")
-        self._load_syms(".symtab", ".strtab")  # usually absent (stripped)
+        self._load_syms(".symtab", ".strtab")
         # addr -> (name, size) for the first OBJECT/func symbol at each start.
         self._by_addr: dict[int, tuple[str, int]] = {}
         for nm, s in self.syms.items():
@@ -94,7 +87,6 @@ class ElfImage:
         self._load_rela(".rela.dyn")
         self._load_rela(".rela.plt")
 
-    # -- raw helpers ----------------------------------------------------------
     def _cstr_at(self, off: int, maxlen: int = 4096) -> str:
         e = self.d.find(b"\x00", off, off + maxlen)
         if e < 0:
@@ -138,7 +130,6 @@ class ElfImage:
                 return s["offset"] + (addr - s["addr"])
         return None
 
-    # -- typed reads ----------------------------------------------------------
     def u32(self, addr: int) -> int:
         o = self.v2o(addr)
         return 0 if o is None else struct.unpack_from("<I", self.d, o)[0]
@@ -146,9 +137,7 @@ class ElfImage:
     def ptr_target(self, addr: int) -> int | None:
         """Resolve the pointer stored at *addr* to a virtual address.
 
-        Prefers the relocation (position-independent objects store 0 in the
-        slot and carry the real target as an addend), falling back to a literal
-        qword for the rare non-relocated pointer.
+        Prefers the relocation, falling back to a literal qword.
         """
         r = self.reloc.get(addr)
         if r is not None:
@@ -190,8 +179,6 @@ class SoCatalog:
     lib: str
     bus: str
     messages: dict[str, dict] = field(default_factory=dict)
-    # signals present in the .so but whose enum/units we captured; layout is
-    # never known from the .so alone.
     signal_count: int = 0
     value_table_count: int = 0
 
@@ -223,7 +210,6 @@ def extract_catalog(path: str | Path, bus: str | None = None) -> SoCatalog:
     if "ETH_messages" not in elf.syms:
         raise ValueError(f"{path}: no ETH_messages table (not a CANData lib?)")
 
-    # Bus name from CANBusList if present, else default to "ETH".
     if bus is None:
         bus = "ETH"
         cbl = elf.sym("CANBusList")
@@ -296,7 +282,7 @@ def to_compact_dict(cat: SoCatalog, product: str = "Model3") -> dict:
     }
 
 
-if __name__ == "__main__":  # tiny smoke test / CLI
+if __name__ == "__main__":
     import argparse
     import json
 

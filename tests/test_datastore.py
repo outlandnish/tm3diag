@@ -1,7 +1,4 @@
-"""Tests for uds_local/datastore.py (the board-keyed interop store).
-
-All isolated to a tmp file -- nothing touches the real odin_data.json.
-"""
+"""Tests for uds_local/datastore.py (the board-keyed interop store)."""
 from uds_local.datastore import DataStore, json_safe
 
 
@@ -28,7 +25,6 @@ class TestDataStore:
         s.update("SN123", "outputs", {"odin_output": "DI rotations: 4"})
         assert s.get("SN123", "outputs") == {
             "DRIVE_UNIT_ODOMETER": 4, "odin_output": "DI rotations: 4"}
-        # a fresh DataStore on the same file sees the persisted data
         assert DataStore(tmp_path / "odin_data.json").get("SN123", "outputs") == {
             "DRIVE_UNIT_ODOMETER": 4, "odin_output": "DI rotations: 4"}
 
@@ -54,7 +50,7 @@ class TestDataStore:
     def test_get_returns_copy(self, tmp_path):
         s = _store(tmp_path)
         s.update("SN1", "outputs", {"a": 1})
-        s.get("SN1", "outputs")["a"] = 999   # mutating the copy must not persist
+        s.get("SN1", "outputs")["a"] = 999
         assert s.get("SN1", "outputs") == {"a": 1}
 
     def test_corrupt_file_loads_empty(self, tmp_path):

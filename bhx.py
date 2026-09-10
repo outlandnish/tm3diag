@@ -31,17 +31,14 @@ SegmentHeader (20 bytes):
 
 Notes
 -----
-- Checksum: the SHDR crc32 field is a standard CRC-32 (zlib/ISO 3309) of the
-  raw segment data bytes.  It is passed to the ECU in the UDS RequestDownload
-  service call.  hashpicker_sim's TransferData loop separately validates the
-  ECU's 16-bit response checksum (either word-interleaved or byte-sum) against
-  the transferred block, independent of this field.
-- GHDR v2 ram_app_payload: when non-zero and segment_count > 0, hashpicker_sim
-  runs a full verify+auth+erase cycle between SHDRs (see FIRMWARE_UPDATE.md Step 5b).
-- GHDR v2 has only been seen in the parser code path; no v2 files exist in
-  the known artifact set.
-- Segments are stored contiguously with no padding between SegmentHeader and
-  data, and no padding between consecutive segments.
+- The SHDR crc32 field is a standard CRC-32 (zlib/ISO 3309) of the raw segment
+  data bytes, passed to the ECU in the UDS RequestDownload service call. The UDS
+  TransferData response checksum (word-interleaved or byte-sum) is a separate,
+  per-block check.
+- GHDR v2 ram_app_payload: when non-zero and segment_count > 0, a full
+  verify+auth+erase cycle runs between SHDRs (see FIRMWARE_UPDATE.md Step 5b).
+- Segments are stored contiguously, no padding between SegmentHeader and data
+  or between consecutive segments.
 """
 
 from __future__ import annotations
@@ -50,10 +47,6 @@ import struct
 import zlib
 from dataclasses import dataclass, field
 from pathlib import Path
-
-# ---------------------------------------------------------------------------
-# Data model
-# ---------------------------------------------------------------------------
 
 
 @dataclass
@@ -70,9 +63,8 @@ class Segment:
         """Standard CRC-32 (zlib/ISO 3309) of the segment data."""
         return zlib.crc32(self.data) & 0xFFFF_FFFF
 
-    # The two algorithms below are used by hashpicker_sim to validate the
-    # ECU's UDS TransferData response checksum (per-block, not per-segment).
-    # They are NOT the SHDR checksum algorithm.
+    # Validate the ECU's UDS TransferData response checksum (per-block).
+    # NOT the SHDR checksum algorithm.
 
     def _uds_checksum_word_interleaved(self, block: bytes) -> int:
         total = 0
@@ -94,10 +86,6 @@ class BhxFile:
     def total_payload_bytes(self) -> int:
         return sum(s.length for s in self.segments)
 
-
-# ---------------------------------------------------------------------------
-# Parser
-# ---------------------------------------------------------------------------
 
 class BhxParseError(Exception):
     pass
@@ -174,10 +162,6 @@ def parse_file(path: str | Path) -> BhxFile:
     return parse(Path(path).read_bytes())
 
 
-# ---------------------------------------------------------------------------
-# Builder
-# ---------------------------------------------------------------------------
-
 def build(bhx: BhxFile) -> bytes:
     """Serialise a BhxFile back to raw BHX bytes."""
     out = bytearray()
@@ -204,28 +188,16 @@ def build_file(bhx: BhxFile, path: str | Path) -> None:
     Path(path).write_bytes(build(bhx))
 
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
 def from_binary_segments(
     segments: list[tuple[int, bytes]],
     ghdr_version: int = 1,
 ) -> BhxFile:
-    """
-    Convenience constructor.
-
-    segments: list of (start_address, data) tuples
-    """
+    """segments: list of (start_address, data) tuples."""
     bhx = BhxFile(ghdr_version=ghdr_version)
     for addr, data in segments:
         bhx.segments.append(Segment(start_address=addr, data=data))
     return bhx
 
-
-# ---------------------------------------------------------------------------
-# CLI
-# ---------------------------------------------------------------------------
 
 def _cmd_info(path: Path) -> None:
     bhx = parse_file(path)

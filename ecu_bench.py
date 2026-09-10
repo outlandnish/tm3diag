@@ -37,9 +37,6 @@ import can
 
 from can_decoder import CanDatabase
 
-# ---------------------------------------------------------------------------
-# Spec types — what each ECU module declares
-# ---------------------------------------------------------------------------
 
 @dataclass
 class Frame:
@@ -71,10 +68,8 @@ class BenchSpec:
     """Everything an ECU module hands to ecu_bench.run().
 
     ``on_init(state)`` runs once after the BenchState is created, before the
-    scheduler starts — use it to seed default vars and to return the control
-    verbs (it may return a dict of {name: callable} that is merged into
-    ``controls``). This lets control verbs close over the live BenchState
-    instead of a placeholder.
+    scheduler starts — use it to seed default vars and to return control verbs
+    (a dict of {name: callable} merged into ``controls``).
     """
     name: str
     frames: list[Frame]
@@ -82,17 +77,13 @@ class BenchSpec:
     immo: ImmoSpec | None = None
     db_path: str | None = None     # override CAN DB path (else config default)
     on_init: Callable[[BenchState], dict[str, Callable[..., Any]] | None] | None = None
-    # When True, run an RX listener that decodes every inbound frame via the CAN
-    # DB into state.signals (for closed-loop control like precharge).
+    # When True, run an RX listener that decodes every inbound frame into
+    # state.signals.
     listen: bool = True
     # Optional hook for non-DB raw frames (e.g. IVT-S 0x521-0x523 int32 fields):
     # rx_hook(state, can_id, data) -> may write into state.signals directly.
     rx_hook: Callable[[BenchState, int, bytes], None] | None = None
 
-
-# ---------------------------------------------------------------------------
-# Runtime state
-# ---------------------------------------------------------------------------
 
 class BenchState:
     """Mutable runtime shared by frame builders and control verbs.
@@ -107,8 +98,6 @@ class BenchState:
         self.db = db
         self.vars: dict[str, Any] = {}
         # Latest decoded value per signal name, populated by the RX listener.
-        # Builders/controls read this for closed-loop behavior (e.g. precharge
-        # waiting on a measured voltage, watching DI_immobilizerState).
         self.signals: dict[str, float | int] = {}
         self._lock = threading.Lock()
 
@@ -138,16 +127,8 @@ class BenchState:
             self.bus.send(msg)
 
 
-# ---------------------------------------------------------------------------
-# Periodic scheduler
-# ---------------------------------------------------------------------------
-
 class Scheduler:
-    """Runs each enabled Frame on its own interval in a single timer thread.
-
-    A single thread ticks at the GCD-ish base interval and emits each frame when
-    due, which keeps the TX cadence steady without one thread per frame.
-    """
+    """Runs each enabled Frame on its own interval in a single timer thread."""
 
     def __init__(self, state: BenchState, frames: list[Frame]) -> None:
         self._state = state
@@ -192,10 +173,6 @@ class Scheduler:
             self._thread.join(timeout=1)
 
 
-# ---------------------------------------------------------------------------
-# Immobilizer responder
-# ---------------------------------------------------------------------------
-
 class _ImmoResponder(can.Listener):
     """Answers 0x276 with 0x3D9 = the paired immobilizer response."""
 
@@ -237,15 +214,10 @@ class _ImmoResponder(can.Listener):
         pass
 
 
-# ---------------------------------------------------------------------------
-# RX listener — decode inbound frames into state.signals
-# ---------------------------------------------------------------------------
-
 class _RxCacheListener(can.Listener):
     """Decode every inbound frame via the CAN DB into ``state.signals``.
 
-    Runs an optional ``rx_hook`` first for raw/non-DB frames. Closed-loop control
-    verbs (e.g. precharge waiting on a measured voltage) read state.signals.
+    Runs an optional ``rx_hook`` first for raw/non-DB frames.
     """
 
     def __init__(self, state: BenchState,
@@ -269,10 +241,6 @@ class _RxCacheListener(can.Listener):
         pass
 
 
-# ---------------------------------------------------------------------------
-# Interactive shell
-# ---------------------------------------------------------------------------
-
 def _make_shell_namespace(state: BenchState, spec: BenchSpec,
                           sched: Scheduler) -> dict[str, Any]:
     ns: dict[str, Any] = {
@@ -285,7 +253,6 @@ def _make_shell_namespace(state: BenchState, spec: BenchSpec,
         "frames": spec.frames,
         "scheduler": sched,
     }
-    # Bind each control verb so the user calls e.g. gear("D"), pedal(25).
     ns.update(spec.controls)
 
     def help_() -> None:
@@ -308,10 +275,6 @@ def _sig(fn: Callable) -> str:
         return "(...)"
 
 
-# ---------------------------------------------------------------------------
-# Entry point
-# ---------------------------------------------------------------------------
-
 def run(spec: BenchSpec, channel: str, interface: str = "socketcan",
         *, interactive: bool = True) -> None:
     """Open the bus, start the scheduler + immobilizer, then drop into a shell."""
@@ -321,7 +284,6 @@ def run(spec: BenchSpec, channel: str, interface: str = "socketcan",
     notifier = can.Notifier(bus, [])
     state = BenchState(bus, db)
 
-    # Let the ECU module seed defaults and bind control verbs to the live state.
     if spec.on_init is not None:
         extra_controls = spec.on_init(state)
         if extra_controls:

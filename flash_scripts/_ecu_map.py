@@ -1,8 +1,7 @@
 """ECU_SCRIPT_MAP — lookup from `ecu_type` (lowercase) to (FlashScript, module_byte).
 
 Keys are lowercase ecu_type values from `signed_metadata_map.tsv`. Module
-bytes are sourced from the binary's node table at offset `+0x20` per
-docs/FIRMWARE_UPDATE.md.
+bytes come from each node's table entry (see docs/FIRMWARE_UPDATE.md).
 """
 
 from ._context import FlashScript
@@ -39,10 +38,9 @@ ECU_SCRIPT_MAP: dict[str, _Entry] = {
     # gtw3 — stub
     "gtw3": (SCRIPT_GTW3, 0x00),
 
-    # Standard script (0x00650fb0)
-    # All these ECUs have module byte 0x00 at +0x20 in the binary's node table.
-    # (The byte at +0x1C is a `node_id` used by `udsContextSwitch`, not the
-    # module byte — earlier versions of this comment had them confused.)
+    # Standard script
+    # All these ECUs have module byte 0x00 in the node table (distinct from the node_id used by
+    # udsContextSwitch).
     "hvbms":  (SCRIPT_STANDARD, 0x00),
     "cp":     (SCRIPT_STANDARD, 0x00),
     "epas3p": (SCRIPT_STANDARD, 0x00),
@@ -55,33 +53,29 @@ ECU_SCRIPT_MAP: dict[str, _Entry] = {
     "vcsec":  (SCRIPT_STANDARD, 0x00),
     "tas":    (SCRIPT_STANDARD, 0x00),
 
-    # CP PLC modem subcomponents — flashed via the CP MCU's bootloader using the
-    # same SCRIPT_STANDARD as the regular CP app, but with DISTINCT module bytes.
-    # The module byte (WDBI 0x0102) is NOT cosmetic here: the CP bootloader's
-    # RequestDownload window validator gates the allowed address range on the
-    # currently-selected module —
-    #     module 0x00 -> [0x8000, 0xe0000]    (CP app)
-    #     module 0x06 -> [0xe0000, 0x100000]  (cpPlcPib, loads @ 0xe0000)
-    #     module 0x08 -> [0x100000, 0x200000] (cpPlcFw,  loads @ 0x100000)
-    # so a RequestDownload for cpPlcFw/cpPlcPib under module 0x00 is rejected
-    # NRC 0x31 (requestOutOfRange). cpPlcFw is stored in CP flash @0x100000 and
-    # loaded into the QCA7420 PLC modem at boot; cpPlcPib (@0xe0000) is the modem
-    # PIB (Personality Identifier Block — modem config). Fails safe: a wrong
-    # module byte NRCs, it can't mis-target another region.
+    # CP PLC modem subcomponents — flashed via the CP MCU's bootloader with
+    # SCRIPT_STANDARD, but with distinct module bytes. The module byte (WDBI
+    # 0x0102) selects the bootloader's RequestDownload address window:
+    #     module 0x00 -> CP app
+    #     module 0x06 -> cpPlcPib
+    #     module 0x08 -> cpPlcFw
+    # cpPlcFw/cpPlcPib under module 0x00 is rejected NRC 0x31 (requestOutOfRange).
+    # cpPlcFw loads into the QCA7420 PLC modem at boot; cpPlcPib is the modem PIB
+    # (Personality Identifier Block).
     "cpplcfw":  (SCRIPT_STANDARD, 0x08),
     "cpplcpib": (SCRIPT_STANDARD, 0x06),
 
-    # vcfront / ibstcal (0x00651000)
+    # vcfront / ibstcal
     "vcfront": (SCRIPT_VCFRONT, 0x00),
     "ibstcal": (SCRIPT_IBSTCAL, 0x00),
 
-    # vcright (0x00651030)
+    # vcright
     "vcright": (SCRIPT_VCRIGHT, 0x00),
 
-    # vcleft (0x00651050)
+    # vcleft
     "vcleft": (SCRIPT_VCLEFT, 0x00),
 
-    # pcs/pcscpu2/di/dis/pm/pms/pmr/pmrs/dir/dirs (0x00651070)
+    # pcs/pcscpu2/di/dis/pm/pms/pmr/pmrs/dir/dirs
     #
     # Module bytes for primary/secondary CPU selection (DID 0x0102):
     #
@@ -104,17 +98,16 @@ ECU_SCRIPT_MAP: dict[str, _Entry] = {
     "dir":     (SCRIPT_PCS, 0x0C),
     "dirs":    (SCRIPT_PCS, 0x0C),
 
-    # park (0x006510d0)
+    # park
     "park": (SCRIPT_PARK, 0x00),
 
-    # aps (0x006510f0)
+    # aps
     "aps": (SCRIPT_APS, 0x00),
 
-    # RAM app scripts (0x00651110)
+    # RAM app scripts
     #
-    # Module bytes for *ramapp entries are drawn from EcuNodeEntry+0x20 in
-    # the binary. Same caveat as the di/dis/pcscpu2 case applies — this is
-    # the sim's context+0x29 override value, not a wire byte we've
+    # Module bytes for *ramapp entries come from the node table. Same caveat
+    # as di/dis/pcscpu2 — this is the override value, not a wire byte we've
     # empirically confirmed against real hardware. The first time we see a
     # successful flash log of any of these we should re-check.
     "vcleftramapp":  (SCRIPT_RAMAPP, 0x06),
@@ -130,48 +123,47 @@ ECU_SCRIPT_MAP: dict[str, _Entry] = {
     # 3-file PMS update (pms.bhx + dis.bhx + pmsramapp.bhx).
     #
     # Module byte = 0x00 is a CONSERVATIVE GUESS:
-    #   - matches the prog 1 bytecode literal at script_ramapp
-    #     (sub1 = `05 00` = moduleToProgram(0))
+    #   - matches the prog-1 moduleToProgram(0)
     #   - matches the parent PM/PMS wire byte (verified via EV Controls PM log)
     # If the bootloader rejects 0x00, try the existing ramapp values 0x06
     # / 0x0F next. Untested on hardware.
     "pmramapp":  (SCRIPT_RAMAPP, 0x00),
     "pmsramapp": (SCRIPT_RAMAPP, 0x00),
 
-    # ibst (0x00651140)
+    # ibst
     "ibst": (SCRIPT_IBST, 0x00),
 
-    # espcal / rcmcal (0x00651170)
+    # espcal / rcmcal
     "espcal": (SCRIPT_ESPCAL, 0x07),
     "rcmcal": (SCRIPT_ESPCAL, 0x07),
 
-    # esp (0x00651190)
+    # esp
     "esp": (SCRIPT_ESP, 0x00),
 
-    # rcm (0x006511d0)
+    # rcm
     "rcm": (SCRIPT_RCM, 0x00),
 
-    # tpms (0x006511f0)
+    # tpms
     "tpms": (SCRIPT_TPMS, 0x00),
 
-    # cmp (0x00651230)
+    # cmp
     "cmp": (SCRIPT_CMP, 0x00),
 
-    # ptc (0x00651270)
+    # ptc
     "ptc": (SCRIPT_PTC, 0x00),
 
-    # vcright/vcfront/vcsec ramapp, bleepcenter (0x00651290)
+    # vcright/vcfront/vcsec ramapp, bleepcenter
     "bleepcenter": (SCRIPT_RAMAPP_ALT, 0x0F),
 
-    # vcleftramapp alt (0x006512b0)
-    # (same key as RAMAPP above; 0x006512b0 is the prog-0 path with vendor preflight)
+    # vcleftramapp alt
+    # (same key as RAMAPP above; the prog-0 path with vendor preflight)
     # Differentiated by ecu_type suffix in TSV when needed; default to VCLEFTRAMAPP.
 
-    # opc / opcs (0x006512d0)
+    # opc / opcs
     "opc":  (SCRIPT_OPC, 0x0C),
     "opcs": (SCRIPT_OPC, 0x0C),
 
-    # ths / swc / lumbar* / bleep* (0x006512e0)
+    # ths / swc / lumbar* / bleep*
     "ths":      (SCRIPT_THS, 0x0C),
     "swc":      (SCRIPT_THS, 0x0C),
     "lumbarl":  (SCRIPT_THS, 0x0B),
@@ -194,10 +186,9 @@ ECU_SCRIPT_MAP: dict[str, _Entry] = {
 # For every parent ECU that ships a bootloader update, the metadata map carries
 # a `<parent>bu` (updater agent) and `<parent>bl` (bootloader image) ecu_type.
 # They flash via the parent ECU's CAN IDs (nothing extra at the transport
-# layer) and the module byte at +0x20 is 0x00 for all of them. The `bu` runs
-# script 0x00651300 (SCRIPT_BL_UPDATER), the `bl` runs 0x00651340 (SCRIPT_BL);
-# bu→bl→app order is mandatory. (The non-zero byte at +0x1C is the parent's
-# node_id, not the module byte.)
+# layer) and the module byte is 0x00 for all of them. The `bu` runs
+# SCRIPT_BL_UPDATER, the `bl` runs SCRIPT_BL; bu→bl→app order is mandatory.
+# (The other per-node byte is the parent's node_id, not the module byte.)
 #
 # `vcfront` is the one exception: its updater needs the VCRIGHT OTA preamble,
 # so `vcfrontbu` uses SCRIPT_BL_UPDATER_VCFRONT instead of SCRIPT_BL_UPDATER.

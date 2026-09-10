@@ -26,9 +26,7 @@ class FlashContext:
     # set by step_verify_comp_fw, consumed by step_security_access
     protocol_ver: int | None = None
     expected_fw_type: int = 0x01  # 1 = regular firmware; 2 = bootloader image
-    # CAN access plumbing for steps that need to open a transient session to
-    # another ECU (e.g. SCRIPT_BL_UPDATER_VCFRONT's VCRIGHT prep). Populated by
-    # phase 4 / `FlashScript.run` from the caller's CLI args.
+    # CAN access for steps that open a transient session to another ECU.
     channel: str | None = None
     interface: str | None = None
     display: StatusDisplay = field(default_factory=StatusDisplay)

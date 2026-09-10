@@ -2,49 +2,32 @@
 """CP node — charge port: liveness + EVSE-connection state.
 
 Sources three frames (0x25D only on the 2022.45.15 target):
-  0x210 CP_status     100ms dlc8 -- the vehicle-bus charge-port status message. Id +
-     layout verbatim from the CANData catalog / Model3_ETH.compact.json (2020.8.1):
-     CP_chargeCableState @16 w2, CP_doorControlState @13 w3 = doorSenseClosed(6).
-     NOTHING on the inverter bench consumes it -- it is the catalog-correct frame for
-     any other listener (UI/PCS/decoders).
-  0x25D CP_status (DIR-facing copy) 100ms dlc8 -- what the 2022 DIR actually subscribes
-     to for charge-port state. See below.
-  0x21D CP_evseStatus 100ms dlc8 -- the EVSE-connection report (origin=CP in
-     Model3_ETH.compact.json). Signal start/width verbatim from compact.json.
+  0x210 CP_status     100ms dlc8 -- vehicle-bus charge-port status (CANData catalog /
+     Model3_ETH.compact.json 2020.8.1): CP_chargeCableState @16 w2, CP_doorControlState
+     @13 w3 = doorSenseClosed(6). Nothing on the inverter bench consumes it.
+  0x25D CP_status (DIR-facing copy) 100ms dlc8 -- what the 2022 DIR subscribes to for
+     charge-port state.
+  0x21D CP_evseStatus 100ms dlc8 -- EVSE-connection report (origin=CP,
+     Model3_ETH.compact.json); signal start/width verbatim from compact.json.
 
-0x25D — WHY BOTH IDS (firmware-derived, do not "fix" this to 0x210 again)
-------------------------------------------------------------------------
-The MCU CANData catalog says CP_status is 0x210 and 0x25D is APP_trafficControl, and
-commit 0b6fceb moved the sim's frame to 0x210 on that basis. That regressed the drive
-bench: the *inverter* does not use the MCU catalog's mapping. In the 2022.45.15 gen-26
-DIR image the charge-port handler gates on id **0x25D**, DLC **8** — and
-0x210 appears nowhere in the DIR's 42-id RX table, so the 0x210 frame is never read.
-What that handler consumes is a single 2-bit field::
+0x25D field decode (2022.45.15 gen-26 DIR; 0x210 is not in the DIR's 42-id RX table):
 
     state = word0 >> 14                       # frame bits 14-15, little-endian
-    if (word0 & 0xC000) == 0: state = 0       # 0 = SNA -> treated as INVALID
+    if (word0 & 0xC000) == 0: state = 0       # 0 = SNA -> INVALID
 
-which then drives the cable-state map: value **1 -> 0 (cable NOT connected)**, 2 -> 1, and
-**anything else (including the 0/SNA default) -> 2 = connected**. So a *missing* 0x25D is
-not neutral — the DIR latches "charge cable connected" and the a168 proximityDriveDenial
-path sets ``DI_a162_chargeCableConnected``, which is exactly what the bench showed. 0x25D is also the ``DI_a105_cpMIA`` liveness member, so
-it must ARRIVE at 100 ms regardless of content.
+cable-state map: 1 -> 0 (cable NOT connected), 2 -> 1, anything else (incl 0/SNA) -> 2 =
+connected. A missing 0x25D therefore latches "cable connected", and the a168
+proximityDriveDenial path sets DI_a162_chargeCableConnected. 0x25D is also the
+DI_a105_cpMIA liveness member, so it must ARRIVE at 100 ms regardless of content.
 
-Bit 14, not 16: the 2019/2020 compact.json puts CP_chargeCableState at bit 16 but the
-2026 DBC has it at ``14|2@1+``, and the 2022 firmware reads bit 14 — the field moved. A
-live capture of a real controller driving a Model 3 DU confirms it on the wire: ``0x25D [8] 24 48 44
-C9 40 A1 02 90`` -> byte1 ``0x48 & 0xC0 = 0x40`` -> field = 1 = NOT_CONNECTED. Only bits
-14-15 are read by the DIR, so the rest of our 0x25D payload is left zero rather than
-guessing at the 2022 positions of the other CP_status signals (the 2020 CP_doorControlState
-@13 w3 would collide with bit 14 anyway). 0x210 keeps the 2020 layout: its own 2022 field
-positions are unverified and nothing on the bench reads it.
+Bit 14, not 16: 2019/2020 compact.json puts CP_chargeCableState at bit 16, the 2026 DBC
+at 14|2@1+, and the 2022 firmware reads bit 14. Live capture: 0x25D [8] 24 48 44 C9 40 A1
+02 90 -> byte1 0x48 & 0xC0 = 0x40 -> field = 1 = NOT_CONNECTED. Only bits 14-15 are read,
+so the rest of the 0x25D payload is left zero; 0x210 keeps the 2020 layout.
 
-The node OWNS whether an EVSE is plugged in and at what current limit (``evse_connected``
-/ ``evse_limit_a``). DEFAULT is UNPLUGGED (all-zero evseStatus, cable NOT_CONNECTED on
-both status copies), so a drive bench asserts no charge intent. The orchestrator simulates
-plugging in a charger via ``set_evse(connected, limit_a)``; that lets the rest of the car
-(UI charge request -> VCFRONT -> HVP/PCS) initiate a charge session off this reported EVSE
-state, and reports the cable as CONNECTED to the DIR.
+The node owns whether an EVSE is plugged in and at what current limit (evse_connected /
+evse_limit_a); default is UNPLUGGED. The orchestrator simulates plugging in via
+set_evse(connected, limit_a), which reports the cable CONNECTED to the DIR.
 """
 from __future__ import annotations
 
@@ -57,8 +40,7 @@ _PROX_LATCHED = 3           # CP_proximity: cable latched
 _PILOT_LINE_CHARGE = 2      # CP_pilot: AC line present
 _AC_CHARGE_ENABLED = 3      # CP_acChargeState
 
-# CP_chargeCableState (CANData value table): 0 = UNKNOWN_SNA is the one value that reads
-# as "connected" to the DIR, so never send it.
+# CP_chargeCableState (CANData value table): 0 = UNKNOWN_SNA reads as "connected" to the DIR.
 _CABLE_NOT_CONNECTED = 1
 _CABLE_CONNECTED = 2
 
@@ -81,8 +63,7 @@ class Cp(Node):
         ]
 
     def _frames_2022(self) -> list[SimFrame]:
-        # The 2022 DIR reads charge-port state on 0x25D, not 0x210 (module docstring).
-        # Both copies ship: 0x25D for the inverter, 0x210 for catalog-correct listeners.
+        # 2022 DIR reads charge-port state on 0x25D; both copies ship (see module docstring).
         return [
             *self.frames(),
             SimFrame("CP_status_0x25D", 0x25D, 0.100, self._cp_status_25d),
@@ -92,9 +73,8 @@ class Cp(Node):
         return {BASELINE_FW: self.frames, "2022.45.15": self._frames_2022}
 
     def set_evse(self, connected: bool, limit_a: float | None = None) -> bool:
-        """Driver externality: simulate an EVSE plugged in (or unplugged) at an optional
-        current limit (A). Reported on 0x21D CP_evseStatus for the charge session, and as
-        CP_chargeCableState on both CP_status copies."""
+        """Simulate an EVSE plugged in (or unplugged) at an optional current limit (A).
+        Reported on 0x21D CP_evseStatus and as CP_chargeCableState on both CP_status copies."""
         self.evse_connected = bool(connected)
         if limit_a is not None:
             self.evse_limit_a = float(limit_a)
@@ -119,13 +99,13 @@ class Cp(Node):
             ]
         )
 
-    def _cp_status_25d(self) -> bytearray:  # 0x25D, 100ms — the copy the 2022 DIR reads
-        # Bits 14-15 are the ONLY field the DIR extracts; the rest stays zero (see docstring).
+    def _cp_status_25d(self) -> bytearray:  # 0x25D, 100ms
+        # Bits 14-15 are the only field the DIR extracts; rest stays zero.
         return pack_le([(_CABLE_BIT_0X25D, 2, self._cable_state())])
 
     def _cp_evse_status(self) -> bytearray:  # 0x21D, 100ms
         if not self.evse_connected:
-            return pack_le([], 8)  # nothing plugged: all fields idle/zero
+            return pack_le([], 8)
         a = self.evse_limit_a
         return pack_le(
             [

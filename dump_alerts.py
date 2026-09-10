@@ -2,27 +2,17 @@
 """Dump the alert catalogue a firmware build exposes on each vehicle bus.
 
 Every build ships ``opt/odin/data/<model>/bus-alerts-map.json`` -- a per-model
-map of which alert IDs are reachable on which vehicle bus.  The IDs are stored
-as salted hashes, not in the clear: the map hash of an alert is
-``sha256(alert_str + salt)`` and a bus bucket is ``sha256(bus_name + salt)``,
-where the per-file salt is read from the map itself.  Because the alert strings
-are also present in the clear in the firmware (the alertd binary and
-libQtCarAlerts.so), the tool reverses the hashes by running known strings
-through the same recipe and matching.
+map of which alert IDs are reachable on which vehicle bus. IDs are stored as
+salted hashes: map hash = ``sha256(alert_str + salt)``, bus bucket =
+``sha256(bus_name + salt)``, with the per-file salt read from the map.
 
-Given a firmware root (or the ``TM3_ROOT`` in .env), the tool:
+Given a firmware root (or ``TM3_ROOT`` in .env), the tool:
   * loads each ``bus-alerts-map.json`` and resolves its bucket(s) to bus names;
-  * reverses the alert hashes against a plaintext catalogue it maintains
-    (``--catalog``) by running each known alert string through the recipe
-    and matching;
+  * reverses the alert hashes against a plaintext catalogue (``--catalog``);
   * for anything unresolved, scrapes the firmware image for alert-shaped
-    strings (``--scrape``) and folds newly-confirmed strings back into the
-    catalogue, so coverage improves every time a new revision is processed;
+    strings (``--scrape``) and folds newly-confirmed strings into the catalogue;
   * merges severity / UI panel info from service_ui/alerts.json (2025+);
   * writes ``<rev>-<model>-alerts.json`` per model and prints a summary.
-
-Firmware root, output dir and catalogue all default from .env / the repo, so a
-bare ``python dump_alerts.py`` works once .env is configured.
 
 Usage:
   python dump_alerts.py [firmware_root] [--out DIR] [--catalog FILE]
@@ -56,14 +46,11 @@ _NAMECHARS = set(
     "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_"
 )
 
-# Generated data (the growing catalogue + the per-model JSON dumps) lands here;
-# this dir is gitignored so extracted alert data is never committed by accident.
 _DEFAULT_OUT = _REPO / "alerts"
 _DEFAULT_CATALOG = _DEFAULT_OUT / "alert_catalog.txt"
 
 # Candidate bus names for resolving a bucket hash -> bus label. Tesla's Bus enum
-# only defines ETH for these platforms; the rest are kept so the tool keeps
-# working if bridged CAN buses are added to the map later.
+# only defines ETH for these platforms.
 BUS_NAMES = [
     "ETH", "eth", "VEHICLE", "vehicle", "PARTY", "party", "CHASSIS", "chassis",
     "PT", "pt", "BODY", "body", "POWERTRAIN", "powertrain", "CANV", "CAN",
@@ -107,10 +94,8 @@ def save_catalog(path: Path, catalog: set) -> None:
 def harvest_alertd(odin: Path) -> set:
     """Segment the concatenated alert strings inside the alertd Go binary.
 
-    Strings are stored back-to-back with no separators, so a name that ends in
-    an upper-case run merges into the next alert's prefix.  We slice from each
-    id anchor and keep every end position -- the caller validates against a
-    real hash, so over-captured variants are simply discarded.
+    Strings are stored back-to-back with no separators; slice from each id
+    anchor and keep every end position (over-captures fail hash validation).
     """
     out = set()
     binp = odin / "alertd"
@@ -141,22 +126,16 @@ def scrape_image(root: Path) -> set:
 
 
 def reverse_map(inner: set, salt: str, candidates: set) -> dict:
-    """Return {alert-hash: alert_str} for every inner hash we can explain.
-
-    For each candidate, try every end-trim so concatenated/over-captured raw
-    strings still yield their embedded real alert string.
-    """
+    """Return {alert-hash: alert_str} for every inner hash we can explain."""
     matched = {}
     for c in candidates:
         m = _ID_RE.match(c)
         if not m:
             continue
         ide = m.end()
-        # exact form first (fast path for clean catalogue entries)
         h = alert_hash(c, salt)
         if h in inner:
             matched.setdefault(h, c)
-        # end-trim variants (only needed for raw scraped/binary candidates)
         for e in range(ide + 2, len(c) + 1):
             if c[e - 1] not in _NAMECHARS:
                 break
@@ -202,7 +181,6 @@ def dump_one(map_path: Path, odin: Path, root: Path, catalog: set,
     buckets = data["c"]
     model = map_path.parent.name
 
-    # resolve bucket hashes -> bus names
     known = {bus_bucket(b, salt): b for b in BUS_NAMES}
     bus_of = {bh: known.get(bh, f"?{bh[:8]}") for bh in buckets}
 
@@ -220,10 +198,8 @@ def dump_one(map_path: Path, odin: Path, root: Path, catalog: set,
         found = reverse_map(inner_all, salt, scrape_image(root))
         for h, s in found.items():
             matched.setdefault(h, s)
-    # fold clean confirmed strings back into the catalogue
     catalog.update(matched.values())
 
-    # build per-bus alert records
     result = {"model": model, "salt": salt, "buses": {}}
     for bh, hashes in buckets.items():
         bus = bus_of[bh]
@@ -289,7 +265,6 @@ def main() -> None:
         sys.exit("no firmware root: pass one, or set TM3_ROOT in .env")
     root = Path(root)
     odin = find_odin_dir(root)
-    # the image root is the tree we scrape; if given opt/odin, climb to it
     img_root = root
     if odin == root:
         img_root = root.parents[1] if len(root.parents) >= 2 else root

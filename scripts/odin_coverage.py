@@ -22,7 +22,6 @@ from pathlib import Path
 import odin_runner
 
 # structural types handled outside the _ctrl_/_data_ dispatch, or non-executable
-# (networks.Output is materialized by Engine._collect_outputs, not a _ctrl_/_data_ method)
 _STRUCTURAL = {"networks.Enter", "comments.TaskInfo", "networks.Output"}
 _SUBNET_TYPES = {
     "networks.RunReferencedSubnetwork",
@@ -72,10 +71,8 @@ def collect(bundle: Path, relbase: str, visited: set, types: collections.Counter
             missing_files: set, dynamic: list, *, visit=None) -> None:
     """Union node types of a graph and everything it (statically) references.
 
-    `visit`, if given, is called `visit(name, node, relbase)` for every node
-    reached by the transitive walk (including INLINE-subnetwork inner nodes), so a
-    caller can gather per-node facts (e.g. CAN reads) over the same descent the
-    coverage counter uses -- no parallel walker needed.
+    `visit`, if given, is called `visit(name, node, relbase)` for every node reached by
+    the transitive walk (including INLINE-subnetwork inner nodes).
     """
     if relbase in visited:
         return
@@ -133,7 +130,7 @@ def main() -> int:
     p.add_argument("--top", type=int, default=25, help="worklist length")
     args = p.parse_args()
 
-    import config as _cfg  # odin_runner import already put the repo root on sys.path
+    import config as _cfg
     bundle = args.bundle or _cfg.ODIN_BUNDLE
     if bundle is None:
         p.error("no bundle: pass --bundle or set TM3_ROOT (or TM3_ODIN_BUNDLE) in .env")

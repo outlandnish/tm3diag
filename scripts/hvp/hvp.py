@@ -1,23 +1,16 @@
 #!/usr/bin/env python3
 """HVP node — High Voltage Processor: commands the PCS + owns the HV contactors.
 
-HVP is the ECU the PCS obeys. It sources two frames (both on the eth/vehicle bus,
-origin=hvp in Model3_ETH.compact.json):
+Two frames (both on the eth/vehicle bus, origin=hvp in Model3_ETH.compact.json):
 
   0x22A HVP_pcsControl     10ms dlc4 -- pcsControlRequest + charge/dcdc HW enables +
-                                        dcLinkVoltageRequest (what the PCS should do)
+                                        dcLinkVoltageRequest
   0x20A HVP_contactorState 10ms dlc6 -- pack contactor negative/positive/set states +
                                         closingAllowed / dcLinkAllowedToEnergize / hvil
 
-Signal start/width are taken verbatim from compact.json (2020.8.1 / Model3_ETH). Neither
-frame carries a rolling counter or checksum in that firmware, so these are plain frames.
-
-The node OWNS its control intent as internal state (``control`` / ``charge_hw`` /
-``dcdc_hw`` / ``contactor_stage`` / ``hv_voltage``) and broadcasts it every cycle. The
-DEFAULT is idle/safe (SHUTDOWN, contactors OPEN) so a drive bench that doesn't touch HVP
-asserts nothing. The driver/orchestrator drives a charge session by moving the node
-through modes via ``set_mode`` (off/dcdc/charge/both/precharge) -- eventually this will be
-reactive (HVP responding to BMS/VCFRONT/CP broadcasts) rather than directly commanded.
+Signal start/width taken verbatim from compact.json (2020.8.1 / Model3_ETH). Neither frame
+carries a rolling counter or checksum, so these are plain frames. Default is idle/safe
+(SHUTDOWN, contactors OPEN); ``set_mode`` drives a charge session through the modes.
 """
 from __future__ import annotations
 
@@ -52,12 +45,11 @@ class Hvp(Node):
 
     def __init__(self, ctx=None) -> None:
         super().__init__(ctx)
-        # Idle/safe default: PCS shut down, contactors open (drive bench unperturbed).
         self.control = "SHUTDOWN"
         self.charge_hw = False
         self.dcdc_hw = False
         self.contactor_stage = "open"
-        self.hv_voltage = 67.2  # V — DC-link target (bench 18S pack); orchestrator overrides
+        self.hv_voltage = 67.2  # V — DC-link target (bench 18S pack)
 
     def frames(self) -> list[SimFrame]:
         return [
@@ -92,9 +84,7 @@ class Hvp(Node):
         return {0x3A1: self._on_vcfront_status}  # VCFRONT_vehicleStatus
 
     def _on_vcfront_status(self, data, send) -> None:
-        # Command the PCS to charge once VCFRONT authorizes HV charging (bmsHvChargeEnable
-        # @0): SUPPORT + charge HW + contactors closed. Otherwise idle (SHUTDOWN, open).
-        # This is VCFRONT "starting a charge session with the PCS".
+        # bmsHvChargeEnable @0: charge -> SUPPORT + charge HW + contactors closed; else idle.
         charge = bool(int.from_bytes(bytes(data), "little") & 1)
         self.set_mode("charge" if charge else "off")
 
@@ -105,7 +95,7 @@ class Hvp(Node):
                 (16, 2, _PCS_CONTROL.get(self.control, 0)),  # HVP_pcsControlRequest
                 (18, 1, int(self.charge_hw)),            # HVP_pcsChargeHwEnabled
                 (19, 1, int(self.dcdc_hw)),              # HVP_pcsDcdcHwEnabled
-                # HVP_dcLinkVoltageFiltered@20w11 left 0 (no live measurement on the bench)
+                # HVP_dcLinkVoltageFiltered @20w11 left 0
             ],
             4,
         )

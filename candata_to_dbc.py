@@ -1,19 +1,12 @@
 """Build a rich Model 3 ETH DBC from the MCU UI CAN catalog.
 
-The infotainment ``libQtCarCANData.so`` embeds the *complete* vehicle signal
-catalog -- message IDs, DLCs, cycle times, signal names, units and enum value
-tables -- but not the numeric bit-layout (start bit / width / scale / offset).
-The per-revision ``Model3_ETH.compact.json`` has the bit-layout, but Tesla
-strips it down every release (2022.45.15: 140 messages in compact.json vs 446
-in the .so).
-
-This tool marries the two:
-
-    catalog (topology + units + enums)   <-  libQtCarCANData.so   (rich, full)
-    bit-layout (start/width/scale/off)    <-  compact.json donor(s) (authoritative)
-
-Signals present in the .so but with no layout donor can't be decoded, so they
-land in a coverage report rather than the DBC.
+``libQtCarCANData.so`` embeds the complete vehicle signal catalog -- message
+IDs, DLCs, cycle times, signal names, units, enum tables -- but not the numeric
+bit-layout (start bit / width / scale / offset). The per-revision
+``Model3_ETH.compact.json`` has the bit-layout but is stripped down each release
+(2022.45.15: 140 messages vs 446 in the .so). This tool overlays the .so catalog
+with compact.json layout; .so signals with no layout donor land in a coverage
+report rather than the DBC.
 
 Usage:
     # just dump the .so catalog as compact-schema JSON
@@ -122,10 +115,8 @@ def _layout_signals(donor_msg: dict) -> dict[str, dict]:
 def _index_donor_messages(donors: list[dict]):
     """Index donor messages by name and by id, each in donor-priority order.
 
-    Values are lists of (donor_index, donor_msg) so we can pick a single
-    self-consistent donor message per CAN message (mixing bit-layouts from
-    different firmware revisions inside one message causes overlaps -- Tesla
-    repurposes bits across releases).
+    Values are lists of (donor_index, donor_msg) so one self-consistent donor
+    message can be picked per CAN message.
     """
     by_name: dict[str, list[tuple[int, dict]]] = {}
     by_id: dict[int, list[tuple[int, dict]]] = {}

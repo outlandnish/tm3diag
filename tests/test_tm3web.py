@@ -1,10 +1,7 @@
 """Tests for scripts/tm3web.py logic that stands on its own.
 
-Two areas: the ODIN live cross-reference (/api/seen-signals), which filters the
-arrival-timestamp map by a freshness window and expands the surviving CAN ids to
-the signal names they carry; and the flusher's handling of ids the signal DB does
-not carry. Both run with app state injected directly -- no CAN bus, no reader
-thread.
+Covers the ODIN live cross-reference (/api/seen-signals) and the flusher's handling
+of ids the signal DB does not carry, with app state injected directly.
 """
 import asyncio
 import contextlib
@@ -18,8 +15,7 @@ from aiohttp.test_utils import TestClient, TestServer
 import tm3web
 from can_decoder import CanDatabase
 
-# A tiny DBC fixture (one message, id 0x100) so these tests never need the MCU
-# firmware compact JSON -- tm3web decodes from a DBC just as well.
+# A tiny DBC fixture (one message, id 0x100).
 _MINI_DBC = Path(__file__).parent / "fixtures" / "mini.dbc"
 
 
@@ -51,7 +47,7 @@ class TestSeenSignals:
                 assert data["window"] == tm3web._SEEN_WINDOW_S
                 assert "GTW_drivetrainType" in data["signals"]
                 assert "GTW_epasControlType" in data["signals"]
-                assert "DI_gear" not in data["signals"]      # stale id filtered out
+                assert "DI_gear" not in data["signals"]
                 assert data["signals"] == sorted(data["signals"])
         asyncio.run(body())
 
@@ -61,7 +57,7 @@ class TestSeenSignals:
             async with _client({0x200: now - 100.0}, {0x200: ("DI_gear",)}) as client:
                 r = await client.get("/api/seen-signals?window=1000")
                 data = await r.json()
-                assert data["signals"] == ["DI_gear"]        # now within the window
+                assert data["signals"] == ["DI_gear"]
                 assert data["window"] == 1000.0
         asyncio.run(body())
 
@@ -108,8 +104,7 @@ async def _flush_once(frames, *, show_unknown=True, node=""):
         "hubs": [_OneShotHub("vcan0", frames)],
         "flush_interval": 0.01,
         "dash_sig": {}, "faults": {}, "alert_ids": {}, "seen_msg": {},
-        # alertLog capture off: these tests are about frame forwarding, and the
-        # decoder would need the MCU firmware libs.
+        # alertLog capture off: these tests cover frame forwarding only.
         "alert_log": {}, "alert_decoder": None, "alertlog_ids": frozenset(),
         "show_unknown": show_unknown,
         "clients": {chan}, "raw_clients": set(),
@@ -133,9 +128,7 @@ def _an_unknown_id() -> int:
 
 
 class TestUnknownIds:
-    """A frame the DB can't name must still reach the viewer. Dropping it is how a
-    node that IS transmitting comes to look dead -- the regression that hid the
-    sim's APP/PTC nodes once they started sending ids the compact JSON lacks."""
+    """A frame the DB can't name must still reach the viewer, undecoded."""
 
     def test_unknown_id_is_forwarded_undecoded(self):
         async def body():
@@ -204,9 +197,7 @@ def _filter(**kw):
 
 class TestTxFilter:
     """python-can sets is_rx=False from MSG_DONTROUTE, which SocketCAN raises for
-    anything sent by ANY local process -- not just this socket (that is
-    MSG_CONFIRM). Dropping on it therefore hides everything vehicle_sim
-    broadcasts, which is what made the sim's nodes look dead in the viewer."""
+    any local process's frames -- not just this socket (that is MSG_CONFIRM)."""
 
     def test_locally_originated_frames_are_kept_by_default(self):
         f = _filter()
@@ -238,9 +229,8 @@ class TestTxFilter:
 class TestAlertLogCapture:
     """The alert-log store folds repeats and skips the idle broadcast.
 
-    Uses a stub decoder so the test needs no firmware libs -- what is under test
-    is tm3web's bookkeeping (dedupe key, count, first/last, cap), not the
-    alert_log field packing (tests/test_alert_log.py covers that).
+    Covers tm3web's bookkeeping (dedupe key, count, first/last, cap); field
+    packing is in tests/test_alert_log.py.
     """
 
     class _Dec:

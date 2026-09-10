@@ -69,9 +69,8 @@ def convert_db(db: dict, dst: Path) -> None:
     lines.append("")
 
     # ---- Named value tables ----
-    # The compact schema names each enum via `value_table_name`; the same name
-    # always maps to the same value set, so we can emit a shared VAL_TABLE_ for
-    # each and still keep per-signal VAL_ entries below for tool compatibility.
+    # Each enum is named via value_table_name; emit a shared VAL_TABLE_ for each,
+    # plus per-signal VAL_ entries below for tool compatibility.
     value_tables: dict[str, dict] = {}
     for msg in messages.values():
         for sig in msg.get("signals", {}).values():
@@ -86,7 +85,6 @@ def convert_db(db: dict, dst: Path) -> None:
     if value_tables:
         lines.append("")
 
-    # Collect all node names
     nodes: set[str] = set()
     for msg in messages.values():
         for n in msg.get("senders", []):
@@ -103,7 +101,6 @@ def convert_db(db: dict, dst: Path) -> None:
     lines.append("")
 
     # ---- Messages ----
-    # Collect value_descriptions to emit after all messages
     val_defs: list[tuple[int, str, dict]] = []  # (msg_id, sig_name, value_description)
 
     sig_comments: list[tuple[int, str, str]] = []  # (msg_id, sig_name, comment)

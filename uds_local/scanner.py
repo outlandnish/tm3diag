@@ -47,10 +47,6 @@ def scan_network(
             try:
                 bus.send(msg)
             except can.CanError as e:
-                # Abort the whole scan on a transmit failure. ENOBUFS (105)
-                # means the tx queue can't drain because nothing on the bus is
-                # ACKing — every subsequent send would fail too, so a full table
-                # of "no" responses would be misleading. Surface the real cause.
                 raise RuntimeError(
                     f"CAN transmit failed at {name} (tx 0x{tx_id:X}): {e}. "
                     "No frames are being ACKed — check that the bus is wired, "
@@ -93,8 +89,6 @@ def print_scan_table(results: list[ScanResult]) -> None:
     print(_c.dim("-" * len(header)))
     for r in results:
         resp_hex = r.response_data.hex() if r.response_data else "-"
-        # Nodes that never answered are the uninteresting majority — dim them
-        # so the responders (the rows you actually care about) stand out.
         responded = f"{'yes' if r.responded else 'no':<12}"
         positive = f"{'yes' if r.is_positive else ('no' if r.responded else '-'):<10}"
         row = (

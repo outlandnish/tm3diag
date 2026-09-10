@@ -9,10 +9,7 @@ Fixtures in tests/fixtures/highland/ are a verbatim capture from a Tesla service
                                  gateway's UDSDEBUG.LOG ("Config <name> id=.. value=..")
   - cbreaker.map                 the per-chassisType ECU roster (chassisType:2 = Highland)
 
-Unlike test_metadata.py (which points at an external deploy path that may not exist),
-these fixtures are committed, so this module always runs. It exercises the same
-load_metadata / find_firmware / packed_key_from_f180 path that dfu.py uses in the
-field, against genuine data with all its real-world quirks.
+Exercises the load_metadata / find_firmware / packed_key_from_f180 path dfu.py uses.
 """
 
 from __future__ import annotations
@@ -43,7 +40,7 @@ if not _FIXTURES.exists():
         allow_module_level=True,
     )
 
-# Build identifier stamped on this card (also appears in BOOTED.IMG/GW.HGZ at offset 0x14).
+# Build identifier stamped on this card.
 _GIT_SHA = "067a1dfcf133a88b994f7f9562dde8eae27155c0"
 _MAP_VERSION = "11"
 
@@ -67,13 +64,13 @@ class TestHighlandMetadataShape:
         assert len(entries) == 2647
 
     def test_git_sha_header_excluded(self, entries):
-        # The header line "<sha>\t<version>" must not be parsed as an entry.
+        # Header line "<sha>\t<version>" must not be parsed as an entry.
         assert all(e.lookup_key != _GIT_SHA for e in entries)
         first = _TSV.read_text().splitlines()[0].split("\t")
         assert first == [_GIT_SHA, _MAP_VERSION]
 
     def test_signature_is_64_bytes(self):
-        # Genuine Ed25519 detached signature over the .tsv.
+        # Ed25519 detached signature over the .tsv.
         assert _SIG.stat().st_size == 64
 
     def test_every_entry_well_formed(self, entries):
@@ -98,8 +95,7 @@ class TestFindFirmwareWithRealConfig:
         assert vehicle_config["chassisType"] == "2"
 
     def test_real_config_collapses_known_clean_cases(self, entries, vehicle_config):
-        # ECUs whose conditions are fully covered by the logged config resolve to a
-        # single firmware row. These are anchored from the captured card.
+        # ECUs whose conditions are fully covered by the logged config resolve to one row.
         clean = {
             "cbc:687865856": "cbc.bhx",
             "db:83886080": "db.bhx",
@@ -112,8 +108,6 @@ class TestFindFirmwareWithRealConfig:
             assert res[0].dest_name == dest
 
     def test_selection_never_crashes_and_returns_subset(self, entries, vehicle_config):
-        # For every lookup_key in the map, filtered selection must be a subset of the
-        # unfiltered matches and must never raise — the property dfu.py relies on.
         by_key = defaultdict(list)
         for e in entries:
             by_key[e.lookup_key].append(e)
@@ -121,17 +115,15 @@ class TestFindFirmwareWithRealConfig:
             ecu, pk = key.split(":")
             unfiltered = find_firmware(entries, ecu, int(pk))
             filtered = find_firmware(entries, ecu, int(pk), conditions=vehicle_config)
-            # FirmwareEntry is an unfrozen dataclass (unhashable), so compare by identity.
             assert all(any(f is u for u in unfiltered) for f in filtered)
             assert filtered, f"{key} returned no matches (should fall back to all)"
 
     def test_brake_gated_ecus_cannot_be_resolved_from_logged_config(
         self, entries, vehicle_config
     ):
-        # Documented real-world quirk: this card's logged config carries brakeHWType=1
-        # and no espValveType, but every esp/ibst row is gated on brake values 6/13/15/16/18
-        # (and esp rows use the lowercase key 'brakeHwType'). No row matches, so find_firmware
-        # correctly falls back to the full candidate set rather than mis-selecting.
+        # This card's logged config carries brakeHWType=1 and no espValveType, but every
+        # esp/ibst row is gated on brake values 6/13/15/16/18 (and esp rows use the lowercase
+        # key 'brakeHwType'). No row matches, so find_firmware falls back to the full set.
         for key in ("esp:84148225", "ibst:67305475"):
             ecu, pk = key.split(":")
             unfiltered = find_firmware(entries, ecu, int(pk))
@@ -139,8 +131,6 @@ class TestFindFirmwareWithRealConfig:
             assert len(filtered) == len(unfiltered) > 1
 
     def test_map_mixes_brake_key_casing(self, entries):
-        # Surface the genuine inconsistency in Tesla's data so a future case-folding
-        # change to find_firmware is a deliberate decision, not an accident.
         keys = set()
         for e in entries:
             keys.update(e.conditions)
@@ -161,8 +151,7 @@ class TestGatewayFlashEntry:
 
 class TestPackedKeyAgainstRealMap:
     def test_packed_key_resolves_a_real_entry(self, entries):
-        # Reconstruct a packed key from an F180-shaped response and confirm it indexes
-        # a real row. db:83886080 -> PCBA_ID=5, ASSEMBLY_ID=0, USAGE_ID=0.
+        # db:83886080 -> PCBA_ID=5, ASSEMBLY_ID=0, USAGE_ID=0.
         assert 83886080 == (5 << 24)
         f180 = bytes([0x00, 0x00, 0x1B, 0x05, 0x00, 0x00] + [0x00] * 13)
         assert packed_key_from_f180(f180) == 83886080
@@ -179,7 +168,6 @@ class TestConditionNarrowing:
         assert varying_condition_keys([e0, e1]) == []
 
     def test_single_entry_no_variation(self, entries):
-        # A set of one entry never has varying keys
         single = entries[:1]
         assert varying_condition_keys(single) == []
 
@@ -190,11 +178,9 @@ class TestConditionNarrowing:
             pytest.skip("no pmr entries in highland fixture")
         keys = varying_condition_keys(pmr)
         assert isinstance(keys, list)
-        # At least one key must vary (the whole point)
         assert len(keys) >= 1
 
     def test_wildcards_excluded_from_variation_analysis(self):
-        # Wildcard entries (conditions={}) must not pollute the varying-key analysis
         e_wild = FirmwareEntry("x:1", "x.bhx", "x.bhx", "x", "aa", {}, "sig")
         e_typed = FirmwareEntry("x:1", "x.bhx", "x.bhx", "x", "aa", {"vdcType": "0"}, "sig")
         e_typed2 = FirmwareEntry("x:1", "x.bhx", "x.bhx", "x", "aa", {"vdcType": "1"}, "sig")
@@ -210,7 +196,7 @@ class TestConditionNarrowing:
     def test_narrow_by_conditions_fallback_on_empty(self):
         e0 = FirmwareEntry("x:1", "a.bhx", "a.bhx", "x", "aa", {"vdcType": "0"}, "s")
         e1 = FirmwareEntry("x:1", "b.bhx", "b.bhx", "x", "bb", {"vdcType": "1"}, "s")
-        # Value "9" matches nothing → must return original list unchanged
+        # Value "9" matches nothing → returns the original list unchanged
         result = narrow_by_conditions([e0, e1], "vdcType", "9")
         assert result == [e0, e1]
 
@@ -219,8 +205,7 @@ class TestConditionNarrowing:
         e0 = FirmwareEntry("x:1", "a.bhx", "a.bhx", "x", "aa", {"vdcType": "0"}, "s")
         e1 = FirmwareEntry("x:1", "b.bhx", "b.bhx", "x", "bb", {"vdcType": "1"}, "s")
         result = narrow_by_conditions([e_wild, e0, e1], "vdcType", "0")
-        # Wildcard entry has no vdcType key → conditions.get("vdcType") is None ≠ "0"
-        # Only e0 matches. e_wild is excluded — callers decide whether to re-add wildcards.
+        # Wildcard entry has no vdcType key, so it is excluded; only e0 matches.
         assert result == [e0]
 
 
@@ -233,7 +218,6 @@ class TestPromptConditions:
 
     def test_no_varying_keys_returns_matches_unchanged(self, monkeypatch):
         import dfu
-        # prompt_select must never be called when there's nothing to decide
         monkeypatch.setattr("dfu.prompt_select", lambda *a, **kw: (_ for _ in ()).throw(AssertionError("should not prompt")))
         e0 = self._make_entry("a", {"vdcType": "0"})
         e1 = self._make_entry("b", {"vdcType": "0"})  # same value — no variation
@@ -276,7 +260,6 @@ class TestPromptConditions:
 
         assert len(calls) == 2
         assert set(calls) == {"Select drivetrainType", "Select vdcType"}
-        # After picking first value for each key, exactly one entry survives
         assert len(result) == 1
 
     def test_wildcard_entries_pass_through(self, monkeypatch):
@@ -287,8 +270,6 @@ class TestPromptConditions:
         e1 = self._make_entry("b", {"vdcType": "1"})
         from flash_scripts._display import StatusDisplay
         result = dfu._prompt_conditions([e_wild, e0, e1], StatusDisplay())
-        # Wildcard has no vdcType — narrow_by_conditions excludes it from the narrowed set.
-        # Only the matching typed entry survives.
         assert e_wild not in result
         assert len(result) == 1
 
@@ -341,7 +322,6 @@ class TestPromptConditions:
             return 0
         monkeypatch.setattr("dfu.prompt_select", fake_select)
 
-        # 4 entries so both keys vary independently after narrowing on either one.
         e00 = self._make_entry("a", {"drivetrainType": "0", "unknownKey": "0"})
         e01 = self._make_entry("b", {"drivetrainType": "0", "unknownKey": "1"})
         e10 = self._make_entry("c", {"drivetrainType": "1", "unknownKey": "0"})
@@ -351,7 +331,6 @@ class TestPromptConditions:
         dfu._prompt_conditions([e00, e01, e10, e11], StatusDisplay(), label_map=label_map)
 
         prompted = dict(calls)
-        # drivetrainType has labels
         assert prompted["Select drivetrainType"] == ["drivetrainType=0 (RWD)", "drivetrainType=1 (AWD)"]
         # unknownKey has no label entry — bare format
         assert prompted["Select unknownKey"] == ["unknownKey=0", "unknownKey=1"]

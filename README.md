@@ -26,11 +26,7 @@ source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
-The `source` line activates the virtual environment. You'll need to run it again in each new terminal session before using any of the tools:
-
-```bash
-source .venv/bin/activate
-```
+The `source` line activates the virtual environment; re-run it in each new terminal session before using any of the tools.
 
 ### 2. Configure your CAN interface
 

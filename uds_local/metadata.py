@@ -62,7 +62,6 @@ def find_firmware(
     lookup_key = f"{ecu_name.lower()}:{packed_key}"
     matches = [e for e in entries if e.lookup_key == lookup_key]
     if conditions:
-        # Prefer entries whose conditions are a subset of the supplied conditions
         filtered = [
             e for e in matches
             if not e.conditions or all(

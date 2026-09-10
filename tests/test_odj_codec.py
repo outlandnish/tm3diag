@@ -1,9 +1,7 @@
 """Tests for uds_local/odj_codec.py.
 
-Self-contained: the FieldSpec/SubSpec layouts here mirror the REAL DIR ODJ
-RESOLVER_LEARNING / OFFSET_LEARNING results specs (dumped from firmware), so the
-codec is validated against ground truth without needing the ODJ files present.
-Expected values are cross-checked against scripts/di/resolver_cal.py's hand-parse.
+The FieldSpec/SubSpec layouts mirror the DIR ODJ RESOLVER_LEARNING / OFFSET_LEARNING
+results specs, cross-checked against scripts/di/resolver_cal.py.
 """
 import struct
 
@@ -63,7 +61,7 @@ class TestResolverDecode:
         # flags 0x14: LEARN_RESULT=4 (bits0-2), WRITE_FAILED=0 (bit3), RUNNING=1 (bit4)
         out = decode_response(_RESOLVER_RESULTS, _resolver_payload(table, 256, 0x14))
         assert out["ERRORTABLE"] == table          # type=bytes -> raw 184 bytes
-        assert out["RMSERROR"] == 256              # int16 BE (raw; scaling is caller-side)
+        assert out["RMSERROR"] == 256              # int16 BE (raw)
         assert out["LEARN_RESULT"] == "SPEED_RANGE"
         assert out["RUNNING"] is True              # TRUE/FALSE enum -> bool
         assert out["WRITE_FAILED"] is False
@@ -80,8 +78,8 @@ class TestResolverDecode:
         assert raw["RUNNING"] == 1
 
     def test_matches_resolver_cal_bitmath(self):
-        # cross-check the exact expressions resolver_cal.parse_resolver_result uses
-        flags = 0x1C  # LEARN=4? no: 0x1C = 0b0001_1100 -> LEARN=4, WRITE=1(bit3), RUN=1(bit4)
+        # cross-check resolver_cal.parse_resolver_result's bit expressions
+        flags = 0x1C  # 0b0001_1100 -> LEARN=4, WRITE=1 (bit3), RUN=1 (bit4)
         out = decode_response(_RESOLVER_RESULTS, _resolver_payload(b"\x00" * 184, 0, flags),
                               parsed=False)
         assert out["LEARN_RESULT"] == (flags & 0x07)
@@ -150,9 +148,7 @@ class TestEncode:
         assert encode_request(None, {}) == b""
 
     def test_multibyte_field_is_big_endian(self):
-        # Regression: byte-aligned multi-byte inputs go out big-endian (the wire
-        # convention). tm3diag's old _prompt_routine_inputs hand-packed LSB-first,
-        # so 0x1234 wrongly became b"\x34\x12".
+        # byte-aligned multi-byte inputs go out big-endian (the wire convention)
         sub = SubSpec(security_level=0, input_size=2, output_size=0, output={},
                       input={"V": _fs(16, 0, data_type="uint")})
         assert encode_request(sub, {"V": 0x1234}) == b"\x12\x34"

@@ -1,11 +1,9 @@
 #!/usr/bin/env python3
-"""APP node — the "app" liveness the DIR monitors -> DI_a108_appMIA. Bus A / CANA.
+"""APP node — liveness the DIR monitors (DI_a108_appMIA). Bus A / CANA.
 
-Firmware-CONFIRMED 2022-new: the 2020 DIR has no CAN-id load for 0x25C; the 2022 DIR
-receives it (DLC1, NO checksum/counter — arrival-only). It reads byte0 bit0 into a stored
-flag; 0 is a valid value, so a zero payload is safe liveness that clears appMIA. Because it
-does not exist in 2020, it lives ONLY in fw_variants()["2022.45.15"] -- a --fw 2020 bench
-sends nothing here; a --fw 2022.45.15 (or newer) bench sends it.
+0x25C exists only on the 2022 DIR (not 2020): DLC1, arrival-only (no
+checksum/counter). byte0 bit0 is read into a stored flag; a zero payload is
+valid liveness that clears appMIA. Lives only in fw_variants()["2022.45.15"].
 """
 from __future__ import annotations
 

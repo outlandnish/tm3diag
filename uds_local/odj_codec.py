@@ -1,26 +1,14 @@
 """Encode UDS request payloads / decode response payloads from ODJ field specs.
 
-Generalizes the hand-written parse in ``scripts/di/resolver_cal.py`` into a
-table-driven codec off the ODJ ``SubSpec``/``FieldSpec`` metadata, so the ODIN
-runner's odx.* nodes (start/stop/results routines, read/write DID) can name
-parameters instead of slicing bytes.
-
-Wire convention (confirmed against the DIR ``RESOLVER_LEARNING``/``OFFSET_LEARNING``
-results specs, which match resolver_cal byte-for-byte):
+Wire convention:
   * Byte-aligned multi-byte fields (``bit_position == 0`` and ``bit_length`` a
-    multiple of 8) are **big-endian** -- the C28x ECUs byte-swap each 16-bit word
-    before returning it, so on the wire the high byte comes first. ``int`` is
-    signed, ``uint`` unsigned, ``ascii``/``bytes`` returned as text/raw.
+    multiple of 8) are **big-endian**. ``int`` is signed, ``uint`` unsigned,
+    ``ascii``/``bytes`` returned as text/raw.
   * Sub-byte fields are **LSB-relative bit fields** within the byte at
     ``byte_position`` (e.g. ``RUNNING`` = bit 4 of byte 186).
 
 ``parsed=True`` applies ``enum_map`` (raw value -> enum name); ``parsed=False``
-returns the raw number -- the OdxGetParsedValue vs OdxGetRawValue distinction.
-
-NOTE: ``odj.FieldSpec`` currently carries only the *enum* map, not *linear*
-(slope/offset) scaling, so a parsed scaled field (e.g. RMSERROR x 1/512) decodes
-as its raw integer. Enum-status fields -- what graphs branch on -- are exact;
-adding linear scaling is a follow-up in odj.py + here.
+returns the raw number.
 """
 from __future__ import annotations
 
@@ -51,7 +39,7 @@ def decode_field(fs: FieldSpec, data: bytes, *, parsed: bool = True):
             return raw
         value = int.from_bytes(raw, "big", signed=(fs.data_type == "int"))
     elif fs.bit_length < 8 and fs.bit_position + fs.bit_length <= 8:
-        # sub-byte flag/enum within a single byte (all observed ODJ bit-fields)
+        # sub-byte flag/enum within a single byte
         if fs.byte_position >= len(data):
             return None
         value = (data[fs.byte_position] >> fs.bit_position) & ((1 << fs.bit_length) - 1)
@@ -62,8 +50,7 @@ def decode_field(fs: FieldSpec, data: bytes, *, parsed: bool = True):
             f"unsupported field layout: bit_position={fs.bit_position} "
             f"bit_length={fs.bit_length} (multi-byte non-aligned not seen in ODJ)")
     if parsed and fs.enum_map:
-        # A pure TRUE/FALSE enum decodes to a Python bool so graphs can compare a
-        # status against literal True/False (e.g. RUNNING vs in_progress=[True]).
+        # Pure TRUE/FALSE enum decodes to a Python bool.
         if {k.upper() for k in fs.enum_map} == {"TRUE", "FALSE"}:
             return bool(value)
         inverse = {v: k for k, v in fs.enum_map.items()}
@@ -88,13 +75,9 @@ def _coerce_scalar(fs: FieldSpec, value):
 def encode_fields(fields: dict[str, FieldSpec], values: dict,
                   input_size: int | None = None) -> bytes:
     """Build a request payload from a {name: value} dict per a set of FieldSpecs:
-    byte-aligned fields are **big-endian** (the wire convention), sub-byte fields are
-    LSB-relative bit fields. Fields absent from ``values`` are zero-fill; the buffer is
-    at least ``input_size`` bytes.
-
-    Shared packer for everything that sends named UDS inputs -- routine start/stop
-    (SubSpec), WriteDataByIdentifier (SubSpec), and InputOutputControl (IoControlEntry)
-    -- so they all pack identically (and correctly) to the wire.
+    byte-aligned fields are **big-endian**, sub-byte fields are LSB-relative bit
+    fields. Fields absent from ``values`` are zero-fill; the buffer is at least
+    ``input_size`` bytes.
     """
     if not fields:
         return b""

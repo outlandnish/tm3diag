@@ -1,11 +1,9 @@
 """Decode the real Highland gateway image (GW.HGZ) with the project's tooling.
 
-GW.HGZ is the gzip'd Intel HEX gateway app (gtw3/221/gwapp.img) captured from a
-Tesla service SD card. It is a dual-bank image: two type-05 Start Linear Address
-records (one entry point per bank), which intelhex's loader rejects as a
-DuplicateStartAddressRecordError. ihex.parse_* strips the start-address records
-and keeps all data, so both banks decode. These tests lock in that behaviour and
-the exact bank layout of this build (git SHA 067a1dfc...).
+GW.HGZ is the gzip'd Intel HEX gateway app (gtw3/221/gwapp.img) from a Tesla service
+SD card. It is dual-bank: two type-05 Start Linear Address records (one per bank),
+which intelhex rejects as DuplicateStartAddressRecordError; ihex.parse_* strips the
+start-address records and keeps all data, so both banks decode. (build git SHA 067a1dfc)
 """
 
 from __future__ import annotations
@@ -26,7 +24,7 @@ if not _HGZ.exists():
         allow_module_level=True,
     )
 
-# Bank layout of this gateway build, verified against the decoded image.
+# Bank layout of this gateway build.
 _BANK_A = (0x00FB0000, 113504, "e776ce6d")
 _BANK_B = (0x00FD0000, 113504, "1e9456e4")
 
@@ -58,7 +56,6 @@ class TestGatewayDualBankDecode:
         assert crcs == [_BANK_A[2], _BANK_B[2]]
 
     def test_banks_are_distinct(self, hgz_bytes):
-        # Two genuinely different banks, not a duplicate of one.
         img = parse_bytes(hgz_bytes)
         a, b = sorted(img.segments, key=lambda s: s.start_address)
         assert a.data != b.data
@@ -85,9 +82,8 @@ class TestDecodeToHex:
         out = decode_to_hex(_HGZ, tmp_path / "gw.hex")
         assert out.exists() and out.suffix == ".hex"
         text = out.read_text()
-        # Canonical Intel HEX: ends with the EOF record.
+        # Intel HEX EOF record
         assert text.rstrip().endswith(":00000001FF")
-        # The duplicate Start Linear Address records are gone on the round trip.
         dup_starts = [
             ln for ln in text.splitlines()
             if ln.startswith(":") and ln[7:9] in ("03", "05")
@@ -119,7 +115,6 @@ class TestDecodeToHex:
 
 class TestParseFileAcceptsPathAndStr:
     def test_path_and_str_agree(self, hgz_bytes, tmp_path):
-        # parse_file takes decoded HEX text (the .hgz is gzip; _load_image gunzips).
         hex_path = tmp_path / "gw.hex"
         hex_path.write_bytes(hgz_bytes)
         from_path = parse_file(hex_path)

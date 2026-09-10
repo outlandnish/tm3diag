@@ -71,7 +71,6 @@ class TestArgValidation:
 
     def test_scan_does_not_require_node(self):
         # --channel is a global flag (before the subcommand).
-        # scan fails at CAN open or import, not argparse — so exit code != 2.
         r = subprocess.run(
             [_PY, _TOOL, "--channel", "vcan0", "scan"],
             capture_output=True, text=True,

@@ -1,15 +1,11 @@
 #!/usr/bin/env python3
 """VCSEC node — vehicle security controller: the runtime immobilizer handshake.
 
-The 0x3D9 immobilizer RESPONSE is VCSEC's message: the DIR sends the parked 0x276
-challenge and verifies the reply locally.
-
-VCSEC sources no PERIODIC frames; it owns a reactive state machine: on the 0x276
-challenge it answers 0x3D9 once per counter. The response is computed by a
-key-derivation provider you configure (see docs/SECURITY_PROVIDER.md) — the
-framework ships no immobilizer algorithm. The driver hands it the resolved key
-via ``immo_key``; with no key/provider (or --real VCSEC / --no-immo) it stays
-silent.
+VCSEC sources no periodic frames; it owns a reactive state machine: on the DIR's parked 0x276
+challenge it answers 0x3D9 once per counter. The response is computed by a key-derivation
+provider you configure (see docs/SECURITY_PROVIDER.md) — the framework ships no immobilizer
+algorithm. The driver hands it the resolved key via ``immo_key``; with no key/provider (or
+--real VCSEC / --no-immo) it stays silent.
 """
 from __future__ import annotations
 
@@ -37,9 +33,7 @@ class Vcsec(Node):
     def _on_challenge(self, data, send) -> None:
         if self.immo_key is None or len(data) < 8:
             return
-        # Response is derived by the configured key-derivation provider; the
-        # framework ships no immobilizer algorithm. Fail closed (silently) if
-        # none is configured.
+        # Response derived by the configured key-derivation provider; fail closed if none.
         from uds_local.security_provider import challenge_counter, challenge_response_l04
 
         try:

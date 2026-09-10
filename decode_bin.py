@@ -101,7 +101,7 @@ def decode_all(src_dir: Path, odj_dir: Path, compact_out: Path) -> None:
     # ODJ: <name>.odj.bin -> odj_dir/<name>.odj
     odj_bins = list(src_dir.rglob("*.odj.bin"))
     for path in sorted(odj_bins):
-        stem = path.name.removesuffix(".bin")  # keeps .odj extension
+        stem = path.name.removesuffix(".bin")
         dest = odj_dir / stem
         print(f"ODJ  {path.name} ...", end=" ", flush=True)
         try:

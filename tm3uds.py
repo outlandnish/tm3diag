@@ -83,7 +83,6 @@ def cmd_read_did(args: argparse.Namespace) -> None:
         data = sess.read_did(did_id)
     print(f"{did_name} (0x{did_id:04X}): {data.hex()}")
 
-    # Decode fields from ODJ if name is known
     entry = cfg.dids.get(did_name)
     expected_size = entry.read.output_size if entry and entry.read else None
     if expected_size is not None:
@@ -191,7 +190,6 @@ def build_parser() -> argparse.ArgumentParser:
 
     sub = parser.add_subparsers(dest="command", required=True)
 
-    # scan
     p_scan = sub.add_parser(
         "scan", help="Probe all nodes for TesterPresent response",
     )
@@ -199,7 +197,6 @@ def build_parser() -> argparse.ArgumentParser:
         "--timeout", type=float, default=0.1, help="Per-node timeout (s)")
     p_scan.set_defaults(func=cmd_scan)
 
-    # identity
     p_id = sub.add_parser(
         "identity",
         help="Read DID 0xF180 and report the firmware lookup key",
@@ -211,7 +208,6 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_id.set_defaults(func=cmd_identity)
 
-    # read-did
     p_rdid = sub.add_parser(
         "read-did", help="Read a DID (0x22)",
         parents=[parent_node],
@@ -219,7 +215,6 @@ def build_parser() -> argparse.ArgumentParser:
     p_rdid.add_argument("did", help="DID name or 0xHEX id")
     p_rdid.set_defaults(func=cmd_read_did)
 
-    # write-did
     p_wdid = sub.add_parser(
         "write-did", help="Write a DID (0x2E)",
         parents=[parent_node],
@@ -228,7 +223,6 @@ def build_parser() -> argparse.ArgumentParser:
     p_wdid.add_argument("data", help="Hex data to write (no spaces required)")
     p_wdid.set_defaults(func=cmd_write_did)
 
-    # routine
     p_rc = sub.add_parser(
         "routine", help="Execute a RoutineControl (0x31 01)",
         parents=[parent_node],
@@ -238,7 +232,6 @@ def build_parser() -> argparse.ArgumentParser:
         "arg", nargs="?", default="", help="Optional argument hex bytes")
     p_rc.set_defaults(func=cmd_routine)
 
-    # io-control
     p_ioc = sub.add_parser(
         "io-control", help="InputOutputControlByIdentifier (0x2F)",
         parents=[parent_node],
@@ -248,7 +241,6 @@ def build_parser() -> argparse.ArgumentParser:
         "data", nargs="?", default="", help="Optional hex data bytes")
     p_ioc.set_defaults(func=cmd_io_control)
 
-    # security-access
     p_sa = sub.add_parser(
         "security-access",
         help="Enter programming session + full seed/key exchange",
@@ -256,7 +248,6 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_sa.set_defaults(func=cmd_security_access)
 
-    # session
     p_sess = sub.add_parser(
         "session", help="Switch diagnostic session",
         parents=[parent_node],
@@ -266,14 +257,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="Session: default|programming|extended|safety or 0xNN")
     p_sess.set_defaults(func=cmd_session)
 
-    # reset
     p_rst = sub.add_parser(
         "reset", help="ECU hard reset (0x11 01)",
         parents=[parent_node],
     )
     p_rst.set_defaults(func=cmd_reset)
 
-    # clear-dtc
     p_cdtc = sub.add_parser(
         "clear-dtc",
         help="ClearDiagnosticInformation (0x14) — group 0xFFFFFF",
@@ -288,7 +277,6 @@ def main() -> int:
     parser = build_parser()
     args = parser.parse_args()
 
-    # Commands that need --node
     if args.command != "scan" and not args.node:
         parser.error(f"--node is required for '{args.command}'")
 

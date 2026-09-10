@@ -17,12 +17,11 @@ def _bar(current: int, total: int, width: int = 28) -> str:
 
 
 class StatusDisplay:
-    """Maintains a two-line block (header + detail) that updates in place.
+    """Two-line block (header + detail) updated in place.
 
-    Call set_header() once per phase/section, then set_detail() for each
-    sub-step — only the detail line is overwritten. Call finalize() before
-    any interactive prompt or multi-line static output so subsequent prints
-    don't clobber the status block.
+    set_header() once per phase, then set_detail() per sub-step (only the detail
+    line is overwritten). Call finalize() before any interactive prompt or
+    multi-line output.
     """
 
     def __init__(self) -> None:
@@ -36,7 +35,7 @@ class StatusDisplay:
 
     def set_detail(self, detail: str) -> None:
         if self._lines >= 2:
-            self._erase(1)  # erase only the detail line
+            self._erase(1)
         print(f"  {detail}")
         sys.stdout.flush()
         if self._lines < 2:

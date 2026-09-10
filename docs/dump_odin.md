@@ -20,7 +20,7 @@ python dump_odin.py <firmware_root> --no-decompile     # extract only
 Output lands under `--out` (default `~/dev/odin-dumps/<root name>/`):
 `extracted/` (raw `.pyc` + PYZ) and `src/` (decompiled `.py`).
 
-## Interpreter resolution (important)
+## Interpreter resolution
 
 `pyinstxtractor` must unmarshal the PYZ under the **same** Python major.minor as
 the frozen build, or it silently skips PYZ extraction (leaving only bootstrap

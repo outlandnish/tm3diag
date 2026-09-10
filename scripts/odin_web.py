@@ -2,38 +2,31 @@
 """odin_web.py -- aiohttp route glue exposing the ODIN runner + DID read/write over
 HTTP + WebSocket, for the tm3web.
 
-All the logic lives here; tm3web wires it in with a single setup_routes(app, ...)
-call, so the interface gets:
+tm3web wires it in with a single setup_routes(app, ...) call, exposing:
   * GET  /api/odin/procedures[?all=1]  -> the runnable (or full) procedure list
   * GET  /api/odin/requirements?procedure=<basename>
-                                       -> what the proc expects on the bus (the CAN
-                                          signals it reads, alert buses, UDS target
-                                          nodes, preconditions) -- see
+                                       -> what the proc expects on the bus (CAN signals
+                                          read, alert buses, UDS target nodes,
+                                          preconditions); see
                                           odin_service.procedure_requirements.
   * POST /api/odin/run {procedure}     -> run one proc; returns the RunResult dict.
-                                          Progress (trace/metric/done/error events)
-                                          is broadcast to /ws/odin while it runs.
+                                          Progress events broadcast to /ws/odin.
   * GET  /ws/odin                      -> server->client progress stream
   * GET  /api/did/{node}               -> the node's readable/writable DIDs
   * POST /api/did/read  {node, did}    -> read + decode a DID
   * POST /api/did/write {node, did, values} -> write a DID
-  * GET  /api/uds/nodes                -> UDS-addressable nodes (name + tx/rx ids),
-                                          so the UI can offer a picker instead of a
-                                          free-text box
+  * GET  /api/uds/nodes                -> UDS-addressable nodes (name + tx/rx ids)
   * GET  /api/uds/ops                  -> the low-level UDS operation catalog
-                                          (id, args, danger flag) -- the UI builds
-                                          its form from this.
+                                          (id, args, danger flag)
   * POST /api/uds/op {node, op, args}  -> run one low-level UDS operation
 
-The Engine is SYNCHRONOUS (real sleeps on the bench), so a run goes through
-loop.run_in_executor; the runner's on_event callback (called from the executor
-thread) hands events back to the loop via call_soon_threadsafe -> an asyncio.Queue
--> the /ws/odin broadcast. One run at a time (a lock; a second run gets 409).
+The Engine is synchronous, so a run goes through loop.run_in_executor; on_event events
+reach /ws/odin via an asyncio.Queue. One run at a time (a lock; a second run gets 409).
 
 Backends/sessions are injected so this is testable with no bus:
   * backend_factory() -> a odin_runner.Backend (or 'mock'/'bench'); default 'mock'.
   * node_provider(node) -> (NodeConfig, session) for DID ops; without it, the DID
-    read/write endpoints report 503 (no bench).
+    read/write endpoints report 503.
 """
 
 from __future__ import annotations
@@ -88,8 +81,7 @@ class OdinWeb:
         return _json(procs)
 
     async def requirements(self, basename: str) -> dict:
-        # procedure_requirements walks the proc's whole graph (blocking file I/O) ->
-        # executor + per-basename cache (the bundle is static at runtime).
+        # blocking graph walk -> executor + per-basename cache.
         if basename not in self._req_cache:
             loop = asyncio.get_running_loop()
             self._req_cache[basename] = await loop.run_in_executor(
@@ -131,8 +123,7 @@ class OdinWeb:
 
     async def _run(self, proc: str) -> dict:
         loop = asyncio.get_running_loop()
-        # Build the backend FIRST: if backend_factory raises (e.g. no CAN channel),
-        # fail before the pump task starts so nothing leaks.
+        # Build the backend before starting the pump so a factory error leaks nothing.
         backend = self._backend_factory() if self._backend_factory else "mock"
         q: asyncio.Queue = asyncio.Queue()
 
@@ -242,9 +233,7 @@ class OdinWeb:
 
     # -- low-level UDS ops -------------------------------------------------------
     async def _h_uds_nodes(self, request: web.Request) -> web.Response:
-        """Every node with a UDS request/response pair in nodes.json. Static config,
-        not bus state, so it needs no backend -- the DID and low-level tabs both
-        populate their node picker from it."""
+        """Every node with a UDS request/response pair in nodes.json (static config, no backend)."""
         try:
             nodes = await asyncio.get_running_loop().run_in_executor(None, _list_uds_nodes)
         except Exception as e:  # noqa: BLE001  (missing/!readable config)
@@ -286,18 +275,10 @@ class OdinWeb:
         return _json({"op": op, "node": node, "result": res})
 
 
-# ---------------------------------------------------------------------------
-# Low-level UDS operations
-# ---------------------------------------------------------------------------
-# The primitives the ODIN procedures are built out of, exposed on their own: when
-# you are bringing a bench ECU up, no packaged procedure covers "put this node in
-# its bootloader and tell me what it thinks it is". Every op maps to a method that
-# already exists on UdsSession (or, for the bootloader pair, to the backend's
-# ensure_application_state -- the same reset + TesterPresent-flood handover the
-# flasher uses, so the state tracking stays consistent with a subsequent run).
-#
-# The catalog is data: the UI renders a form per op from `fields` and refuses to
-# fire a `danger` op without a confirm. Keep the two in sync by adding here only.
+# Low-level UDS operations: primitives the ODIN procedures are built from, exposed on
+# their own. Each op maps to a UdsSession method (or, for the bootloader pair, the
+# backend's ensure_application_state). The catalog is data: the UI renders a form per op
+# from `fields` and refuses a `danger` op without a confirm.
 
 _SESSION_MODES = {"default": 0x01, "programming": 0x02, "extended": 0x03, "safety": 0x04}
 
@@ -415,8 +396,7 @@ _uds_node_cache: list[dict] | None = None
 
 
 def _list_uds_nodes() -> list[dict]:
-    """(name, tx, rx) for every UDS-addressable node, sorted and cached -- the file
-    is static for the life of the process."""
+    """(name, tx, rx) for every UDS-addressable node, sorted and cached."""
     global _uds_node_cache
     if _uds_node_cache is None:
         import config as _cfg
@@ -430,9 +410,7 @@ def _list_uds_nodes() -> list[dict]:
 
 
 def _as_hex_int(val, default: int = 0) -> int:
-    """Parse a hex-typed field: 0xF180, F180, "f180" or an already-int value.
-    HEX, not decimal -- every caller is a DID / routine / DTC-group field, where
-    the user types hex without thinking about it."""
+    """Parse a hex-typed field: 0xF180, F180, "f180", or an already-int value (always hex)."""
     if val is None or val == "":
         return default
     if isinstance(val, bool):
@@ -450,8 +428,7 @@ def _as_bytes(val) -> bytes:
 
 
 def _probe_state(sess) -> dict:
-    """Mirror flash_scripts._steps.step_probe_bootloader_state: fw_type from 0xF180
-    byte 8, cross-checked against whether 0xF181 (app-only) answers."""
+    """fw_type from 0xF180 byte 8, cross-checked against whether 0xF181 (app-only) answers."""
     out: dict = {}
     try:
         f180 = sess.read_did(0xF180)
@@ -538,17 +515,14 @@ def _run_uds_op(backend, sess, node: str, op: str, args: dict) -> dict:
 
     raise ValueError(f"operation not implemented: {op!r}")  # pragma: no cover
 
-# Typed app key (aiohttp warns on bare-string keys); tm3web can read the instance
-# back via app[odin_web.ODIN_WEB], though setup_routes also returns it.
+# Typed app key; tm3web reads the instance back via app[odin_web.ODIN_WEB].
 ODIN_WEB = web.AppKey("odin_web", OdinWeb)
 
 
 def setup_routes(
     app: web.Application, *, bundle=None, backend_factory=None, node_provider=None, prefix: str = ""
 ) -> OdinWeb:
-    """Register the ODIN + DID routes on `app` and return the OdinWeb instance.
-    tm3web calls this once from _build_app. See the module docstring for the
-    backend_factory / node_provider seams."""
+    """Register the ODIN + DID routes on `app` and return the OdinWeb instance."""
     svc = OdinWeb(bundle=bundle, backend_factory=backend_factory, node_provider=node_provider)
     app[ODIN_WEB] = svc
     app.router.add_get(prefix + "/api/odin/procedures", svc._h_procedures)

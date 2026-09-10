@@ -1,14 +1,11 @@
 """Extract Tesla's alert catalog from the MCU UI ``libQtCarAlerts.so``.
 
-The infotainment alert library embeds, as exported relocated data, the full
-per-build alert catalog -- names, human-readable descriptions and the CAN
-signals each alert logs. This is richer than ``bus-alerts-map.json`` (which
-stores only salted hashes; see :mod:`dump_alerts`): here the names and
-descriptions are in the clear.
+The library embeds, as exported relocated data, the alert catalog: names,
+descriptions and the CAN signals each alert logs.
 
-Tables (2022.45.15, x86-64 LE; reversed + validated):
+Tables (x86-64 LE):
 
-    globalBasicAlertDataTable   88-byte records, 6308 alerts
+    globalBasicAlertDataTable   88-byte records
       +0x00 char*  name              e.g. "BMS_a089_SW_VcFront_MIA"
       +0x08 u64    hash (name digest)
       +0x10 u32    index             (matrix/enum index)
@@ -21,15 +18,13 @@ Tables (2022.45.15, x86-64 LE; reversed + validated):
       +0x48 char*  effect            consequence / impact
       +0x50 u64
 
-    globalAlertLogSignalData    24-byte records, 3027 entries
+    globalAlertLogSignalData    24-byte records
       +0x00 char*  node              e.g. "BMS"
       +0x08 u32    code              alert number (the NNN in aNNN)
       +0x10 char*  comma-joined ETH signal names logged for that alert
 
-    Empty string fields all point at a single shared "" datum.
-
-The two tables join on (node, code) -- code parsed from the alert name -- to
-attach ``log_signals`` to each alert (3027/3027 join in 2022.45.15).
+The two tables join on (node, code), code parsed from the alert name, to
+attach ``log_signals`` to each alert.
 """
 
 from __future__ import annotations
@@ -148,7 +143,6 @@ if __name__ == "__main__":
                          "dump_alerts.py's --catalog)")
     a = ap.parse_args()
 
-    # Resolve lib/rev from config.ROOT the same way candata_to_dbc does.
     import config as _cfg
     from candata_to_dbc import _rev_from_lib
     root = Path(a.root).expanduser() if a.root else _cfg.ROOT

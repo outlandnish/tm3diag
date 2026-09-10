@@ -1,22 +1,17 @@
 """Flash script definitions for Tesla Model 3 ECUs.
 
-Each ECU family uses a distinct UDS flash sequence reverse-engineered from
-hashpicker_sim (see docs/FIRMWARE_UPDATE.md). This package expresses those
-sequences as composable step functions assembled into FlashScript instances.
-
-`ECU_SCRIPT_MAP` maps lowercase ecu_type names (from signed_metadata_map.tsv)
-to the FlashScript they should use.
-
-Public API is re-exported from this `__init__` so callers can keep using
-`from flash_scripts import X` regardless of which submodule X lives in.
+Each ECU family uses a distinct UDS flash sequence, expressed as composable step
+functions assembled into FlashScript instances (see docs/FIRMWARE_UPDATE.md).
+`ECU_SCRIPT_MAP` maps lowercase ecu_type names (from signed_metadata_map.tsv) to
+the FlashScript they use.
 
 Submodules:
   _constants  shared RC IDs, board-info DIDs, FLASH_COUNT_LIMITS, seed-level table
   _context    FlashContext / FlashScript dataclasses, StepFn type alias
   _steps      step_* atoms used by FlashScript.steps lists
-  _scripts    SCRIPT_* FlashScript definitions (one per VM script address)
-  _ecu_map    ECU_SCRIPT_MAP and `get_script`
-  _dual_cpu   PCS-family prog 1 (single-auth, both-CPUs) runner + detector
+  _scripts    SCRIPT_* FlashScript definitions
+  _ecu_map    ECU_SCRIPT_MAP and get_script
+  _dual_cpu   PCS-family prog 1 runner + detector
   _groups     bootloader and subcomponent detection helpers
 """
 

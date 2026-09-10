@@ -1,18 +1,9 @@
 #!/usr/bin/env python3
 """Extract and decompile the odin PyInstaller binary from a firmware root.
 
-odin (opt/odin/odin) is a PyInstaller-frozen ELF. The CAN signal/interface
-definitions, the .bin decryption constant, and the alert-name hash recipe all
-live inside it -- the loose JSON (compact DB, bus-alerts-map) is derived and
-redactable, so the binary is the authoritative source.
-
-Pipeline:
-  1. pyinstxtractor.py   ELF -> <out>/extracted/  (incl. out00-PYZ.pyz_extracted)
-  2. detect the bundled Python version from the PYZ / .pyc magic
-  3. decompile every .pyc -> <out>/src/  (pycdc; uncompyle6 fallback for <=3.8)
-
-Builds differ: older odin is Python 3.6, newer is 3.10. pycdc spans both;
-uncompyle6 only reaches ~3.8, so it is a fallback for the old builds only.
+odin (opt/odin/odin) is a PyInstaller-frozen ELF holding the CAN signal/
+interface definitions, the .bin decryption constant, and the alert-name hash
+recipe.
 
 The .bin decryption key (TM3_BIN_KEY in .env) is the base64 constant ``C`` in
     <out>/src/.../odin/platforms/binary_metadata_utils.py
@@ -41,7 +32,6 @@ from pathlib import Path
 _DEFAULT_TOOLS = Path("~/dev/tools").expanduser()
 
 # CPython bytecode magic (first 2 bytes of a .pyc) -> python version label.
-# Enough to pick a decompiler; extend as new builds appear.
 _MAGIC = {
     3360: "3.6",
     3361: "3.6",
@@ -100,12 +90,10 @@ def _has_docker() -> bool:
 def _resolve_extractor(pyver: str | None) -> tuple[str, str]:
     """Choose how to run pyinstxtractor under the target's Python version.
 
-    pyinstxtractor must unmarshal the PYZ under the SAME major.minor as the
-    frozen build, or it silently skips PYZ extraction. Resolution order:
+    Resolution order:
       1. host interpreter, if it already matches
       2. a uv-managed interpreter (`uv python install <ver>`)
-      3. a Docker `python:<ver>-slim` image (covers EOL/arch-missing versions
-         like 3.6 on aarch64, which uv can't provide)
+      3. a Docker `python:<ver>-slim` image
 
     Returns (kind, ref): ("local", interpreter_path) or ("docker", image_tag).
     """
@@ -148,9 +136,7 @@ def _detect_pyver(extracted: Path) -> str | None:
 def _pyver_from_libpython(odin_dir: Path) -> str | None:
     """Detect the frozen Python version from the shipped libpythonX.Y.so.
 
-    The firmware ships opt/odin/libpython3.XX.so.1.0 alongside the binary; its
-    name is the authoritative interpreter version and lets us pick the matching
-    extractor BEFORE extraction (the magic-byte detection only works after).
+    The firmware ships opt/odin/libpython3.XX.so.1.0 alongside the binary.
     """
     for so in odin_dir.glob("libpython3.*.so*"):
         # libpython3.10.so.1.0 / libpython3.6m.so.1.0
@@ -171,9 +157,6 @@ def extract(odin_bin: Path, out: Path, tools: Path, extractor: tuple[str, str]) 
 
     kind, ref = extractor
     if kind == "docker":
-        # Mount the odin binary, the extractor script, and the output dir; run
-        # pyinstxtractor inside the container with the output dir as cwd so the
-        # <name>_extracted tree lands on the host. -u for live output.
         cmd = [
             "docker",
             "run",
@@ -193,8 +176,6 @@ def extract(odin_bin: Path, out: Path, tools: Path, extractor: tuple[str, str]) 
             "/in/odin",
         ]
     else:
-        # pyinstxtractor writes <name>_extracted in cwd; run it inside
-        # `extracted`, under an interpreter matching the frozen build.
         cmd = [ref, str(pyinstx), str(odin_bin)]
 
     rc = _run(cmd, cwd=None if kind == "docker" else extracted)
@@ -280,8 +261,6 @@ def main() -> None:
     out = args.out.expanduser() if args.out else Path("~/dev/odin-dumps").expanduser() / root.name
     tools = args.tools.expanduser()
 
-    # Detect the frozen Python version up front (from libpython) so extraction
-    # runs under a matching interpreter — otherwise pyinstxtractor skips the PYZ.
     pyver = _pyver_from_libpython(odin_bin.parent)
     extractor = _resolve_extractor(pyver)
     print(f"[1/3] extracting {odin_bin}")

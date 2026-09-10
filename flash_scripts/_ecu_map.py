@@ -53,19 +53,15 @@ ECU_SCRIPT_MAP: dict[str, _Entry] = {
     "vcsec":  (SCRIPT_STANDARD, 0x00),
     "tas":    (SCRIPT_STANDARD, 0x00),
 
-    # CP PLC modem subcomponents — flashed via the CP MCU's bootloader using the
-    # same SCRIPT_STANDARD as the regular CP app, but with DISTINCT module bytes.
-    # The module byte (WDBI 0x0102) is NOT cosmetic here: the CP bootloader's
-    # RequestDownload window validator gates the allowed address range on the
-    # currently-selected module —
+    # CP PLC modem subcomponents — flashed via the CP MCU's bootloader with
+    # SCRIPT_STANDARD, but with distinct module bytes. The module byte (WDBI
+    # 0x0102) selects the bootloader's RequestDownload address window:
     #     module 0x00 -> CP app
     #     module 0x06 -> cpPlcPib
     #     module 0x08 -> cpPlcFw
-    # so a RequestDownload for cpPlcFw/cpPlcPib under module 0x00 is rejected
-    # NRC 0x31 (requestOutOfRange). cpPlcFw is loaded into the QCA7420 PLC modem
-    # at boot; cpPlcPib is the modem PIB (Personality Identifier Block — modem
-    # config). Fails safe: a wrong
-    # module byte NRCs, it can't mis-target another region.
+    # cpPlcFw/cpPlcPib under module 0x00 is rejected NRC 0x31 (requestOutOfRange).
+    # cpPlcFw loads into the QCA7420 PLC modem at boot; cpPlcPib is the modem PIB
+    # (Personality Identifier Block).
     "cpplcfw":  (SCRIPT_STANDARD, 0x08),
     "cpplcpib": (SCRIPT_STANDARD, 0x06),
 

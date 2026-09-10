@@ -5,7 +5,7 @@ Parser and builder for the Tesla BHX firmware container format. Can be used as a
 ```
 python bhx.py info    firmware.bhx
 python bhx.py extract firmware.bhx [output_dir]
-python bhx.py create  out.bhx 0x88000 segment.bin
+python bhx.py create  out.bhx 0x10000 segment.bin
 ```
 
 ## Library usage
@@ -19,7 +19,7 @@ for seg in bhx_file.segments:
     print(f"addr=0x{seg.start_address:08X} len={seg.length}")
 
 # Build
-bhx_file = bhx.from_binary_segments([(0x88000, data)])
+bhx_file = bhx.from_binary_segments([(0x10000, data)])
 bhx.build_file(bhx_file, "out.bhx")
 ```
 

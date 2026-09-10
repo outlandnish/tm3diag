@@ -19,22 +19,18 @@ Firmware root and paths come from `.env` (see `.env.example`), so a bare
 - `TM3_ROOT` — squashfs root of a firmware extraction (default firmware root).
 
 The alert IDs in the map are stored as `sha256(alert_str + salt)` and the bus
-buckets as `sha256(bus_name + salt)`, where the per-file salt is read from the
-map itself. Because the alert strings are also present in the clear in the
-firmware (the `alertd` binary and `libQtCarAlerts.so`), the tool reverses the
-hashes by running known strings through the same recipe and matching — no key or
-external recipe is needed.
+buckets as `sha256(bus_name + salt)`, with the per-file salt read from the map
+itself. Because the alert strings also appear in the clear in the firmware (the
+`alertd` binary and `libQtCarAlerts.so`), the hashes reverse without a key.
 
 ## How it works
 
-The key idea: **the plaintext alert catalogue is reusable across builds; the
-per-file salts are not.** The tool keeps a growing plaintext catalogue
-(`--catalog`); reversing a build is just running every known alert string
-through `sha256(str + salt)` for that file's salt and matching. Whatever is
-still unresolved is recovered by scraping the firmware image for alert-shaped
-strings (`--scrape`, default on) — the `alertd` binary is the richest source —
-and every newly-confirmed string is folded back into the catalogue, so coverage
-improves each time a new revision is processed.
+The plaintext alert catalogue is reusable across builds; the per-file salts are
+not. The tool keeps a growing catalogue (`--catalog`) and reverses a build by
+running every known alert string through `sha256(str + salt)` for that file's
+salt. Anything still unresolved is recovered by scraping the firmware image for
+alert-shaped strings (`--scrape`, default on; the `alertd` binary is the richest
+source), and each newly-confirmed string is folded back into the catalogue.
 
 Severity and service-UI panel info are merged in from
 `service_ui/static/assets/alerts.json` when present (2025+ builds).
@@ -48,6 +44,3 @@ Dumps and the catalogue default to the gitignored `alerts/` dir (override with
   alert's `id` / `name` / `node` / `severity` / `panels`, plus any unresolved
   hashes.
 - `alert_catalog.txt` — the accumulated plaintext catalogue.
-
-These are generated from your firmware extraction; the default `alerts/` dir is
-gitignored so they stay out of the repo.

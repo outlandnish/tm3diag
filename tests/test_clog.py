@@ -1,8 +1,6 @@
 """Tests for clog.py against a real Highland gateway cluster log.
 
-Fixtures 0.CLH/0.CLB are a verbatim capture from a Tesla service SD card,
-recorded during the same flash session as the other Highland fixtures
-(firmware git SHA 067a1dfc..., 2025-04-08).
+Fixtures 0.CLH/0.CLB are a verbatim capture from a Tesla service SD card.
 """
 
 from __future__ import annotations
@@ -30,7 +28,7 @@ if not _FIX.exists():
     )
 
 _GIT_SHA = "067a1dfcf133a88b994f7f9562dde8eae27155c0"
-# (seq, start_time, end_time, start_offset, end_offset) verified from the card.
+# (seq, start_time, end_time, start_offset, end_offset)
 _EXPECTED = [
     (0, 0x67F55E05, 0x67F55EAF, 0x0000, 0x17EC),
     (1, 0x67F55EAF, 0x67F55F63, 0x17EC, 0x33B9),
@@ -98,28 +96,23 @@ class TestParseClh:
 
 class TestVarintStream:
     def test_each_segment_consumes_exactly_to_boundary(self, index, clb):
-        # The whole body (minus per-segment header) is a clean LEB128 stream;
-        # decoding must never overrun or under-run a segment.
+        # The body (minus per-segment header) is a clean LEB128 stream.
         for s in index.segments:
             vals = iter_segment_varints(clb, s)
             assert len(vals) > 0
-            # Re-deriving the consumed byte count must land on end_offset:
-            # iter_segment_varints raises ValueError on a truncated varint, so a
-            # clean return already proves it consumed to the boundary.
             assert isinstance(vals[0], int)
 
     def test_seg0_known_prefix(self, index, clb):
         seg0 = index.segments[0]
         vals = iter_segment_varints(clb, seg0)
-        # Verified decode of the first records on the card.
         assert vals[:9] == [13626044039, 16440, 16, 1, 128, 4, 2, 4, 3]
 
     def test_seg0_count(self, index, clb):
         assert len(iter_segment_varints(clb, index.segments[0])) == 4070
 
     def test_signal_ids_exceed_11bit_can_range(self, index, clb):
-        # The recurring high tokens form a dense band well above 0x7FF, so they
-        # are an internal signal index, not 11-bit CAN arbitration ids.
+        # High tokens band above 0x7FF (max 11-bit CAN id): internal signal
+        # index, not CAN arbitration ids.
         vals = iter_segment_varints(clb, index.segments[0])
         band = [v for v in vals if 0x3000 < v < 0x5000]
         assert band, "expected a high signal-id band"

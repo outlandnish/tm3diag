@@ -5,15 +5,12 @@ carries its own bus): 0x392 alertMatrix on the vehicle bus, 0x3D1/0x370 on party
 epas3pMIA (DIR a161 / da6 b3,4) is an aggregate over {0x370, 0x3D1}; both must
 arrive with valid checksum + counter to clear it. 0x370 carries a steering=0 deg +
 availability payload (ctr@48 = byte6 LO nibble, checksum@56). Both party frames
-transmit at the EPAS3P party rate (sim_core.PARTY_RATE_S["EPAS3P"], default 100Hz)
-rather than their slow native cycles (0x3D1 1Hz, 0x370 10Hz) -- high rate is redundancy
-against single-peer bench-bus drops, not a firmware staleness requirement.
+transmit at the EPAS3P party rate (sim_core.PARTY_RATE_S["EPAS3P"], default 100Hz);
+native cycles are 0x3D1 1Hz, 0x370 10Hz.
 
-**0x392 is an ID REASSIGNMENT across firmware** (DBC-confirmed: 2020 = EPAS3P_alertMatrix,
-2022+ = BMS_packConfig). So 0x392 stays here on the 2020 BASELINE (epas3p transmits its alert
-matrix on the vehicle bus; the 2020 DIR doesn't even consume it), but the 2022.45.15 variant
-DROPS it -- the bms node reclaims the ID as BMS_packConfig (see bms.py `_frames_2022`), so a
-2022 DU gets the packConfig content and there is no duplicate arbitration ID.
+0x392 is an ID REASSIGNMENT across firmware (DBC-confirmed): 2020 = EPAS3P_alertMatrix,
+2022+ = BMS_packConfig. The 2020 baseline keeps it here (vehicle bus); the 2022.45.15
+variant DROPS it and the bms node reclaims the ID as BMS_packConfig (see bms.py `_frames_2022`).
 """
 from __future__ import annotations
 
@@ -29,7 +26,7 @@ class Epas3p(Node):
     name = "EPAS3P"
 
     def _party_frames(self) -> list[SimFrame]:
-        rate = PARTY_RATE_S[self.name]  # per-node party liveness rate (sim_core; bench-tunable)
+        rate = PARTY_RATE_S[self.name]
         return [
             SimFrame("EPAS3P_angleCalib", 0x3D1, rate, zeros(8), bus="party"),
             SimFrame("EPAS3P_0x370", 0x370, rate, _epas3p_0x370_valid, 48, 56, bus="party"),

@@ -1,9 +1,7 @@
 """Tests for alert_log field packing (firmware-independent).
 
-The catalog-backed name lookups need the UI .so files, so those are exercised
-by the integration tests; here we pin the wire bit-packing that was reversed
-from the DIR firmware and Damien Maguire's openinverter PCS decoder, using the
-real on-vehicle frames captured for a094.
+Wire bit-packing is cross-checked against Damien Maguire's openinverter PCS
+decoder and real on-vehicle a094 frames.
 """
 
 import pytest
@@ -20,9 +18,8 @@ from alert_log import (
     split_alert_name,
 )
 
-# The firmware-derived alertLog bit-layouts are not shipped; tests that need them
-# run only when TM3_ALERTLOG_LAYOUTS (or a local alertlog_layouts/ file) supplies
-# them. Absent -- the normal public case -- they skip.
+# alertLog bit-layouts are not shipped; layout tests skip unless
+# TM3_ALERTLOG_LAYOUTS (or a local alertlog_layouts/ file) supplies them.
 needs_layouts = pytest.mark.skipif(
     not _LAYOUTS, reason="alertlog layouts not configured (TM3_ALERTLOG_LAYOUTS)"
 )
@@ -62,13 +59,10 @@ def test_error_type_table():
     assert ERROR_TYPES[6] == "UNKNOWN_ID"
 
 
-# --- reversed field layouts (firmware-independent bit math) --------------------
-
-
 @needs_layouts
 def test_a162_shift_denied_layout():
-    """Pin the DI_a162 packing reversed from the DIR firmware against the bench
-    frame 0x527 A2 80 04 00 00 01 46 7C (a refused N->D shift)."""
+    """Pin DI_a162 packing against bench frame 0x527 A2 80 04 00 00 01 46 7C
+    (a refused N->D shift)."""
     payload = int.from_bytes(bytes([0x04, 0x00, 0x00, 0x01, 0x46, 0x7C]), "little")
     v = apply_layout(_LAYOUTS[("DI", 162)], payload)
     assert v == {
@@ -98,7 +92,7 @@ def test_apply_layout_sign_extends():
 def test_pcs_layouts_anchor():
     """PCS alertLog layouts loaded and anchored: a030 canRationality matches Damien's
     handle424 (errorType=byte2&7, canID=byte3|byte4<<8), a034 hvBusOv decodes, a029 has 4."""
-    assert ("PCS", 30) in _LAYOUTS                   # a030 anchor
+    assert ("PCS", 30) in _LAYOUTS
     a030 = _LAYOUTS[("PCS", 30)]
     assert tuple(a030["canRxErrorType"][:2]) == (0, 3)
     assert tuple(a030["canID"][:2]) == (8, 16)
@@ -112,10 +106,10 @@ def test_pcs_layouts_anchor():
 
 @needs_layouts
 def test_layouts_artifact_loaded_and_sane():
-    """The bundled alertlog_layouts_<rev>.json loads, and every layout is in-bounds and
-    non-overlapping (the extractor's gate must hold for what shipped)."""
-    assert len(_LAYOUTS) >= 20                       # the extracted set
-    assert ("DI", 162) in _LAYOUTS                   # anchor alert present
+    """The bundled alertlog_layouts_<rev>.json loads, and every layout is
+    in-bounds and non-overlapping."""
+    assert len(_LAYOUTS) >= 20
+    assert ("DI", 162) in _LAYOUTS
     for (node, code), fields in _LAYOUTS.items():
         assert node in ("DI", "DIR", "PCS")
         # specs are [bit, width, signed] or [bit, width, signed, inferred]
@@ -166,9 +160,6 @@ def test_log_values_uses_decoded_layout():
     assert vals["DI_a162_motorSpeed"]["units"] == "MPH"
 
 
-# --- name parsing / human titles (no firmware libs needed) --------------------
-
-
 @pytest.mark.parametrize(("name", "parts"), [
     ("DIR_a094_canDataBusA", ("DIR", "a", 94, "canDataBusA")),
     ("BMS_a089_SW_VcFront_MIA", ("BMS", "a", 89, "SW_VcFront_MIA")),
@@ -206,9 +197,6 @@ def test_alert_view_prefers_catalog_suffix():
     assert v["name"] == "DIR_a050_noStatorSensorTemp"       # what the bus called it
     assert v["catalog_name"] == "DIR_a050_noStatorSensor"
     assert v["title"] == "No stator sensor"
-
-
-# --- log payload rendering ----------------------------------------------------
 
 
 def test_log_values_fills_rationality_then_names():

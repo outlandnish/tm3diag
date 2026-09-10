@@ -1,16 +1,11 @@
 """Persistent, board-keyed interop data store (odin_data.json).
 
 One gitignored JSON, ``{board_id: {namespace: {key: value}}}``. The board id is the
-board serial number (DID 0xF013) -- the same key the immobilizer already uses.
-Namespaces group data by producer:
+board serial number (DID 0xF013). Namespaces:
 
-  * ``immo``    -- optional per-board key material written by a user-supplied
-                   immobilizer provider (see docs/SECURITY_PROVIDER.md); absent
-                   unless such a provider is configured
+  * ``immo``    -- optional per-board key material from a user-supplied
+                   immobilizer provider (see docs/SECURITY_PROVIDER.md)
   * ``outputs`` -- outputs captured from an ODIN procedure run (scripts/odin_runner)
-
-This is the single place bench interop persists per-board state, so anything that
-needs a board's key / prior outputs reads it from here.
 """
 from __future__ import annotations
 
@@ -23,9 +18,8 @@ DEFAULT_PATH = Path(__file__).resolve().parent.parent / "odin_data.json"
 
 
 def json_safe(obj):
-    """Recursively coerce a value to something json.dumps accepts: bytes -> hex
-    string, tuples -> lists, dict keys -> str. ODIN procedure outputs carry raw
-    bytes (odometer / resolver-calibration blobs), so sanitize before storing."""
+    """Recursively coerce a value for json.dumps: bytes -> hex string,
+    tuples -> lists, dict keys -> str."""
     if isinstance(obj, (bytes, bytearray)):
         return obj.hex()
     if isinstance(obj, dict):
@@ -38,9 +32,8 @@ def json_safe(obj):
 class DataStore:
     """``{board_id: {namespace: {key: value}}}`` persisted to one JSON file.
 
-    Board ids and namespaces are strings; values are JSON-serializable. Writes save
-    immediately (the file is small and written rarely). Missing lookups return empty
-    -- callers treat "no data for this board/namespace" as the common case.
+    Board ids and namespaces are strings; values are JSON-serializable; writes
+    save immediately.
     """
 
     def __init__(self, path: Path | str = DEFAULT_PATH) -> None:

@@ -1,17 +1,14 @@
 #!/usr/bin/env python3
 """DI node — the vehicle-level drive-inverter aggregate (originNode=di).
 
-DI is the *logical* drive unit the rest of the car sees: DI_systemStatus (0x118), DI_speed,
-DI_alertMatrix1-4, etc. -- distinct in the DBC from the per-axle physical inverters DIR/DIF
-(scripts/dir/dir.py). On a RWD car the DI role is fulfilled by the rear inverter hardware
-(the DIR/PMR), so on a bench with a real rear inverter these frames come from it -> mark DI
-(with DIR/PMR) ``real`` in the bench config so the sim doesn't transmit them. With no inverter
-connected (a fully virtual car) the sim broadcasts them.
+DI is the logical drive unit the rest of the car sees (DI_systemStatus 0x118, DI_speed,
+DI_alertMatrix1-4, etc.), distinct in the DBC from the per-axle physical inverters DIR/DIF
+(scripts/dir/dir.py). On a RWD car the DI role is fulfilled by the rear inverter (DIR/PMR),
+so with a real rear inverter on the bench these frames come from it — mark DI (with DIR/PMR)
+``real`` in the bench config; with no inverter connected the sim broadcasts them.
 
 Frames are the originNode=di cyclic set from Model3_ETH.compact.json (2020.8.1): id / cycle /
-dlc verbatim. Payloads are skeleton (all-zero) for now -- enough to model the layout and to
-give a virtual car its DI liveness; fill in real signal content when a scenario needs a
-virtual inverter to report meaningful status. Bus defaults to vehicle (provisional).
+dlc verbatim. Payloads are skeleton (all-zero). Bus defaults to vehicle.
 """
 
 from __future__ import annotations
@@ -44,13 +41,8 @@ class Di(Node):
         return [SimFrame(n, i, p, zeros(d)) for n, i, p, d in _FRAMES]
 
 
-# ---------------------------------------------------------------------------
-# DI_systemStatus (0x118) decode -- the DI's OWN status frame. These maps are the DI's
-# domain knowledge, shared by CONSUMERS that watch what the inverter reports (tm3web's
-# driver HUD, an orchestrator 0x118 watch). Enum labels + the bit overlay for signals Tesla
-# STRIPPED from the 2022+ compact.json but the firmware still transmits at their 2020
-# positions (recovered by overlaying the 2020 layout).
-# ---------------------------------------------------------------------------
+# DI_systemStatus (0x118) decode. Enum labels + bit overlay for signals Tesla stripped from
+# the 2022+ compact.json but the firmware still transmits at their 2020 positions.
 DI_STATUS_ID = 0x118
 DI_GEAR_LABELS = {0: "INVALID", 1: "P", 2: "R", 3: "N", 4: "D", 7: "SNA"}
 DI_IMMO_LABELS = {

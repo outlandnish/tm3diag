@@ -17,8 +17,7 @@ if _ODJ_DIR is None or not _ODJ_DIR.exists():
 def _odj_path(stem: str) -> Path:
     """Path to an ODJ for `stem`, preferring plaintext .odj over .odj.bin.
 
-    load_odj handles the .bin fallback itself, but tests skip cleanly when
-    neither form is present in the active firmware dump.
+    Skips when neither form is present in the active firmware dump.
     """
     plain = _ODJ_DIR / f"{stem}.odj"
     if plain.exists() or (_ODJ_DIR / f"{stem}.odj.bin").exists():
@@ -28,9 +27,6 @@ def _odj_path(stem: str) -> Path:
 
 class TestLoadOdjBinFallback:
     def test_bin_only_stem_falls_back_to_bin(self):
-        # When the plaintext .odj is absent but the .bin twin exists, load_odj
-        # should transparently load the .bin. Find such a stem in the active
-        # dump rather than assuming a specific file is bin-only.
         bin_only = None
         for p in _ODJ_DIR.glob("*.odj.bin"):
             stem = p.name[: -len(".odj.bin")]
@@ -39,9 +35,7 @@ class TestLoadOdjBinFallback:
                 break
         if bin_only is None:
             pytest.skip("no bin-only ODJ in this dump (all have plaintext)")
-        # The .bin twin should load transparently. Some ODJs hold only
-        # routines or io-controls (no DIDs), so assert *something* parsed
-        # rather than DIDs specifically.
+        # Some ODJs hold only routines or io-controls, so assert something parsed.
         dids, routines, io_controls = load_odj(_ODJ_DIR / f"{bin_only}.odj")
         assert dids or routines or io_controls, (
             f"{bin_only}.odj.bin fallback parsed nothing"
@@ -55,9 +49,8 @@ class TestLoadOdjBinFallback:
 
 
 class TestOdjEntryFields:
-    # The CP ODJ varies across firmware dumps (DTC_TEST_RESULT@0x4FF only
-    # exists in newer dumps), so these assert the *shape* of parsed entries
-    # rather than specific DID/field names or ids.
+    # The CP ODJ varies across dumps, so assert the shape of parsed entries,
+    # not specific DID/field names or ids.
 
     def test_cp_dids_have_valid_hex_ids(self):
         dids, _, _ = load_odj(_odj_path("CP"))
@@ -67,14 +60,11 @@ class TestOdjEntryFields:
             assert 0 <= entry.hex_id <= 0xFFFF
 
     def test_cp_dids_have_read_or_write(self):
-        # Every parsed DID must expose at least a read or a write section.
         dids, _, _ = load_odj(_odj_path("CP"))
         for name, entry in dids.items():
             assert entry.read is not None or entry.write is not None, name
 
     def test_writable_did_input_fields_are_well_formed(self):
-        # At least one CP DID is writable; every write input field has a name,
-        # a dict enum_map, and plausible bit geometry / data type.
         dids, _, _ = load_odj(_odj_path("CP"))
         writable = [e for e in dids.values()
                     if e.write is not None and e.write.input]
@@ -91,9 +81,6 @@ class TestOdjEntryFields:
 
 class TestRoutineEntryFields:
     def test_routine_subsections_parse(self):
-        # DI carries routines with start/stop/results sub-sections; the exact
-        # routine names vary by dump, so assert that at least one routine
-        # exposes a sub-section and that each routine's name round-trips.
         _, routines, _ = load_odj(_odj_path("DI"))
         assert routines, "DI.odj parsed no routines"
         for name, entry in routines.items():
@@ -106,9 +93,6 @@ class TestRoutineEntryFields:
 
 class TestIoControlEntryFields:
     def test_io_control_input_field(self):
-        # The specific control names vary by dump (e.g. OIL_PUMP_FLOW_COMMAND
-        # vs OIL_PUMP2_SPEED_COMMAND), so assert that *some* DI io-control has
-        # a well-formed input field rather than pinning to one name/id.
         _, _, io_controls = load_odj(_odj_path("DI"))
         with_input = [(n, e) for n, e in io_controls.items() if e.input]
         assert with_input, "DI.odj has no io-control with input fields"

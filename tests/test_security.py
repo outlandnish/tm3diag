@@ -162,12 +162,11 @@ class TestJlrHash:
         assert jlr_hash(bytes([0x01, 0x02, 0x03])) != jlr_hash(bytes([0x04, 0x05, 0x06]))
 
     def test_known_value(self):
-        # Pre-computed reference from original odin decompiled algorithm
+        # Pre-computed reference value
         seed = bytes([0x00, 0x00, 0x00])
         result = jlr_hash(seed)
         assert isinstance(result, bytearray)
         assert len(result) == 3
-        # Verify against independently computed value (LFSR starting state is deterministic)
         assert result == jlr_hash(seed)  # idempotency
 
 
@@ -208,7 +207,7 @@ class TestPektronHash:
         assert result_bytes == result_str
 
     def test_known_value(self):
-        # Verified against the original odin algorithm
+        # Known reference value
         seed = bytes([0xAA, 0xBB, 0xCC])
         result = pektron_hash(seed, self.RCM_FIXED)
         assert result == bytearray(bytes.fromhex("7ecda8"))
@@ -235,7 +234,6 @@ class TestComputeKey:
             compute_key("nonexistent_hash", b"\x00")
 
     def test_all_algorithms_callable(self):
-        # Smoke test: every algorithm dispatches without error
         compute_key("tesla_hash",    bytes(16))
         compute_key("baolong_hash",  bytes(2))
         compute_key("bitron_hash",   bytes(4))

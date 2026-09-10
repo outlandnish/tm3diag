@@ -1,20 +1,15 @@
 #!/usr/bin/env python3
 """Unsquash a Tesla firmware image and expand its nested .dirsquashed parts.
 
-A downloaded Tesla firmware blob is a squashfs filesystem. Inside the root it
-ships further squashfs images named with their mount path flattened into the
-filename: dots are path separators and %2E is a literal dot. The on-car script
-bin/mount-all-dirsquashed mounts each `<dotted>.dirsquashed` at the path
-`tr '.' '/' <<< basename(file .dirsquashed) | sed 's/%2E/./g'`.
+A Tesla firmware blob is a squashfs filesystem. Inside the root it ships further
+squashfs images named with their mount path flattened into the filename: dots are
+path separators and %2E is a literal dot (as the on-car bin/mount-all-dirsquashed
+mounts them). This extracts the top-level image, then recursively finds
+*.dirsquashed under the root and unsquashfs each into its decoded path until none
+remain.
 
-This reproduces that as an extraction:
-  1. (optionally) rename the download to a clean name
-  2. unsquashfs the top-level image -> <out>/<name>/  (the firmware root)
-  3. recursively find *.dirsquashed under the root and unsquashfs each into its
-     decoded path, repeating until none remain (handles nesting)
-
-The original downloaded blob is deleted after a successful extraction to save
-space (these are ~1 GB each); pass --keep-download to retain it.
+The original download is deleted after a successful extraction; --keep-download
+retains it.
 
 Usage:
   python unsquash_firmware.py <firmware_file> [--name NAME] [--out DIR]
@@ -40,10 +35,9 @@ def _run(cmd: list[str]) -> None:
 
 
 def decode_mount_path(filename: str) -> str:
-    """`<dotted>.dirsquashed` -> relative mount path (deploy/seed_artifacts_v2).
+    """`<dotted>.dirsquashed` -> relative mount path.
 
-    Mirrors mount-all-dirsquashed: strip the .dirsquashed suffix, '.' -> '/',
-    then unescape %2E -> '.' (a literal dot inside a path component).
+    Strip the .dirsquashed suffix, '.' -> '/', then unescape %2E -> '.'.
     """
     stem = filename[:-len(".dirsquashed")] if filename.endswith(".dirsquashed") \
         else filename
@@ -54,17 +48,13 @@ def unsquash(image: Path, dest: Path) -> None:
     """unsquashfs `image` into `dest` (dest/ becomes the squashfs root)."""
     dest.mkdir(parents=True, exist_ok=True)
     # -f: overwrite dest, -d: target dir, -no-xattrs: skip security xattrs.
-    # Without -no-xattrs, restoring security.capability fails unless root and
-    # unsquashfs exits 2 on the warning; we only read file contents, so the
-    # xattrs are irrelevant and skipping them keeps the run non-privileged.
     _run(["unsquashfs", "-f", "-no-xattrs", "-d", str(dest), str(image)])
 
 
 def expand_dirsquashed(root: Path, keep: bool) -> int:
     """Find every *.dirsquashed under root, extract to its decoded path.
 
-    Returns the number expanded this pass. Repeats are driven by the caller so
-    that a .dirsquashed surfaced inside a freshly-expanded one is also handled.
+    Returns the number expanded this pass.
     """
     count = 0
     for sq in sorted(root.rglob("*.dirsquashed")):
@@ -73,8 +63,6 @@ def expand_dirsquashed(root: Path, keep: bool) -> int:
         rel = decode_mount_path(sq.name)
         target = root / rel
         print(f"  {sq.relative_to(root)}  ->  {rel}/")
-        # Extract into a temp sibling, then move into place (unsquashfs wants a
-        # clean dir; the target path may not exist yet).
         tmp = sq.with_name(sq.name + ".extract_tmp")
         if tmp.exists():
             shutil.rmtree(tmp)
@@ -122,9 +110,6 @@ def main() -> None:
         if n == 0:
             break
 
-    # Only delete the source after extraction has fully succeeded above — a
-    # failed unsquash exits earlier via _run(), so we never drop the download
-    # on a partial run.
     if not args.keep_download:
         print(f"  removing original download: {src}")
         src.unlink()

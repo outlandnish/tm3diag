@@ -20,10 +20,7 @@ from .broadcast_config import broadcast_for
 from .node_config import NodeConfig
 from .security_provider import compute_key
 
-# The py-uds library emits two routine warnings on every session:
-#   - PyCanTransportInterface adjusts its notifier timeout to 0.001 s
-#   - UnexpectedPacketReceptionWarning for non-UDS CAN frames on a live bus
-# Both are expected on a shared vehicle CAN bus and add no diagnostic value.
+# Silence two routine py-uds warnings (notifier timeout adjust; non-UDS frames).
 warnings.filterwarnings("ignore", message="Notifier's timeout value was changed",
                         module=r"uds\..*")
 warnings.filterwarnings("ignore", category=RuntimeWarning,
@@ -71,7 +68,7 @@ _RC_VENDOR_PREFLIGHT = 0x0601
 _RC_OTA_MODE = 0x0540
 
 
-# ISO 14229-1 NRC names — the only NRCs hashpicker_sim's UDS stack recognizes
+# ISO 14229-1 NRC names
 _NRC_NAMES: dict[int, str] = {
     0x10: "generalReject",
     0x11: "serviceNotSupported",
@@ -118,18 +115,11 @@ class UdsError(Exception):
 class MalformedResponseError(UdsError):
     """Raised when the response is locally rejectable — not a wire NRC.
 
-    Three distinct conditions roll up here:
-      * no response received within the timeout (transport layer empty result)
-      * response received but truncated below the expected length
-      * response received and well-formed at the SID level, but a payload field
-        doesn't carry the expected value (e.g. RC status byte, OTA-mode poll)
-
-    Inherits from UdsError so callers that `except UdsError` keep catching it.
-    `nrc` is None on this subclass to make clear there is no wire NRC byte.
+    Covers a missing response, a truncated response, or a well-formed response
+    whose payload field carries the wrong value. `nrc` is None (no wire NRC).
     """
 
     def __init__(self, sid: int, detail: str):
-        # Skip UdsError.__init__ so we don't fabricate an NRC.
         Exception.__init__(
             self, f"Malformed response for SID 0x{sid:02X}: {detail}"
         )
@@ -140,11 +130,9 @@ class MalformedResponseError(UdsError):
 
 
 class BusUnavailableError(Exception):
-    """Raised when the CAN interface can't be opened or has gone down.
+    """Raised when the CAN interface can't be opened or drops mid-session.
 
-    Covers both connect-time failures (interface missing / not up) and a bus
-    that drops mid-session (``Network is down``). Carries the channel so the
-    CLI can print an actionable hint (e.g. ``ip link set <channel> up``).
+    Carries the channel for an actionable CLI hint.
     """
 
     def __init__(self, channel: str, cause: Exception):
@@ -154,19 +142,11 @@ class BusUnavailableError(Exception):
 
 
 class _BroadcastWatcher(can.Listener):
-    """Counts inbound frames matching a single broadcast (heartbeat) CAN ID.
+    """Counts inbound frames matching one broadcast (heartbeat) CAN ID.
 
-    Mirrors update.img's `enter_bootloader_v0` (@ `0x40000732`), which
-    snapshots a per-node counter at `0x400331a8`/`0x4003325c` and exits its
-    keep-alive loop the instant the counter advances — i.e. the moment the
-    target ECU resumes broadcasting after the reset, signalling that it has
-    booted into the bootloader.
-
-    For nodes whose firmware doesn't track a broadcast (HVBMS, ESP, all
-    high-numbered nodes), `broadcast_config.broadcast_for(...)` returns
-    `None` and we don't install one of these — `wait_for_bootloader` falls
-    back to a fixed-budget wait, which is exactly what the firmware does
-    for those same nodes.
+    `wait_for_bootloader` breaks Phase 1 when the counter advances (the ECU
+    resumed broadcasting after reset). For nodes where `broadcast_for(...)`
+    returns None, no watcher is installed and the wait is fixed-budget.
     """
 
     def __init__(self, can_id: int) -> None:
@@ -193,16 +173,10 @@ class _BroadcastWatcher(can.Listener):
 
 
 class _BusErrorListener(can.Listener):
-    """Swallows fatal errors from the Notifier RX thread instead of crashing it.
+    """Records the first fatal error from the Notifier RX thread instead of
+    letting it crash with a stderr traceback.
 
-    python-can's ``Notifier._rx_thread`` re-raises any exception from
-    ``bus.recv()`` (e.g. ``CanOperationError: Network is down`` when the CAN
-    interface drops) unless a listener implements ``on_error``. Without this,
-    the RX thread dies and dumps a full traceback to stderr — noise the user
-    can't act on, and which our main-thread try/except can't catch.
-
-    We record the first error so the session can report a clean message
-    (``bus_error``) and so callers can tell a dead bus from a silent ECU.
+    Exposed via ``bus_error`` so callers can tell a dead bus from a silent ECU.
     """
 
     def __init__(self) -> None:
@@ -213,7 +187,6 @@ class _BusErrorListener(can.Listener):
         pass
 
     def on_error(self, exc: Exception) -> None:
-        # First error wins; later ones are almost always the same cause.
         if self.error is None:
             self.error = exc
             _log.warning("CAN bus error in notifier thread: %s", exc)
@@ -244,16 +217,10 @@ class UdsSession:
             self._bus = can.Bus(interface=interface, channel=channel)
         except Exception as exc:
             raise BusUnavailableError(channel, exc) from exc
-        # Pre-create one shared Notifier and hand it to the transport so there
-        # is never more than one active Notifier on the bus. The transport's
-        # notifier starts as None and gets set lazily on first send/receive —
-        # if we let that happen a second Notifier would be created and python-can
-        # would raise "A bus can not be added to multiple active Notifier
-        # instances".
+        # Share one Notifier with the transport; python-can allows only one
+        # active Notifier per bus.
         self._frame_notifier = can.Notifier(self._bus, [])
-        # Always install an error listener so a mid-session bus drop (interface
-        # goes down, cable pulled) is recorded and suppressed instead of
-        # crashing the Notifier RX thread with a stderr traceback.
+        # Records/suppresses a mid-session bus drop.
         self._bus_error_listener = _BusErrorListener()
         self._install_listener(self._bus_error_listener)
         addressing = NormalCanAddressingInformation(
@@ -273,8 +240,7 @@ class UdsSession:
 
         bcast = broadcast_for(node.name)
 
-        # Install per-node broadcast watcher so wait_for_bootloader can
-        # short-circuit Phase 1 the moment the ECU resumes broadcasting
+        # Per-node broadcast watcher for wait_for_bootloader Phase 1 early exit.
         self._broadcast_watcher: _BroadcastWatcher | None = None
         if bcast is not None:
             self._broadcast_watcher = _BroadcastWatcher(bcast.can_id)
@@ -282,10 +248,6 @@ class UdsSession:
 
     def _install_listener(self, listener: can.Listener) -> None:
         self._frame_notifier.add_listener(listener)
-
-    # ------------------------------------------------------------------
-    # TesterPresent keep-alive
-    # ------------------------------------------------------------------
 
     def start_tester_present(self) -> None:
         """Send TesterPresent (3E 80, suppress positive response) at 2 Hz."""
@@ -311,17 +273,11 @@ class UdsSession:
             try:
                 self._transport.send_packet(tp_packet)
             except Exception as exc:
-                # Bus dropped out from under the keep-alive thread. Record it
-                # (so the main thread can report it) and exit quietly instead
-                # of letting the daemon thread crash with a stderr traceback.
+                # Bus dropped mid keep-alive: record and exit quietly.
                 if self._is_bus_down_error(exc):
                     self._bus_error_listener.on_error(exc)
                     return
                 raise
-
-    # ------------------------------------------------------------------
-    # UDS services
-    # ------------------------------------------------------------------
 
     def diagnostic_session(self, mode: int = _SESSION_DEFAULT) -> None:
         resp = self._send_raw([_SID_DSC, mode])
@@ -384,10 +340,8 @@ class UdsSession:
         self.write_did(_DID_MODULE_TO_PROGRAM, bytes([module_byte]))
 
     def set_timeout(self, p2_seconds: float) -> None:
-        """Update the transport timeouts (seconds → milliseconds).
-
-        Sets both N_Bs (inter-frame) and N_Cr (consecutive frame) timeouts.
-        Call before long operations (erase, large transfers) and restore after.
+        """Update transport timeouts (seconds → ms): N_Bs (inter-frame) and
+        N_Cr (consecutive frame). Call before long operations, restore after.
         """
         p2_ms = p2_seconds * 1000
         self._transport.n_bs_timeout = p2_ms
@@ -437,9 +391,8 @@ class UdsSession:
         for _ in range(attempts):
             resp = self._send_raw([_SID_RC, _RC_START, rid_hi, rid_lo])
             if not resp or (resp and resp[0] == 0x7F):
-                # Start failed; brief delay and retry the entire start+poll cycle
                 if resp and len(resp) >= 3 and resp[2] == 0x05:
-                    # NRC 0x05 — pass through, don't sleep
+                    # NRC 0x05: skip the retry delay
                     pass
                 else:
                     time.sleep(1.0)
@@ -503,11 +456,7 @@ class UdsSession:
 
         max_block_len includes the 1-byte sequence counter.
         progress_cb(bytes_sent, total_bytes) is called after each chunk.
-
-        bus.send() is patched for the duration to retry on ENOBUFS (errno 105).
-        select()-based timeouts don't help here — select checks the socket send
-        buffer, not the kernel CAN TX ring (txqueuelen). On a 500kbps bus each
-        frame is ~0.26ms, so a 1ms sleep drains ~4 slots from a depth-10 queue.
+        bus.send() is patched to retry on ENOBUFS (errno 105).
         """
         chunk_size = max_block_len - 2  # subtract SID + seq bytes
         seq = 0x01
@@ -575,33 +524,22 @@ class UdsSession:
         confirm_p2_ms: int = 40,
         confirm_max_attempts: int = 14,
     ) -> None:
-        """Two-phase bootloader handover wait, mirroring update.img's
-        `enter_bootloader_v0` @ 0x40000732.
+        """Two-phase bootloader handover wait.
 
-        **Phase 1 — keep-alive** (`keepalive_phase_s` s): send `3E 80`
-        (TesterPresent fire-and-forget) at `keepalive_interval_s` cadence
-        (10 ms by default — 334 × 10 ms = 3.34 s, matching the binary's loop).
-        Exits early as soon as the per-node boot-broadcast counter advances. If a
-        `_BroadcastWatcher` was installed for this node (see
-        `broadcast_config.NODE_BROADCAST_CONFIG`), we replicate that early-exit
-        by snapshotting its count and breaking the loop on advance. For nodes
-        without a broadcast tracker (HVBMS, ESP, TPMS, etc.), Phase 1 burns
-        the full budget — same as the firmware does for those.
+        Phase 1 — keep-alive (`keepalive_phase_s` s): send `3E 80` (fire-and-
+        forget TesterPresent) at `keepalive_interval_s` cadence. Exits early
+        when the per-node broadcast counter advances (if a `_BroadcastWatcher`
+        is installed); otherwise burns the full budget.
 
-        **Phase 2 — TP-with-response confirmation**: send `3E 00` and wait
-        for `7E 00`, with **P2 timeout = `confirm_p2_ms` (40 ms by default, and back-to-back
-        retries up to `confirm_max_attempts` (14 by default).
+        Phase 2 — confirmation: send `3E 00` and wait for `7E 00`, P2 timeout
+        `confirm_p2_ms` (40 ms), up to `confirm_max_attempts` (14) retries.
 
-        On success, returns silently. On total failure, raises `TimeoutError`
-        with a diagnostic that includes phase 1 frame count and phase 2 NRCs.
+        Raises `TimeoutError` on failure with phase 1 frame count and phase 2 NRCs.
         """
-        # Phase 1: fire-and-forget keep-alive
         phase1_start = time.monotonic()
         end_phase1 = phase1_start + keepalive_phase_s
         keepalive_count = 0
         bus_errors = 0
-        # Snapshot the broadcast counter (if a watcher is installed) so we
-        # can short-circuit Phase 1 the moment a new heartbeat arrives.
         watcher = self._broadcast_watcher
         baseline = watcher.count if watcher is not None else None
         early_exit_ms: float | None = None
@@ -610,17 +548,9 @@ class UdsSession:
                 self._send_tp_no_wait()
                 keepalive_count += 1
             except Exception:
-                # A failed 3E 80 TX here is EXPECTED, not fatal: right after the
-                # 11 81 reset the ECU is mid-reboot and not ACKing, and on a
-                # single-node bench bus (only the target on the wire) there is no
-                # other node to ACK, so the controller goes error-passive and
-                # bus.send() raises. That is precisely the window we're waiting
-                # through. Do NOT abort — count it, keep the cadence, and let
-                # Phase 2 (3E 00 -> 7E 00) be the arbiter of whether the
-                # bootloader actually came back. If it never does, Phase 2 raises
-                # a clean TimeoutError below.
+                # Expected: no ACK while the ECU reboots. Count and continue.
                 bus_errors += 1
-            # Early exit on broadcast counter advance (mirrors the binary)
+            # Early exit on broadcast counter advance
             if watcher is not None and watcher.count != baseline:
                 early_exit_ms = (time.monotonic() - phase1_start) * 1000
                 break
@@ -649,10 +579,9 @@ class UdsSession:
                 " — no broadcast tracker for this node, fixed wait",
                 keepalive_count, keepalive_phase_s,
             )
-        # Inter-phase sleep
         time.sleep(0.010)
 
-        # Phase 2: 14 fast 3E 00 probes (P2 = 40 ms) back-to-back.
+        # Phase 2: fast 3E 00 probes.
         nrc_count = 0
         send_errors = 0
         first_nrc: int | None = None
@@ -660,10 +589,7 @@ class UdsSession:
             try:
                 resp = self._send_raw([_SID_TP, 0x00], timeout_ms=confirm_p2_ms)
             except Exception:
-                # Same single-node window as Phase 1: the 3E 00 TX may still fail
-                # to be ACKed for the first probes while the ECU finishes booting.
-                # Count it and keep probing — once the bootloader is up it ACKs
-                # and answers 7E 00.
+                # No ACK yet while the ECU boots; count and keep probing.
                 send_errors += 1
                 time.sleep(confirm_p2_ms / 1000.0)
                 continue
@@ -673,7 +599,6 @@ class UdsSession:
                 nrc_count += 1
                 if first_nrc is None and len(resp) >= 3:
                     first_nrc = resp[2]
-            # No inter-attempt sleep — back-to-back like the binary
         diag = (
             f"phase 1 sent {keepalive_count} keep-alive frames"
             + (f" ({bus_errors} TX errors)" if bus_errors else "")
@@ -696,9 +621,8 @@ class UdsSession:
     def drain_rx(self, timeout_ms: float = 20) -> None:
         """Discard any frames queued in the transport receive buffer.
 
-        Call after non-fatal read steps that may leave stale NRC or partial
-        ISO-TP frames in the buffer (e.g. step_board_info on ECUs that return
-        NRC 0x13 for multi-frame DIDs instead of sending Consecutive Frames).
+        Call after read steps that may leave stale NRC or partial ISO-TP
+        frames (e.g. ECUs that return NRC 0x13 for multi-frame DIDs).
         """
         while True:
             try:
@@ -715,11 +639,10 @@ class UdsSession:
         self._check_positive(resp, _SID_CDI)
 
     def read_dtcs(self, status_mask: int = 0xFF) -> dict[int, int]:
-        """ReadDTCInformation reportDTCByStatusMask (0x19 02) — return {dtc_code:
-        status} for stored DTCs whose status matches ``status_mask`` (0xFF = any).
+        """ReadDTCInformation reportDTCByStatusMask (0x19 02) — return
+        {dtc_code: status} for DTCs matching ``status_mask`` (0xFF = any).
 
-        Positive response is ``59 02 <availabilityMask> [<dtc hi mid lo> <status>]*``;
-        the empty case (a healthy ECU) returns an empty dict.
+        Positive response: ``59 02 <availabilityMask> [<dtc hi mid lo> <status>]*``.
         """
         resp = self._send_raw([_SID_RDTC, 0x02, status_mask & 0xFF])
         self._check_positive(resp, _SID_RDTC)
@@ -729,10 +652,6 @@ class UdsSession:
             dtc = (body[i] << 16) | (body[i + 1] << 8) | body[i + 2]
             out[dtc] = body[i + 3]
         return out
-
-    # ------------------------------------------------------------------
-    # Internal helpers
-    # ------------------------------------------------------------------
 
     def _send_raw(self, payload: list[int], timeout_ms: float = 2000) -> list[int]:
         msg = UdsMessage(
@@ -762,10 +681,8 @@ class UdsSession:
                     start_timeout=deadline_ms, end_timeout=deadline_ms
                 )
             except Exception:
-                # An empty receive is the normal "no response" signal, but if
-                # the notifier thread recorded a bus-down error the bus is
-                # really gone — surface it rather than masquerading as a silent
-                # ECU (which would just look like a timeout to the caller).
+                # Empty receive = no response, unless the notifier saw a
+                # bus-down error — surface that instead of a false timeout.
                 bus_err = self.bus_error
                 if bus_err is not None:
                     raise BusUnavailableError(
@@ -774,13 +691,12 @@ class UdsSession:
             resp = list(record.payload)
             if not resp:
                 return resp
-            # 0x78 = requestCorrectlyReceivedResponsePending — ECU still working
+            # 0x78 = requestCorrectlyReceivedResponsePending
             if len(resp) >= 3 and resp[0] == 0x7F and resp[2] == 0x78:
                 deadline_ms = timeout_ms
                 continue
-            # Skip stale frames left over from a previous request (e.g. an aborted
-            # multi-frame read). A well-formed response is either a positive response
-            # (SID + 0x40) or a negative response (7F <our-SID> <NRC>).
+            # Skip stale frames: a valid response is positive (SID + 0x40) or
+            # negative (7F <our-SID> <NRC>).
             if resp[0] == 0x7F:
                 if len(resp) < 2 or resp[1] != expected_sid:
                     _log.debug(
@@ -804,8 +720,7 @@ class UdsSession:
     def bus_error(self) -> Exception | None:
         """The first fatal error the notifier RX thread saw, or None.
 
-        Set when the CAN interface drops mid-session (e.g. ``Network is
-        down``). Lets callers distinguish a dead bus from a silent ECU.
+        Lets callers distinguish a dead bus from a silent ECU.
         """
         return self._bus_error_listener.error
 

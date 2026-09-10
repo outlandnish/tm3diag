@@ -126,12 +126,11 @@ reset(soft)  sleep(500ms)
 
 ### pcs / pcscpu2 / di / dis / pm / pms (multi-CPU)
 
-The `module` byte selects which CPU the bootloader programs (`2E 01 02 <module>`)
+The `module` byte selects which CPU the bootloader programs (`2E 01 02 <module>`).
 
-Prog 1 (single-session dual-CPU) is supported when the secondary shares the
-same UDS endpoint as the primary (i.e. `pcscpu2` on the PCS node). When `di`
-or `dis` is the secondary and is on its own CAN endpoint, each CPU is flashed
-as a separate prog-0 session instead.
+Prog 1 (single-session dual-CPU) requires the secondary to share the primary's
+UDS endpoint (`pcscpu2` on the PCS node). When `di`/`dis` is the secondary on
+its own CAN endpoint, each CPU is flashed as a separate prog-0 session.
 
 ```
 [prog 0]  — standard flash with extended erase timeout
@@ -143,7 +142,7 @@ CALL sub1                      moduleToProgram(2E 01 02 <module>) + erase + tran
 checkModuleProgrammed  checkCorrectComponentAndRev
 reset(soft)  sleep(300ms)
 
-[prog 1]  — dual-CPU in-sequence (hardcoded subfunction, no context+0x29 override)
+[prog 1]  — dual-CPU in-sequence (hardcoded subfunction, no per-node override)
 reset(soft)
 diagnosticSession(2)  varifyCompAndFirmware  securityAccess(0)
 moduleToProgram(4)             2E 01 02 04 — CPU2 flash region
@@ -475,9 +474,9 @@ CALL sub5
 
 ### Bootloader updater — parkbu, hvbmsbu, hvpbu
 
-The "bu" file (e.g. `parkbu.hex`, `hvpbu.hex`) is a **bootloader update agent**
-that gets installed into the regular application slot first. The script is a
-plain prog-0 flash with `fw_type = 1`:
+The "bu" file (e.g. `parkbu.hex`, `hvpbu.hex`) is a bootloader update agent
+installed into the application slot first. The script is a plain prog-0 flash
+with `fw_type = 1`:
 
 ```
 [prog 0]
@@ -490,13 +489,13 @@ checkModuleProgrammed  checkCorrectComponentAndRev
 reset(soft)                           ← agent boots after this reset
 ```
 
-After this script's trailing reset, the ECU comes back up running the bu agent
-in place of the original application. The CAN endpoint is unchanged — same
-`UDS_<parent>Request` / `<PARENT>_udsResponse` IDs as the parent ECU.
+After the trailing reset the ECU runs the bu agent in place of its application.
+The CAN endpoint is unchanged — same `UDS_<parent>Request` / `<PARENT>_udsResponse`
+IDs as the parent ECU.
 
-Module byte at `+0x20` is `0x00` for all `*bu` nodes; the wire frame is
-`2E 01 02 00`. (The non-zero values at `+0x1C` — `0x12` for parkbu,
-`0x02` for hvbmsbu, `0x0E` for hvpbu — are `node_id`s, not module bytes.)
+Module byte is `0x00` for all `*bu` nodes (wire frame `2E 01 02 00`). The
+non-zero per-node values — `0x12` parkbu, `0x02` hvbmsbu, `0x0E` hvpbu — are
+`node_id`s, not module bytes.
 
 `vcfrontbu` uses a different script — see below.
 
@@ -504,10 +503,9 @@ Module byte at `+0x20` is `0x00` for all `*bu` nodes; the wire frame is
 
 ### vcfrontbu — vcfront-specific bootloader updater
 
-VCFRONT can't be flashed without first putting the **VCRIGHT** ECU into a
-coordinated OTA state (the front and right vehicle controllers share door-lock
-and OTA-state machinery). The vcfrontbu script wraps the standard
-`SCRIPT_BL_UPDATER` body with a leading `CALL sub4` that opens a transient UDS
+VCFRONT requires the VCRIGHT ECU to be in a coordinated OTA state first (they
+share door-lock and OTA-state machinery). The vcfrontbu script wraps the
+standard bl-updater body with a leading `CALL sub4` that opens a transient UDS
 handle to VCRIGHT, runs the prep, then closes it:
 
 ```
@@ -524,14 +522,12 @@ reset(soft)
 
 #### `sub4` — VCRIGHT-side OTA prep + IOCBI lockout
 
-Decoded VM bytecode `1A 19 0D 03 03 03 02 00 18 00 17 01 1B 00 2C 00`:
-
 ```
 udsContextSwitch(25)                 ← open VCRIGHT (request 0x608, response 0x609)
 diagnosticSession(3)                 ← extended session
-setSecurityAccessLevel(3)            ← internal: writes 3 to context+0x02
+setSecurityAccessLevel(3)            ← internal: sets the security level to 3
 securityAccess(0)                    ← seed level 0x05 (override doesn't fire because
-                                       ctx+0x02 is now 3, not <3)
+                                       the level is now 3, not <3)
 VCWaitForOTAMode(0)                  ← RC 0x540 start, then poll until response[0]==2
 vcFrontLockoutIOControl(1)           ← IOCBI 0x218 controlParam=3, control byte 1
 restoreUdsContext(0)                 ← close VCRIGHT, restore VCFRONT
@@ -539,34 +535,28 @@ RET
 ```
 
 > **Operational prerequisite:** RC `0x540` returning `byte == 2` (OTA mode active)
-> requires the **vehicle to actively be in OTA state** — initiated by the vehicle's
-> overall state machine, not by the flash tool. On a bench setup with VCFRONT and
-> VCRIGHT alone on a test bus, this routine will time out and the bu flash will not
-> proceed. Bootloader updates for VCFRONT are practical only against a live, OTA-
-> capable vehicle.
+> requires the vehicle to be in OTA state, initiated by the vehicle's state
+> machine, not the flash tool. On a bench with VCFRONT and VCRIGHT alone, this
+> routine times out and the bu flash cannot proceed.
 
-A flash tool implementing this needs:
+Implementation: open a second UDS session to VCRIGHT (CAN IDs from
+`nodes.json`/ETH compact, same physical channel as the VCFRONT session), apply
+sub4 to it, then close it and run the standard bu flash against VCFRONT.
 
-1. **A second UDS session to VCRIGHT** (CAN IDs from `nodes.json`/ETH compact, sharing
-   the same physical CAN channel as the VCFRONT session).
-2. The sub-4 sequence applied to that VCRIGHT session.
-3. After RET, the VCRIGHT session is closed and the standard bu flash continues
-   against VCFRONT on its normal CAN IDs.
+`sub5` is identical to sub4 but with `vcFrontLockoutIOControl(0)` instead of
+`(1)` — the release counterpart to sub4's engage. Used in other VCFRONT/VCRIGHT
+scripts but **not** vcfrontbu.
 
-`sub5` is identical to sub4 but with `vcFrontLockoutIOControl(0)`
-instead of `(1)` — the "release" counterpart to sub4's "engage". Used in some other
-VCFRONT/VCRIGHT scripts but **not** in the vcfrontbu script.
-
-Module byte at `+0x20` for `vcfrontbu` is `0x00` (wire frame `2E 01 02 00`);
-the `0x0D` at `+0x1C` is the VCFRONT `node_id`, not the module byte.
+Module byte for `vcfrontbu` is `0x00` (wire frame `2E 01 02 00`);
+the `0x0D` `node_id` is VCFRONT's, not the module byte.
 
 ---
 
 ### Bootloader image — parkbl, hvbmsbl, hvpbl, vcfrontbl
 
-The "bl" file is the actual bootloader being installed. This script runs
-**immediately after** the bu's trailing reset, with no opening reset of its
-own — it relies on the bu agent already booting:
+The "bl" file is the bootloader being installed. This script runs immediately
+after the bu's trailing reset, with no opening reset of its own — it relies on
+the bu agent already booting:
 
 ```
 [prog 0]
@@ -583,37 +573,33 @@ The bu agent recognizes `fw_type=2` as a bootloader file and erases/rewrites
 the bootloader sector instead of the app slot. After the trailing reset the
 ECU boots into the new bootloader.
 
-Module byte at `+0x20` is `0x00` for all `*bl` nodes (same as the
+Module byte is `0x00` for all `*bl` nodes (same as the
 corresponding `*bu`).
 
 #### Complete bootloader-update sequence
 
 For an ECU with both bu and bl artifacts, the full update flow is:
 
-1. **Flash `*bu`** (bootloader updater script) — replaces the app slot with the
-   update agent. ECU resets and the agent boots.
-2. **Flash `*bl`** (bootloader image script) — agent erases the bootloader
-   sector and writes the new bootloader. ECU resets into the new bootloader.
-3. **Re-flash the regular `*` (app)** via the parent ECU's normal script —
-   restores the application to the app slot. **Without this step the ECU
-   continues to run the update agent in place of its application** and may
-   appear non-functional. Skipping it is dangerous.
+1. **Flash `*bu`** — replaces the app slot with the update agent. ECU resets and
+   the agent boots.
+2. **Flash `*bl`** — agent erases the bootloader sector and writes the new
+   bootloader. ECU resets into the new bootloader.
+3. **Re-flash the regular `*` (app)** via the parent ECU's normal script.
+   Without it the ECU keeps running the update agent in place of its application.
 
-The bu→bl→app order is mandatory. CAN IDs throughout the entire sequence are
-the parent ECU's standard UDS request/response IDs; no separate addressing is
-needed for the bootloader endpoints.
+The bu→bl→app order is mandatory. CAN IDs throughout are the parent ECU's
+standard UDS request/response IDs.
 
 ---
 
 ## Subcomponent flashes (CP PLC modem)
 
-Some ECUs include a secondary chip that's flashed _through_ the main MCU's UDS
-endpoint. The CP (charge port) MCU has a PLC modem (Powerline Communication
-chip) on board, used for high-bandwidth communication during charging. The PLC
-modem doesn't have its own CAN connection — its firmware is delivered to the
-CP MCU via the regular UDS flash flow, and the CP MCU's bootloader forwards
-the data over an internal interconnect (SPI or UART) based on the embedded
-file addresses.
+Some ECUs include a secondary chip flashed _through_ the main MCU's UDS
+endpoint. The CP (charge port) MCU has an onboard PLC modem (Powerline
+Communication chip) with no CAN connection of its own — its firmware is
+delivered to the CP MCU via the regular UDS flash flow, and the CP MCU
+bootloader forwards the data over an internal interconnect (SPI or UART) based
+on the embedded file addresses.
 
 ### TSV layout for CP
 
@@ -640,7 +626,7 @@ All three use the **same script**, the same wire frame for `moduleToProgram`
 ranges in the transferred records — the HEX files target memory regions on
 the PLC modem die, not the CP MCU's flash.
 
-(All three node entries have `0x05` at `+0x1C`, which is the CP `node_id`
+(All three node entries have `0x05` as the CP `node_id`
 used by `udsContextSwitch`, not the module byte.)
 
 `fw_type` returned by DID `0x0101` during `varifyCompAndFirmwareType` is `1`
@@ -655,17 +641,6 @@ session → auth → moduleToProgram → erase → transfer → verify → reset
 CP MCU must be running its new app before it can hand off PLC firmware over
 the internal interconnect — flashing the PLC firmware first against an old
 CP MCU app may fail or write to the wrong region.
-
-### What's at node-table offset `+0x24`?
-
-The CP, cpPlcFw, and cpPlcPib node-table entries differ at offset `+0x24`
-(values `0`, `8`, `6` respectively). **Meaning unknown** — I have not traced
-any binary code that reads this offset. It is _not_ the module byte (which
-is at `+0x20` per `FUN_0040fb0a`) and it does not appear in any UDS frame
-we observed. The values don't match obvious candidates (DID offsets, sub-
-function bytes, security indices) cleanly. Earlier versions of this doc
-called this "an internal subcomponent identifier" — that was speculation
-without backing evidence and has been retracted.
 
 ### Implementation note
 
@@ -721,20 +696,17 @@ Note the two distinct TesterPresent variants:
 `3E 01` is **not** valid TesterPresent — only `0x00` is defined as a sub-function.
 Strict bootloaders return NRC `0x12 subFunctionNotSupported` for `3E 01`.
 
-**HVP bootloader side (TMS570LS, confirmed from binary):** The bootloader's main
-loop (`FUN_000038b4`) checks `if (4999 < current_tick - last_tick)` where ticks
-are driven by the RTI peripheral at 10 MHz → 1 ms/tick. That gives a **4999 ms
-S3server timeout**. The session timer is reset by any `3E xx` frame
-(`FUN_00006374`). Phase 1's `3E 80` frames arrive every 10 ms — well within the
+**HVP bootloader side (TMS570LS):** the S3server timeout is **4999 ms** (RTI at
+10 MHz → 1 ms/tick); any `3E xx` frame resets the session timer. Phase 1's `3E 80` frames arrive every 10 ms — well within the
 window — so the bootloader stays in programming session throughout phase 1.
 
-**`boot_state` prerequisite:** The HVP bootloader reads `boot_state` @ `0x0800160C`
+**`boot_state` prerequisite:** The HVP bootloader reads a `boot_state` flag
 at startup. If it finds `0x0F` (app-launch mode) it immediately jumps to the
 application — the TesterPresent window never opens. For the bootloader to remain
 in programming mode, the application must write `0x00` to `boot_state` before
 asserting the `11 81` reset (this is done by the app's own shutdown path, not
 by the GTW3). The condition for staying in the bootloader is: `boot_state == 0x00`
-**and** `stay_in_bootloader == 1` (flag at `0x080015C6`, set by boot config init).
+**and** `stay_in_bootloader == 1` (set by boot config init).
 
 Implementations without DBC-level boot-ID decoding can substitute phase 1
 with a fixed-time keep-alive loop (e.g. spam `3E 80` for ~1.5 s while the
@@ -793,8 +765,8 @@ section 0b) before sending. If you skip the handover, this is the first frame th
 will fail (typically NRC `0x31 requestOutOfRange` or `0x22 conditionsNotCorrect`),
 because the application accepts DSC/RDBI/SecurityAccess but not this WDBI.
 
-The `module` byte is taken from the ECU node table entry (`+0x20`) and placed in
-`context+0x29` before the VM runs. `moduleToProgram` reads and consumes it. For
+The `module` byte is taken from the ECU node table entry and placed in the
+VM context before the VM runs. `moduleToProgram` reads and consumes it. For
 single-CPU ECUs the module byte is `0x00`.
 
 Module byte values for the PCS/DI/PM family:
@@ -823,7 +795,7 @@ Three data bytes after the DID echo, in this order:
 - byte[0] = `component_key` — logged only
 - byte[1] = `fw_type` — must match the operand passed to `varifyCompAndFirmwareType`
   (always `1` for prog-0 flash flows). Mismatch → abort with error `0x10000 | fw_type`.
-- byte[2] = `protocol_ver` — stored at `context+0x02` and consumed by the next
+- byte[2] = `protocol_ver` — stored internally and consumed by the next
   `securityAccess` step to choose the seed level (see section 5).
 
 ---
@@ -845,12 +817,12 @@ The seed level and key algorithm vary by ECU:
 | 0            | `tesla_hash`    | 0x05 (see below) | most ECUs                          |
 | 3            | `tesla_hash`    | varies           | ibst, esp, espcal, rcmcal, rcm     |
 | 4            | `baolong_hash`  | varies           | tpms                               |
-| 7            | `FUN_0040be8e`  | varies           | cmp                                |
+| 7            | `pektron_hash`  | varies           | cmp                                |
 | 13           | OTA session key | varies           | opc, opcs, ths, swc, lumbar, bleep |
 
-> **Protocol-version branch for idx 0** (`uds_security_access` at `0x0040c090`):
-> the default seed level from the table (`DAT_00650e08[0]`) is `0x05`, but if
-> `protocol_ver` (read in section 4 and stashed at `context+0x02`) is **less than 3**,
+> **Protocol-version branch for idx 0:**
+> the default seed level is `0x05`, but if
+> `protocol_ver` (read in section 4) is **less than 3**,
 > the level is overridden to `0x01`. So a flash tool implementing idx 0 must:
 >
 > 1. read DID `0x0101` and remember `byte[2]` (`protocol_ver`),
@@ -1036,8 +1008,8 @@ When the secondary is on its own CAN endpoint (e.g. `di` at 0x606/0x616), or
 when files arrive incrementally, run prog 0 twice. TSV row order is
 authoritative — CPU1 (`ecu_type=pcs`) rows always appear before CPU2:
 
-1. Flash `pcs.bhx` → `moduleToProgram` sends `2E 01 02 00` → CPU1 at `0x00088000`
-2. Flash `pcscpu2.bhx` → `moduleToProgram` sends `2E 01 02 0C` → CPU2 at `0x00082000`
+1. Flash `pcs.bhx` → `moduleToProgram` sends `2E 01 02 00` (CPU1)
+2. Flash `pcscpu2.bhx` → `moduleToProgram` sends `2E 01 02 0C` (CPU2)
 
 Each entry goes through its own full prog-0 sequence (reset → session → auth →
 moduleToProgram → erase → transfer → verify → reset). The module byte comes
@@ -1058,7 +1030,7 @@ security provider ([SECURITY_PROVIDER.md](SECURITY_PROVIDER.md)).
 
 ### Other algorithms
 
-- **`baolong_hash`** (tpms, security idx 4) and **`FUN_0040be8e`** (cmp, security idx 7) —
+- **`baolong_hash`** (tpms, security idx 4) and **`pektron_hash`** (cmp, security idx 7) —
   distinct algorithms, likewise provider-supplied and not shipped.
 
 ---

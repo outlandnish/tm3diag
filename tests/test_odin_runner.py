@@ -1,9 +1,6 @@
 """Tests for scripts/odin_runner.py -- the ODIN node-graph interpreter.
 
-Self-contained: every graph here is synthetic (built in-code or written to a
-tmp bundle), so nothing depends on Tesla's ODIN bundle. Covers the keystone
-(referenced-subnetwork I/O + the slots./outputs./signals. connection grammar)
-and the Step-2 pure-logic + iteration handler batch.
+Every graph here is synthetic, so nothing depends on Tesla's ODIN bundle.
 """
 import base64
 from pathlib import Path
@@ -40,13 +37,9 @@ def run(graph, inputs=None):
     return _engine().run_graph(graph, inputs or {})
 
 
-# ---------------------------------------------------------------------------
-# Connection parser: node names never contain dots, so split on the FIRST dot.
-# ---------------------------------------------------------------------------
-
+# Connection parser: node names never contain dots, so split on the first dot.
 class TestConnectionParser:
     def test_two_dot_data_path_parses_node_then_portpath(self):
-        # A 'sub.outputs.exit_code' pull must resolve node 'sub', port 'outputs.exit_code'.
         graph = {
             "sub": {"type": "networks.ReferencedSubnetwork", "basename": "x",
                     "outputs": {"exit_code": {"index": 0}}},
@@ -57,10 +50,7 @@ class TestConnectionParser:
         assert e._pull(frame, conn("sub.outputs.exit_code")) == 3
 
 
-# ---------------------------------------------------------------------------
-# Keystone: referenced subnetworks
-# ---------------------------------------------------------------------------
-
+# Referenced subnetworks
 _CHILD = '''
 network = {
     "enter": {"type": "networks.Enter", "start": {"connection": "setout.set"}},
@@ -137,9 +127,7 @@ network = {
         assert any(m["metric"] == "inner" and m["value"] == 42 for m in res.metrics)
 
     def test_none_input_binding_uses_child_default(self, tmp_path):
-        # Binding a child input to None must fall back to the child's Input default,
-        # not None (ODIN: None == unset). Regression for WRITE_DRIVE_TYPE's
-        # pmr_power_ecu (default 'VCLEFT') being None'd out by the task binding.
+        # Binding a child input to None falls back to the child's Input default (ODIN: None == unset).
         child = '''
 network = {
     "enter": {"type": "networks.Enter", "start": {"connection": "cap.capture"}},
@@ -161,10 +149,6 @@ network = {
         res = Engine(MockBackend("success"), tmp_path).run_procedure("parent")
         assert res.metrics[0]["value"] == "VCLEFT"   # default, not None
 
-
-# ---------------------------------------------------------------------------
-# Regression: the two bugs fixed alongside the batch
-# ---------------------------------------------------------------------------
 
 class TestCompareOperator:
     def test_default_operator_is_equality(self):
@@ -196,10 +180,6 @@ class TestGetItemListIndexing:
         node = {"type": "collections.GetItem", "data": lit({"k": 1}), "key": lit("k")}
         assert pull(node) == 1
 
-
-# ---------------------------------------------------------------------------
-# logic
-# ---------------------------------------------------------------------------
 
 class TestLogic:
     def test_is_in(self):
@@ -243,10 +223,6 @@ class TestLogic:
                      "inputs": inputs}) is True
 
 
-# ---------------------------------------------------------------------------
-# dicts / collections / lists / math
-# ---------------------------------------------------------------------------
-
 class TestDictsCollectionsLists:
     def test_set_item_immutable(self):
         base = {"a": 1}
@@ -289,10 +265,6 @@ class TestDictsCollectionsLists:
         assert pull({"type": "math.Divide", "a": lit(9), "b": lit(3)}) == 3
         assert pull({"type": "math.Mod", "x": lit(7), "divisor": lit(3)}) == 1
 
-
-# ---------------------------------------------------------------------------
-# strings / bytes / json / regex / sets / misc / types
-# ---------------------------------------------------------------------------
 
 class TestStringsBytesMisc:
     def test_format(self):
@@ -344,10 +316,6 @@ class TestStringsBytesMisc:
         assert pull({"type": "types.VariantToNumber", "value": lit("42")}) == 42
         assert pull({"type": "types.VariantToNumber", "value": lit("3.5")}) == 3.5
 
-
-# ---------------------------------------------------------------------------
-# control: data ternary + iteration (run whole mini-graphs)
-# ---------------------------------------------------------------------------
 
 def _cap(metric, value, done=None):
     node = {"type": "reporting.CaptureMetric", "metric_name": lit(metric),
@@ -584,15 +552,10 @@ class TestLiveCan:
         }
 
 
-# ---------------------------------------------------------------------------
-# Step 7: inline networks.Subnetwork (both entry styles) + de-prefix
-# ---------------------------------------------------------------------------
-
 class TestInlineSubnetwork:
     def test_enter_exit_style_inputs_outputs_signal(self):
-        # An inline Enter/Exit subnet: inner connections carry the 'sub.' prefix,
-        # inputs bind from a parent node, outputs read via sub.outputs.<name>, and
-        # the parent continues via signals.exit after the child completes.
+        # Inline Enter/Exit subnet: inner connections carry the 'sub.' prefix; the parent
+        # continues via signals.exit after the child completes.
         graph = {
             "enter": {"type": "networks.Enter", "start": conn("sub.slots.enter")},
             "seed": {"type": "constant.Constant", "value": lit(3)},
@@ -622,8 +585,7 @@ class TestInlineSubnetwork:
         assert [m["value"] for m in res.metrics] == [9]   # tripled = n*3
 
     def test_slot_signal_style_runs_inner_and_fires_exit(self):
-        # An inline Slot/Signal subnet: networks.Slot is the entry relay, networks.Signal
-        # the exit relay. Inner metrics bubble up; the parent continues via signals.exit.
+        # Inline Slot/Signal subnet: networks.Slot is the entry relay, networks.Signal the exit relay.
         graph = {
             "enter": {"type": "networks.Enter", "start": conn("sub.slots.enter")},
             "sub": {
@@ -645,10 +607,6 @@ class TestInlineSubnetwork:
         assert res.exit_code == 0
         assert [m["metric"] for m in res.metrics] == ["inner", "outer"]
 
-
-# ---------------------------------------------------------------------------
-# Step 7: control.Break / MultiSplit+MultiMerge / Merge
-# ---------------------------------------------------------------------------
 
 class TestControlFlowStep7:
     def test_break_stops_the_enclosing_loop(self):
@@ -698,10 +656,6 @@ class TestControlFlowStep7:
         assert [m["metric"] for m in res.metrics] == ["merged"]
 
 
-# ---------------------------------------------------------------------------
-# Step 7: AppendOutput / ForAccumulate
-# ---------------------------------------------------------------------------
-
 class TestAccumulators:
     def test_append_output_builds_a_list(self):
         graph = {
@@ -726,10 +680,6 @@ class TestAccumulators:
         assert run(graph).metrics[0]["value"] == [0, 1, 2]
 
 
-# ---------------------------------------------------------------------------
-# Step 7: pure-logic tail (DateTime / Uuid / SeriesSum / Abs / ActiveAlerts)
-# ---------------------------------------------------------------------------
-
 class TestLogicTail:
     def test_datetime_is_iso_string(self):
         v = pull({"type": "misc.DateTime"}, port="now")
@@ -749,11 +699,6 @@ class TestLogicTail:
         assert pull({"type": "can.ActiveAlerts", "bus_name": lit("ETH")},
                     port="alerts") == []
 
-
-# ---------------------------------------------------------------------------
-# Step 7: interop tail (CaptureConnectorInfoLookup / SaveAuthoredPopup /
-# messages.Send / OdxStartAndWaitResults_V2 / UdsIOControl)
-# ---------------------------------------------------------------------------
 
 class TestInteropTail:
     def test_capture_connector_info_lookup_records_metric(self):
@@ -856,10 +801,6 @@ class _IOBackend(Backend):
         return _A()
 
 
-# ---------------------------------------------------------------------------
-# Step 7: scripts.RunScriptTest + DynamicallyReferencedSubnetwork (tmp bundle)
-# ---------------------------------------------------------------------------
-
 _SCRIPT = '''
 network = {
     "enter": {"type": "networks.Enter", "start": {"connection": "cap.capture"}},
@@ -912,10 +853,6 @@ class TestScriptAndDynamicSubnet:
         assert res.exit_code == 0
         assert any(m["metric"] == "dynran" for m in res.metrics)
 
-
-# ---------------------------------------------------------------------------
-# Step 7 addendum: isotp.Send (raw ISO-TP transport via the py-uds stack)
-# ---------------------------------------------------------------------------
 
 class _IsotpBackend(Backend):
     """Records isotp_send calls and returns a fixed success flag."""

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """UI/GUI node — the cluster's command frames. All bus A / CANA.
 
-uiMIA (DIR a088) is an AGGREGATE of SIX UI msgs; it clears ONLY when ALL SIX are alive:
+uiMIA (DIR a088) is an aggregate of SIX UI msgs; it clears only when all six are alive:
   0x82  UI_tripPlanning       DLC8  arrival-only
   0x213 UI_cruiseControl      DLC2  ctr@4  cks@8
   0x284 UI_vehicleModes       DLC8  arrival-only
@@ -9,10 +9,8 @@ uiMIA (DIR a088) is an AGGREGATE of SIX UI msgs; it clears ONLY when ALL SIX are
   0x313 UI_trackModeSettings  DLC8  ctr@52 cks@56
   0x334 UI_powertrainControl  DLC8  ctr@52 cks@56  (self-checksummed)
 
-The node OWNS the UiConfig (pedal map / stopping / motor / traction / winch / trailer /
-track); the DI acts on 0x334/0x293/0x313. The driver sets those via ``set_ui`` (seeded
-from CLI, mutated live by the dashboard). Builders read the UiConfig, so a change takes
-effect on the next frame. The 0x213/0x293/0x313 builders + UiConfig come from tesla_frames.
+The node owns the UiConfig (pedal map / stopping / motor / traction / winch / trailer /
+track); the DI acts on 0x334/0x293/0x313. The driver sets those via ``set_ui``.
 """
 from __future__ import annotations
 
@@ -35,7 +33,7 @@ def _ui_tripPlanning(_c) -> bytearray:  # 0x82, DLC8, arrival-only
     return bytearray(8)
 
 
-def _ui_vehicleModes(_c) -> bytearray:  # 0x284, DLC8 arrival-only (DIR b3d0c expects 8; DLC5 -> a094 canDataBusA)
+def _ui_vehicleModes(_c) -> bytearray:  # 0x284, DLC8 arrival-only (DLC5 -> a094 canDataBusA)
     return bytearray(8)
 
 
@@ -69,12 +67,8 @@ class Ui(Node):
         ]
 
     def _frames_2022(self) -> list[SimFrame]:
-        # 2022.45.15 adds 0x3B3 UI_vehicleControl2 as a uiMIA a088 member (its stale-bit 537e.b15
-        # IS read by DIR_uiMiaAggregate_a088; 0x353/0x500 are supervised but NOT read -> droppable).
-        # Firmware-confirmed absent in the 2020 DIR. DLC8, arrival-only. Was a 2-byte body-control
-        # frame in the 2019 DBC; grew to 8 bytes and was reworked, so zeros(8) (arrival clears the
-        # MIA; the DIR-read fields @8 + word2 default benign). Only matters in DRIVE mode (uiMIA,
-        # like all optional-node MIAs, is drive-state-gated).
+        # 2022.45.15 adds 0x3B3 UI_vehicleControl2 as a uiMIA a088 member (0x353/0x500 are
+        # supervised but not read). DLC8, arrival-only; zeros(8) clears the MIA. Drive-state-gated.
         return [*self.frames(), SimFrame("UI_vehicleControl2", 0x3B3, 0.100, zeros(8))]
 
     def fw_variants(self):
@@ -91,8 +85,7 @@ class Ui(Node):
         termination_pct: float | None = None,
     ) -> None:
         """Driver externality: the user's charge request (UI_chargeRequest 0x333). Enabling
-        without a termination % defaults it to 80%. This is the 'user asks to charge' input
-        the rest of the car reacts to once an EVSE is reported connected (see CP.set_evse)."""
+        without a termination % defaults it to 80%."""
         if enable is not None:
             self.charge_enable = bool(enable)
             if self.charge_enable and termination_pct is None and self.charge_termination_pct == 0.0:

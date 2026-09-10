@@ -26,11 +26,9 @@ class IHexFile:
 def _load_tolerant(text: str) -> IntelHex:
     """Load Intel HEX text, tolerating multiple start-address records.
 
-    Tesla's gateway image (gwapp.img / GW.HGZ) is a dual-bank image carrying
-    two type-05 Start Linear Address records (one entry point per bank).
-    intelhex rejects the duplicate with DuplicateStartAddressRecordError, so
-    we strip type-03/05 records — they hold only the CPU entry point, which
-    the Segment model does not use — and keep all data records.
+    intelhex rejects duplicate type-05 Start Linear Address records with
+    DuplicateStartAddressRecordError. Type-03/05 records hold only the CPU entry
+    point (unused by Segment), so they are stripped; all data records are kept.
     """
     ih = IntelHex()
     try:
@@ -86,9 +84,7 @@ def load_intelhex(path: Path | str) -> IntelHex:
 def to_hex_text(ih: IntelHex) -> str:
     """Serialise an IntelHex object back to canonical Intel HEX text.
 
-    The result has a single, valid end/start-record structure — the duplicate
-    Start Linear Address records that make Tesla's dual-bank gwapp.img
-    unparseable by stock tools are dropped on the round trip.
+    Duplicate Start Linear Address records are dropped on the round trip.
     """
     buf = io.StringIO()
     ih.write_hex_file(buf)

@@ -1,28 +1,17 @@
 #!/usr/bin/env python3
 """Parse + reassemble Tesla C28x PM-family firmware images (0x0900 header).
 
-These .bin payloads (PMR / pmrbl / pmrbu / PM-RAMAPP) are NOT flat code. Layout:
+Modes:
+  analyze  — dump the header + a structured view of the post-header records.
+  build    — emit the reassembled flat runtime image (not implemented).
 
-    [0x0900 header]            magic+ver, type, sig, base/flags, ENTRY[6], END[7], hash
-    [load/init records]        repeating fixed-size records (being reversed here)
-    [payload chunk(s)]         the actual code/data the loader places in memory
-
-A linear disassembly of the raw .bin desyncs because it reads the header + records
-as if they were code. To analyze in Ghidra we must apply the records to reconstruct
-the runtime memory image, then disassemble THAT at the right base.
-
-This tool runs in two modes:
-  analyze  — dump the header + a structured view of the post-header records so the
-             record format can be pinned down by eye / by cross-image diff.
-  build    — (once the format is confirmed) emit the reassembled flat runtime image.
-
-Header format (reverse-engineered):
+Header format:
   u32[0] magic 0x0900 (low) | version<<16 (0x1c=P28)
   u32[1] image type/seq (pmrbl=1, pmrbu=2)
   u32[2..3] signature/id
   u32[4] base/flags (0x8000 PM flash, 0x4601 RAMAPP)
   u32[5] constant 0x0600
-  u32[6] ENTRY address (often below load addr -> sector A, not shipped)
+  u32[6] ENTRY address
   u32[7] END address
   u32[8] flags/0
   u32[9..] signature/hash block
@@ -64,8 +53,7 @@ def analyze(path: Path, load_addr: int, nrecs: int) -> None:
         print(f"  hdr.{k:10} = 0x{v:08x}" if isinstance(v, int) else f"  hdr.{k}={v}")
     print(f"  derived: entry below load by 0x{load_addr - h['entry']:x} words"
           f"  ;  end-entry = 0x{h['end'] - h['entry']:x}")
-    # Dump the region after the header as both word- and dword- views so the record
-    # stride/format can be eyeballed. Header+hash is ~0x24-0x40 bytes; show from 0x20.
+    # Post-header dump as word- and dword- views; start at 0x20 (past header+hash).
     start = 0x20
     print(f"  --- post-header dwords from 0x{start:x} ({nrecs} x 16B rows) ---")
     for r in range(nrecs):
@@ -82,31 +70,13 @@ def byteswap(path: Path, out: Path) -> None:
     """Byte-swap every 16-bit word of a Tesla C28x flash image so it matches the
     C28x instruction stream Ghidra expects.
 
-    KEY FINDING (2026-06-23): Tesla TMS320F28377D flash images are stored with each
-    16-bit word's two bytes REVERSED relative to how the C28x core fetches them. This
-    is a property of the F28377D flash format, NOT of a particular ECU — it applies to
-    EVERY F28377D-based device's image: PM/DI (inverter), PCS, and any other module on
-    that part. Covers all eras and both BHX-extracted payloads and the raw 2026 .bins.
-    Reading them as native little-endian words desyncs disassembly into valid-but-
-    incoherent garbage (this is why earlier linear sweeps failed). Swapping the bytes
-    of every word yields coherent code: real function prologues (MOVL *SP++ ×3 = b2bd
-    aabd a2bd, then ADDB SP,#N), LCR/LC call graphs, Q-math, and LRETR at ~7/KB.
-
-    Validated against OpenInverter (real F28377D code built with TI CGT 25.11.1):
-    its instruction-stream prologue `b2bd aabd a2bd` occurs 0x in the Tesla images
-    read as LE16 but 67/329/161x (PMR2019/DIR2019/PMR2026) read byte-swapped.
-
-    UPDATE 2026-06-25 (validated): the earlier note that pmrbl/pmrbu artifacts are
-    "different / undetermined / not the flat app body" was WRONG. The bu .bhx
-    (PM_PCBA_28_UP-…) is a SINGLE flat segment @0x88000 (49152 bytes / 0x6000 words),
-    and swap16(bhx_payload) == the coherent Ghidra image byte-for-byte (49152/49152).
-    The bl (PM_PCBA_28-…) is the same: a flat @0x82000 image. So byte-swapping DOES
-    yield coherent, decompilable flat C28x code for these bootloader artifacts — the
-    full UDS/flash handlers decompile cleanly. The chain is simply:
-        bhx segment payload  <--byteswap (this fn, its own inverse)-->  loadable/Ghidra
-    To rebuild a flashable artifact after patching the loadable image: byteswap it back
-    and use the result as the .bhx segment payload. (Their function prologues vary; not
-    every fn starts with the b2bd/aabd/a2bd triple — that pattern is one of several.)
+    Tesla TMS320F28377D flash images store each 16-bit word's two bytes reversed
+    relative to how the C28x core fetches them; this applies to every F28377D image
+    (PM/DI, PCS, etc.), all eras, both BHX-extracted payloads and raw .bins. Reading
+    them as native little-endian desyncs disassembly; byte-swapping yields coherent
+    code (function prologues, LCR/LC call graphs, Q-math, LRETR). This function is its
+    own inverse: byteswap a patched loadable image back to produce the .bhx segment
+    payload.
     """
     d = path.read_bytes()
     sw = bytearray(len(d))

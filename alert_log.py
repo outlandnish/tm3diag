@@ -1,49 +1,34 @@
 """Decode Tesla ECU ``<NODE>_alertLog`` CAN messages.
 
 Every Tesla ECU broadcasts a ``<NODE>_alertLog`` frame (DIR 0x5A5, PCS 0x424,
-DI 0x527, VCFRONT 0x534, ...). They share one framework:
+DI 0x527, VCFRONT 0x534, ...):
 
-    byte0 = alert code (the multiplexer -- which alert this frame logs)
-    bytes 1..7 = that alert's log payload (alert-specific fields)
+    byte0      = alert code (the multiplexer)
+    bytes 1..7 = that alert's log payload
 
-Alert code N under node X names alert ``X_aNNN`` (see :mod:`so_alerts`), whose
-description says what the payload means. The *CAN-rationality* alerts
-(``canDataBus*`` / ``canRationality``) carry the offending CAN id + an error
-type; the exact packing differs by ECU firmware family (not by silicon -- DU
-and PCS are both TI C28x, they just pack their logs differently):
+Alert code N under node X names alert ``X_aNNN`` (see :mod:`so_alerts`). The
+CAN-rationality alerts (``canDataBus*`` / ``canRationality``) carry the
+offending CAN id + an error type; packing differs by ECU firmware family:
 
-  * Drive Unit (DU) ECUs -- DIR, DIF, DI, PMR, PMF, PM -- pack both into
-    word1 (little-endian u16 at bytes 2-3): ``canID = word1 & 0x0FFF``,
-    ``errorType = (word1 >> 12) & 7``; word2/word3 = badValue1/2. Confirmed
-    on-vehicle: ``5E 80 A1 33 1C 00 00 00`` -> a094 canID 0x3A1
-    (VCFRONT_vehicleStatus) errorType 3 (CHECKSUM).
+  * Drive Unit (DIR, DIF, DI, PMR, PMF, PM): word1 (little-endian u16 at
+    bytes 2-3) packs ``canID = word1 & 0x0FFF``, ``errorType = (word1 >> 12)
+    & 7``; word2/word3 = badValue1/2. Bench frame
+    ``5E 80 A1 33 1C 00 00 00`` -> a094 canID 0x3A1 (VCFRONT_vehicleStatus)
+    errorType 3 (CHECKSUM).
 
-  * PCS packs ``errorType = byte2 & 7`` and ``canID = byte3 | byte4<<8``
+  * PCS: ``errorType = byte2 & 7``, ``canID = byte3 | byte4<<8``
     (per Damien Maguire's openinverter ``PCSCan::handle424``).
 
-Beyond the rationality alerts, one field is decodable for ANY alert: the first
-log signal. ``a094`` pins the payload's first field to bit 16 (canID occupies
-bits 16-27), so whatever signal the catalog lists first for an alert starts
-there too. When that signal carries a value table -- 507 alerts do, and they are
-overwhelmingly the ``*Reason`` / ``*Cause`` / ``*AbortReason`` fields that say
-*why* the ECU raised the alert -- its low bits can be read and labelled without
-knowing the field's true width: every value the table defines fits inside the
-mask implied by the table's own maximum. Values outside the table are reported
-raw rather than mislabelled. Example, real bench frame::
+For any alert the leading log signal starts at frame bit 16 (where a094's
+canID occupies bits 16-27). When it carries a value table its low bits are read
+and labelled; values outside the table are reported raw. Example::
 
     0x527 A2 80 04 00 00 01 22 7C
       -> DI_a162_shiftDenied, DI_a162_shiftDeniedReason = SYS_STATE_NOT_ENABLED
 
-The remaining log signals need per-alert field widths that no shipped artifact
-carries (the .so catalog has names, units and value tables but no bit layout;
-compact.json and the year DBCs have no alertLog message at all). For most alerts
-they are therefore listed by name with the raw payload words rather than guessed
-at. For drive-unit alerts whose firmware packer was recovered by the layout
-extractor every field decodes, so the a162 frame above also yields
-currentGear = N, requestedGear = D, essContClosed, pedalPos and the rest.
-Those layouts are firmware-derived; point ``TM3_ALERTLOG_LAYOUTS`` at a rev-tagged
-``alertlog_layouts_<rev>.json`` to enable them. A checkout without one decodes the
-reason and nothing further.
+Full per-field decode needs bit layouts that no shipped artifact carries; point
+``TM3_ALERTLOG_LAYOUTS`` at a rev-tagged ``alertlog_layouts_<rev>.json`` to
+enable them. Without one, decode yields the reason and nothing further.
 """
 
 from __future__ import annotations
@@ -54,13 +39,10 @@ import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
-# NODE_<type><code>[_suffix] -- the shape shared by alert-matrix signal names in
-# the CAN DB and alert names in the MCU catalog. Same grammar as so_alerts, plus
-# the trailing suffix so it can be prettified into a short human title.
+# NODE_<type><code>[_suffix] -- alert signal names (CAN DB) and alert names (MCU catalog).
 _ALERT_NAME_RE = re.compile(r"^([A-Z][A-Z0-9]+)_([a-z]{1,2})(\d+)(?:_(.+))?$")
 _CAMEL_SPLIT_RE = re.compile(r"(?<=[a-z0-9])(?=[A-Z])|_")
-# Words that read as acronyms in a title rather than as words. Tesla alert
-# suffixes are dense with them ("hwHvilNotPresent", "canDataBusA").
+# Suffix words rendered as acronyms in a title.
 _ACRONYMS = frozenset((
     "can", "hw", "sw", "hv", "lv", "dc", "ac", "hvil", "mia", "crc", "id", "ui",
     "vdc", "abs", "esp", "epb", "abs", "pcs", "bms", "di", "dir", "dif", "pm",
@@ -73,9 +55,7 @@ ERROR_TYPES = {
     4: "SEQUENCE", 5: "DATA_INVALID", 6: "UNKNOWN_ID",
 }
 
-# ECU firmware family -> how a CAN-rationality alert packs
-# (canID, errorType, bad1, bad2). DU and PCS are both C28x silicon but their
-# alertLog payloads are laid out differently.
+# ECU firmware family -> CAN-rationality packer (canID, errorType, bad1, bad2).
 _DU_NODES = ("DIR", "DIF", "DI", "PMR", "PMF", "PM")
 
 
@@ -90,10 +70,7 @@ def _rat_pcs(d: bytes):
     return (d[3] | (d[4] << 8), d[2] & 0x7, None, None)
 
 
-# byte1 bit7: SET on every alertLog frame captured so far (a094 x2, a162), and
-# the catalog declares <NODE>_alertState (CLEARED/SET) right after <NODE>_alertID.
-# The raw header byte is always surfaced alongside so a different pattern is
-# visible rather than silently relabelled.
+# byte1 bit7 = <NODE>_alertState (CLEARED/SET).
 ALERT_STATES = {0: "CLEARED", 1: "SET"}
 
 
@@ -103,22 +80,11 @@ _RATIONALITY["PCS"] = _rat_pcs
 
 # alertLog field layouts, keyed (node, code) -> {field: (bit_offset, width,
 # signed)} over the log-payload area (frame bytes 2-7) as a little-endian bit
-# string -- offset 0 is byte2 bit0, the same view _decode_reason takes. The
-# shipped artifacts carry field names/units/value-tables but NO bit positions
-# (see the module docstring), so these are recovered from the drive-unit
-# firmware: each alert's snapshot packer is parsed, and the field count is
-# checked against the catalog's log_signals with a non-overlap/<=48-bit gate.
-# Enum and unit labelling still comes from the per-revision catalog at decode
-# time, so a layout serves every revision that keeps those fields; a field the
-# catalog no longer lists is simply skipped. DI_a162 shiftDenied is the anchor,
-# cross-checked against bench frame A2 80 04 00 00 01 46 7C (shiftDeniedReason
-# SYS_STATE_NOT_ENABLED, currentGear N, requestedGear D).
-#
-# The layouts themselves are firmware-derived and are NOT shipped: point
-# TM3_ALERTLOG_LAYOUTS at a rev-tagged alertlog_layouts_<rev>.json, or drop such
-# files in an alertlog_layouts/ dir beside this module. Each file is tagged with
-# the firmware rev it was extracted from, since alertLog packing shifts between
-# builds.
+# string -- offset 0 is byte2 bit0. Enum/unit labels come from the per-revision
+# catalog at decode time, so a layout serves any revision that keeps those
+# fields. Layouts are not shipped: point TM3_ALERTLOG_LAYOUTS at a rev-tagged
+# alertlog_layouts_<rev>.json, or drop such files in an alertlog_layouts/ dir
+# beside this module.
 _LAYOUTS_DIR = Path(__file__).with_name("alertlog_layouts")
 
 
@@ -131,7 +97,7 @@ def _layouts_path() -> Path:
     env = os.environ.get("TM3_ALERTLOG_LAYOUTS")
     if env:
         return Path(env)
-    try:                                          # optional: match the configured rev
+    try:
         import config
         rev = getattr(config, "FW_VERSION", None)
     except Exception:
@@ -145,13 +111,7 @@ def _layouts_path() -> Path:
 
 
 def _load_layouts() -> dict[tuple[str, int], dict[str, tuple[int, int, bool]]]:
-    """Load the extracted layouts, if any are configured.
-
-    Absent -- the normal case unless TM3_ALERTLOG_LAYOUTS or a local
-    alertlog_layouts/ file is provided -- means no layouts, and decode falls back
-    to the leading-enum reason only. Never an error: the layouts are an
-    enrichment, not a dependency.
-    """
+    """Load the extracted layouts, if any are configured (empty dict if none)."""
     try:
         raw = json.loads(_layouts_path().read_text())
     except (OSError, ValueError):
@@ -174,9 +134,7 @@ def apply_layout(layout: dict[str, tuple[int, int, bool]], payload: int) -> dict
     """Extract each field's (signed) integer value from a log-payload int.
 
     ``payload`` is frame bytes 2-7 as a little-endian integer (bit 0 == byte2
-    bit0). ``layout`` maps a field's suffix name to ``(bit_offset, width,
-    signed)``. Pure bit math -- no catalog needed -- so it pins the reversed
-    layouts in tests independently of the firmware libs.
+    bit0). ``layout`` maps a field's suffix name to ``(bit_offset, width, signed)``.
     """
     out: dict[str, int] = {}
     for name, spec in layout.items():
@@ -199,9 +157,7 @@ def split_alert_name(name: str) -> tuple[str | None, str | None, int | None, str
 def pretty_alert_title(name: str) -> str:
     """Short human title from the alert name's camelCase suffix.
 
-    ``DIR_a050_noStatorSensor`` -> ``"No stator sensor"``. Always available (it
-    needs no catalog), so it's the fallback title when a build's catalog has no
-    record for an alert the CAN DB knows about.
+    ``DIR_a050_noStatorSensor`` -> ``"No stator sensor"``.
     """
     _node, _t, _code, suffix = split_alert_name(name)
     if not suffix:
@@ -209,8 +165,6 @@ def pretty_alert_title(name: str) -> str:
     words = [w for w in _CAMEL_SPLIT_RE.split(suffix) if w]
     if not words:
         return suffix
-    # Acronyms read as acronyms ("hwHvil" -> "HW HVIL"); ordinary CamelCase words
-    # drop to lower case so the title reads as a sentence.
     out = [w.upper() if w.lower() in _ACRONYMS else (w if w.isupper() else w[0].lower() + w[1:])
            for w in words]
     head = out[0] if out[0].isupper() else out[0][0].upper() + out[0][1:]
@@ -220,9 +174,8 @@ def pretty_alert_title(name: str) -> str:
 def alert_view(name: str, rec: dict | None = None) -> dict:
     """UI-ready view of one alert: short title + whatever catalog text exists.
 
-    ``rec`` is a catalog record from :mod:`so_alerts` (via
-    :meth:`AlertLogDecoder.describe`); ``None`` yields the name-only view, which
-    is what every consumer gets when the MCU libs aren't available.
+    ``rec`` is a catalog record from :mod:`so_alerts`; ``None`` yields a
+    name-only view.
     """
     node, ctype, code, _suffix = split_alert_name(name)
     view = {
@@ -248,7 +201,6 @@ def alert_view(name: str, rec: dict | None = None) -> dict:
             audience=rec.get("audience") or None,
             log_signals=list(rec.get("log_signals") or ()),
         )
-        # A catalog name with a richer suffix than the DB's wins the title.
         if rec.get("name") and rec["name"] != name:
             view["title"] = pretty_alert_title(rec["name"])
     return view
@@ -272,10 +224,8 @@ class AlertLogDecode:
     bad_value2: int | None = None
     log_signals: list = field(default_factory=list)
     # <NODE>_aNNN_<field> -> {"value": int, "label": str|None, "units": str|None}
-    # for alerts whose bit layout has been reversed (see _LAYOUTS). Empty for the
-    # rationality/reason-only paths.
     decoded: dict = field(default_factory=dict)
-    view: dict = field(default_factory=dict)  # alert_view() of this alert
+    view: dict = field(default_factory=dict)
     header: int = 0                   # byte1 verbatim (state + unknown bits)
     state: str | None = None          # "SET" / "CLEARED" from byte1 bit7
     # The leading log signal, when it's an enum -- the alert's reason/cause.
@@ -286,8 +236,7 @@ class AlertLogDecode:
     def reason_text(self) -> str | None:
         """``"shiftDeniedReason: SYS_STATE_NOT_ENABLED"``, or None if undecoded.
 
-        A field literally named ``reason``/``cause`` adds nothing as a prefix
-        (``DIR_a090_reason`` -> just ``TOOSLOW``), so it's dropped.
+        A field named ``reason``/``cause`` is shown without the prefix.
         """
         if self.reason_signal is None:
             return None
@@ -300,11 +249,9 @@ class AlertLogDecode:
     def _rat_value_for(self, suffix: str):
         """The rationality value that belongs to a log field, matched by NAME.
 
-        The four rationality fields (offending id, error type, bad1, bad2) appear
-        in different orders across builds and ECU families -- DIR ``a094`` lists
-        ``[canID, errorType, ...]`` but ``a066`` lists ``[badValue1, badValue2,
-        canID, errorType]``, and PCS ``a030`` lists ``[canRxErrorType, canID]``.
-        Pairing by position mislabels all but one order, so match on the suffix.
+        Field order varies across builds/ECUs (e.g. DIR a094 [canID, errorType,
+        ...] vs a066 [badValue1, badValue2, canID, errorType]; PCS a030
+        [canRxErrorType, canID]).
         """
         s = (suffix or "").lower()
         if "errortype" in s or "rxerror" in s or "errorreason" in s:
@@ -318,15 +265,11 @@ class AlertLogDecode:
         return None
 
     def log_values(self) -> list[dict]:
-        """The alert's logged signals paired with whatever we can decode.
+        """The alert's logged signals paired with whatever can be decoded.
 
-        Three tiers: an alert with a reversed bit layout (see ``_LAYOUTS``)
-        resolves every field, labelled from the catalog and carrying its raw
-        value + units; a CAN-rationality alert resolves its fields (matched to the
-        offending id / error type / bad values by NAME, since their order varies);
-        any other alert resolves its leading enum (the reason) and lists the rest
-        by name with ``value: None`` -- the UI can still say *what* the payload
-        words mean without inventing bit positions for them.
+        Reversed-layout alerts resolve every field; rationality alerts resolve
+        their fields by name; any other alert resolves its leading enum (the
+        reason) and lists the rest by name with ``value: None``.
         """
         out = []
         for i, sig in enumerate(self.log_signals):
@@ -340,7 +283,7 @@ class AlertLogDecode:
                 if dv.get("units"):
                     entry["units"] = dv["units"]
                 if dv.get("inferred"):
-                    entry["inferred"] = True    # value from a packing-convention fill
+                    entry["inferred"] = True
             elif self.rationality:
                 rv = self._rat_value_for(split_alert_name(short)[3] or short)
                 if rv is not None:
@@ -398,14 +341,11 @@ class AlertLogDecoder:
 
     def __init__(self, lib_dir: str | Path | None = None):
         self.alertlog_node: dict[int, str] = {}   # can_id -> node
-        # (node, code_type, code) -> rec. Keyed on the type too: DIR_a094 and a
-        # hypothetical DIR_w094 are different alerts that share a number.
+        # (node, code_type, code) -> rec
         self.alert_by_nc: dict[tuple[str, str, int], dict] = {}
         self.alert_by_name: dict[str, dict] = {}   # exact catalog name -> rec
         self.msg_name: dict[int, str] = {}         # can_id -> message name
-        # <NODE>_aNNN_<field> -> that log signal's catalog entry (units +
-        # value_description). Bit layout is NOT in the catalog; see the module
-        # docstring for what that does and doesn't allow.
+        # <NODE>_aNNN_<field> -> that log signal's catalog entry (units + value_description)
         self.log_signal: dict[str, dict] = {}
         self._load(lib_dir)
 
@@ -438,9 +378,8 @@ class AlertLogDecoder:
     def describe(self, name: str) -> dict | None:
         """Catalog record for an alert name, or None if this build has none.
 
-        Falls back from the exact name to (node, type, code) so a CAN DB whose
-        suffix drifted from the catalog's -- different firmware revisions name
-        the same alert number slightly differently -- still resolves.
+        Falls back from the exact name to (node, type, code) so a suffix that
+        drifted between firmware revisions still resolves.
         """
         rec = self.alert_by_name.get(name)
         if rec is not None:
@@ -457,12 +396,9 @@ class AlertLogDecoder:
     def _decode_reason(self, out: AlertLogDecode, payload: int) -> None:
         """Decode the leading log signal when it's an enum -- the alert's *reason*.
 
-        ``payload`` is bytes 2-7 as a little-endian integer, i.e. the log field
-        area with bit 0 at frame bit 16 (where a094's canID starts). The first
-        signal therefore sits at offset 0. Its true width isn't published, but
-        every value its table defines fits within the table maximum's bit width,
-        so masking to that width reads the value correctly; anything outside the
-        table is left unlabelled rather than guessed.
+        ``payload`` is bytes 2-7 as a little-endian integer (bit 0 at frame bit
+        16, where a094's canID starts), so the first signal sits at offset 0.
+        Values outside its table are left unlabelled.
         """
         if not out.log_signals:
             return
@@ -484,9 +420,7 @@ class AlertLogDecoder:
         """Fully decode an alert whose field bit-layout has been reversed.
 
         ``payload`` is bytes 2-7 as a little-endian int (bit 0 == byte2 bit0).
-        Fields absent from the layout -- or from this build's catalog -- are left
-        undecoded; enum and unit labels come from the catalog so the decode stays
-        correct per firmware revision.
+        Fields absent from the layout or catalog are left undecoded.
         """
         layout = _LAYOUTS.get((out.node, out.alert_code))
         if not layout:
@@ -504,9 +438,7 @@ class AlertLogDecoder:
             spec = layout[fname]
             out.decoded[short] = {
                 "value": raw, "label": label, "units": meta.get("units"),
-                # 4th spec element flags a value inferred from the packing
-                # convention (a zero-init word / missing aggregator bit), not
-                # recovered from a store -- lower confidence.
+                # 4th spec element flags an inferred (lower-confidence) value.
                 "inferred": bool(len(spec) > 3 and spec[3])}
 
     def decode(self, can_id: int, data: bytes) -> AlertLogDecode | None:
@@ -539,8 +471,6 @@ class AlertLogDecoder:
             out.error_name = ERROR_TYPES.get(etype, f"?{etype}")
             out.bad_value1, out.bad_value2 = bv1, bv2
         else:
-            # Read the leading enum (the reason) for every alert, then fully
-            # decode the fields for alerts whose bit layout has been reversed.
             payload = int.from_bytes(d[2:8], "little")
             self._decode_reason(out, payload)
             self._decode_layout(out, payload)

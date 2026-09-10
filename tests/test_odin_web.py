@@ -1,9 +1,7 @@
 """Tests for scripts/odin_web.py -- the aiohttp ODIN + DID endpoints.
 
-Self-contained: a synthetic bundle (Model3/tasks), a MockBackend for runs, and a
-fake node_provider (synthetic NodeConfig + FakeSession) for DID ops, so every
-endpoint is exercised against the aiohttp test client with no CAN bus. No
-pytest-asyncio: each test runs its async body under asyncio.run.
+Synthetic bundle, MockBackend, and a fake node_provider exercise every endpoint
+against the aiohttp test client with no CAN bus. Each test runs under asyncio.run.
 """
 import asyncio
 import contextlib
@@ -19,7 +17,7 @@ from uds_local.node_config import NodeConfig
 from uds_local.odj import FieldSpec, OdjEntry, SubSpec
 
 
-# --------------------------------------------------------------------------- bundle
+# bundle fixtures
 def _write(bundle: Path, relbase: str, src: str) -> None:
     path = bundle / (relbase + ".py")
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -44,7 +42,6 @@ network = {
     "info": {"type": "comments.TaskInfo", "title": "Blocked"},
 }
 '''
-# A proc reading one literal CAN signal on ETH (for the requirements endpoint).
 _REQ = '''
 network = {
     "r": {"type": "can.CANSignalRead",
@@ -60,7 +57,7 @@ def _bundle(tmp_path: Path) -> Path:
     return tmp_path
 
 
-# --------------------------------------------------------------------------- DID stubs
+# DID stubs
 def _fs(bit_length, byte_position, bit_position=0, data_type="uint", enum=None):
     return FieldSpec(bit_length=bit_length, byte_position=byte_position,
                      bit_position=bit_position, data_type=data_type, enum_map=enum or {})
@@ -98,7 +95,7 @@ class FakeSession:
     def write_did(self, did, data):
         self.calls.append(("write_did", did, bytes(data)))
 
-    # -- driven by the low-level UDS ops --
+    # low-level UDS ops
     def ecu_reset(self, reset_type):
         self.calls.append(("ecu_reset", reset_type))
 
@@ -158,7 +155,6 @@ async def _client(**kw):
         yield client
 
 
-# --------------------------------------------------------------------------- tests
 class TestProcedures:
     def test_runnable_list(self, tmp_path):
         async def body():
@@ -166,7 +162,7 @@ class TestProcedures:
                 r = await client.get("/api/odin/procedures")
                 assert r.status == 200
                 names = {p["name"] for p in await r.json()}
-                assert names == {"CAP"}          # runnable only; BLOCKED excluded
+                assert names == {"CAP"}
         asyncio.run(body())
 
     def test_all_includes_blocked(self, tmp_path):
@@ -323,7 +319,6 @@ class TestLowLevelUds:
                 ops = await r.json()
                 by_id = {o["op"]: o for o in ops}
                 assert "enter_bootloader" in by_id and "probe_state" in by_id
-                # Anything that reboots the ECU must be flagged so the UI confirms.
                 assert by_id["enter_bootloader"]["danger"] is True
                 assert by_id["ecu_reset"]["danger"] is True
                 assert "danger" not in by_id["probe_state"]
@@ -351,15 +346,13 @@ class TestLowLevelUds:
                                       json={"node": "DI", "op": "enter_bootloader"})
                 assert r.status == 200
                 assert backend.states == [("DI", "BOOTLOADER")]
-                # and it reports back what the node now says it is
                 assert (await r.json())["result"]["probe"]["state"] == "BOOTLOADER"
         asyncio.run(body())
 
     def test_enter_bootloader_without_any_backend_is_400(self):
         async def body():
             sess = BootSession()
-            # No backend_factory at all -> nothing to drive the handover with.
-            # (MockBackend does implement the seam, so it is NOT the no-bench case.)
+            # No backend_factory -> nothing to drive the handover with.
             async with _client(node_provider=lambda n: (_did_cfg(), sess)) as client:
                 r = await client.post("/api/uds/op",
                                       json={"node": "DI", "op": "enter_bootloader"})

@@ -1,10 +1,7 @@
 #!/usr/bin/env python3
 """Node registry — the ordered list of peer-ECU SimNodes vehicle_sim aggregates.
 
-Each node lives in its own folder (``scripts/<node>/<node>.py``) and owns the messages
-that ECU *sources*; this thin module ties them together (no central node package).
-Adding/attributing a message = editing one node's ``build()``; moving a frame between
-ECUs (e.g. out of UNKNOWN as RE pins its source) is a one-line change there.
+Each node lives in ``scripts/<node>/<node>.py`` and owns the messages that ECU sources.
 """
 from __future__ import annotations
 
@@ -39,20 +36,17 @@ from vcsec.vcsec import NODE as VCSEC
 import config as _cfg
 import ecu_bench
 
-# Ordered roughly bus-A ECUs first, then party (bus-B) ECUs; EPAS3P spans both, and
-# per-bus print order is cosmetic (a frame's bus is fixed by its own ``bus`` field).
-# These are node CLASSES; a run instantiates the selected ones (fresh state per run).
+# Ordered roughly bus-A ECUs first, then party (bus-B) ECUs; EPAS3P spans both. These are
+# node CLASSES; a run instantiates the selected ones.
 NODES: list[type[Node]] = [
     BMS, CP, PCS, HVP, VCFRONT, VCRIGHT, EPAS3P, SCCM, EPB, CMP, PTC, APP,
     ESP, IBST, RCM, DAS, GTW, UI, UNKNOWN, VCSEC,
-    # Drive-inverter nodes: the rear unit the drive bench exercises. Regular nodes, but the
-    # bench config marks whichever hardware is connected `real` (see scenarios/drive.toml) so
-    # the sim doesn't collide with it. DIF/PMF (front, AWD) are the follow-up.
+    # Drive-inverter nodes (rear unit); the bench config marks connected hardware `real`.
     DI, DIR, PMR,
 ]
 
-# Drive-inverter family -- used to warn when a run would SIMULATE the inverter (harmless for a
-# virtual car, but a collision if a real DIR/PMR is connected and not marked `real`).
+# Drive-inverter family -- used to warn when a run would simulate the inverter (a collision if
+# a real DIR/PMR is connected and not marked `real`).
 INVERTER_NODES = frozenset({"DI", "DIR", "DIF", "PMR", "PMF"})
 
 # Name -> node class, for selection (--sim/--real) and validation. Names are unique.
@@ -60,18 +54,16 @@ BY_NAME: dict[str, type[Node]] = {n.name: n for n in NODES}
 
 
 def instantiate(classes: list[type[Node]] | None = None, ctx=None) -> list[Node]:
-    """Instantiate the given node classes (default: all) with a shared NodeContext.
-    The returned instances OWN their state; the driver seeds/orchestrates them."""
+    """Instantiate the given node classes (default: all) with a shared NodeContext."""
     return [cls(ctx) for cls in (NODES if classes is None else classes)]
 
 
 def collect_frames(nodes: list[Node], fw=FW_INHERIT) -> list[SimFrame]:
-    """Gather the periodic SimFrames each (instantiated) node broadcasts for firmware ``fw``.
+    """Gather the periodic SimFrames each node broadcasts for firmware ``fw``.
 
-    Default (``FW_INHERIT``) uses each node's own ``self.fw`` (the driver sets it at selection);
-    pass an explicit FirmwareVersion / version string to override, or ``None`` for each node's
-    newest authored set. Selection is newest authored revision <= target, clamped to the
-    oldest. See ``Node.frames_for``.
+    Default (``FW_INHERIT``) uses each node's own ``self.fw``; pass an explicit FirmwareVersion /
+    version string to override, or ``None`` for each node's newest authored set. See
+    ``Node.frames_for``.
     """
     frames: list[SimFrame] = []
     for node in nodes:
@@ -82,15 +74,14 @@ def collect_frames(nodes: list[Node], fw=FW_INHERIT) -> list[SimFrame]:
 def to_bench_frames(frames: list[SimFrame]) -> list:
     """Convert SimFrames to ecu_bench.Frames for the shared engine.
 
-    period_s -> interval_ms (floored at 1), the SimFrame's ``.frame()`` becomes the
-    builder (counter/checksum/overrides stay inside the SimFrame), and ``bus`` carries
-    through. Both vehicle_sim and di.py run their node-sourced frames this way.
+    period_s -> interval_ms (floored at 1), the SimFrame's ``.frame()`` becomes the builder,
+    and ``bus`` carries through.
     """
     return [
         ecu_bench.Frame(
             sf.name, sf.can_id, max(1, round(sf.period_s * 1000)),
             builder=(lambda st, sf=sf: sf.frame()), bus=sf.bus,
-            on_result=sf.note_send,  # roll the counter back if this send dropped (gapless on-wire)
+            on_result=sf.note_send,  # roll the counter back on a dropped send
         )
         for sf in frames
     ]
@@ -105,11 +96,9 @@ def select_nodes(
 ) -> list[type[Node]]:
     """Return the ordered node CLASSES to simulate.
 
-    ``sim`` is a whitelist of node names (None => all nodes); ``real`` names ECUs that
-    are present on the bus for real (physical hardware / another process) and must NOT be
-    simulated -- e.g. the drive bench marks the connected inverter real (DIR/PMR/DI) so the
-    sim doesn't collide with it, while a fully virtual car leaves them simulated. Names are
-    case-insensitive; an unknown name raises ValueError.
+    ``sim`` is a whitelist of node names (None => all nodes); ``real`` names ECUs present on the
+    bus for real and NOT to be simulated. Names are case-insensitive; an unknown name raises
+    ValueError.
     """
     sim_set = None if sim is None else _norm(sim)
     real_set = _norm(real)
@@ -126,12 +115,9 @@ def select_nodes(
     return chosen
 
 
-# ---------------------------------------------------------------------------
-# MIA aggregates -- firmware-confirmed OR-aggregates the DIR clears only when ALL
-# member frames arrive (valid checksum + rolling counter). Membership spans ECUs,
-# so it is orthogonal to node ownership: deselecting a node can leave an aggregate
-# partially covered, which can NEVER clear. Used to warn on partial coverage.
-# ---------------------------------------------------------------------------
+# MIA aggregates -- the DIR clears each only when ALL member frames arrive (valid checksum +
+# rolling counter). Membership spans ECUs, so deselecting a node can leave one partially
+# covered (which can never clear). Used to warn on partial coverage.
 MIA_AGGREGATES: dict[str, frozenset[int]] = {
     "vcfrontMIA": frozenset({0x221, 0x241, 0x321, 0x3A1, 0x102, 0x3C2, 0x103}),
     "espMIA": frozenset({0x105, 0x145, 0x155, 0x175, 0x185, 0x38D}),
@@ -144,10 +130,9 @@ MIA_AGGREGATES: dict[str, frozenset[int]] = {
 
 
 def mia_coverage_warnings(active_ids: set[int]) -> list[str]:
-    """For each MIA aggregate that is PARTIALLY covered by ``active_ids`` (some members
-    present, some missing), return a warning naming the missing IDs. A partially
-    covered aggregate can never clear, so this surfaces "party MIA will never clear"
-    up front. Fully covered or fully absent aggregates produce no warning.
+    """For each MIA aggregate partially covered by ``active_ids`` (some members present, some
+    missing), return a warning naming the missing IDs. Fully covered or fully absent aggregates
+    produce no warning.
     """
     out: list[str] = []
     for name, members in MIA_AGGREGATES.items():
@@ -159,9 +144,7 @@ def mia_coverage_warnings(active_ids: set[int]) -> list[str]:
     return out
 
 
-# ---------------------------------------------------------------------------
 # Top-level bench config (TOML) -- which ECUs to simulate + message->bus overrides.
-# ---------------------------------------------------------------------------
 DEFAULT_CONFIG_PATH = Path(__file__).resolve().parents[1] / "sim.toml"
 VALID_BUSES = ("vehicle", "party", "charge")
 
@@ -224,7 +207,7 @@ def load_bench_config(path) -> BenchConfig:
     fw = data.get("firmware", {}).get("version")
     if fw is not None:
         try:
-            FirmwareVersion(fw)  # validate now so a typo fails at load, not mid-run
+            FirmwareVersion(fw)  # validate now
         except (TypeError, ValueError) as e:
             raise ValueError(f"[firmware] version {fw!r}: {e}") from e
     nodes = data.get("nodes", {})
@@ -240,7 +223,6 @@ def load_bench_config(path) -> BenchConfig:
             cid = int(str(key), 0)
         except ValueError as e:
             raise ValueError(f"[bus] key {key!r} is not a valid arbitration ID") from e
-        # eth / unknown -> vehicle (assume the vehicle bus unless another is named).
         bus[cid] = _cfg.canonical_bus(val)
     scenario: dict[str, dict] = {}
     for node_name, settings in data.get("scenario", {}).items():

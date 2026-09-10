@@ -413,8 +413,6 @@ def phase4_flash(
     bus, bls, apps = find_bootloader_entries(selected)
     ordered = bus + bls + apps
 
-    # Flash bu/bl/single-CPU entries individually first; only run the dual-CPU
-    # prog-1 path on the app entries after any bootloader flash is done.
     pair = find_dual_cpu_pair(apps)
 
     single_entries = [e for e in ordered if pair is None or e not in pair]

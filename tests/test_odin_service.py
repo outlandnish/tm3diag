@@ -1,11 +1,7 @@
-"""Tests for scripts/odin_service.py -- the shared CLI/web core over the ODIN
-engine + coverage.
+"""Tests for scripts/odin_service.py -- the shared CLI/web core over the ODIN engine.
 
-Self-contained: every graph is synthetic, written into a tmp bundle laid out like
-the real one (Model3/tasks entries + Model3/lib children), so nothing depends on
-Tesla's ODIN bundle. Covers discovery (list_procedures: runnable vs blocked, both
-TaskInfo title shapes) and a streamed run (run_procedure: on_event trace/metric/
-done events + the RunResult-as-dict).
+Every graph is synthetic, written into a tmp bundle (Model3/tasks entries +
+Model3/lib children).
 """
 from pathlib import Path
 
@@ -22,7 +18,6 @@ def _write(bundle: Path, relbase: str, src: str) -> None:
     path.write_text(src, encoding="utf-8")
 
 
-# A wired child graph using only handled node types (math.Multiply + SetOutput).
 _CHILD = '''
 network = {
     "enter": {"type": "networks.Enter", "start": {"connection": "setout.set"}},
@@ -35,8 +30,7 @@ network = {
 }
 '''
 
-# Runnable entry: bare-task wrapper + a TaskInfo with the WRAPPED title shape
-# ({'value': ...}) plus valid_states / principals.
+# Runnable entry with a wrapped-title TaskInfo (title as {'value': ...}).
 _RUNNABLE = '''
 network = {
     "task": {"type": "networks.RunReferencedSubnetwork", "basename": "Model3/lib/dbl",
@@ -47,8 +41,7 @@ network = {
 }
 '''
 
-# Blocked entry: references an unhandled node type; TaskInfo uses the BARE title
-# shape (a plain string), matching the real bundle.
+# Blocked entry: an unhandled node type; TaskInfo uses the bare (plain-string) title.
 _BLOCKED = '''
 network = {
     "enter": {"type": "networks.Enter", "start": {"connection": "x.run"}},
@@ -58,7 +51,7 @@ network = {
 }
 '''
 
-# Runnable entry with NO TaskInfo (metadata must degrade to None/empty).
+# Runnable entry with no TaskInfo.
 _NOINFO = '''
 network = {
     "enter": {"type": "networks.Enter", "start": {"connection": "exit.exit"}},
@@ -113,14 +106,10 @@ class TestListProcedures:
         assert names == {"RUNNABLE-TASK", "NOINFO-TASK"}   # BLOCKED-TASK dropped
 
 
-# ---------------------------------------------------------------------------
-# procedure_requirements -- "what must be on the bus before this proc runs"
-# ---------------------------------------------------------------------------
-# A lib graph exercising every extracted node kind: three CAN reads (read/monitor/
-# compare) on ETH, one DYNAMIC (connection-sourced) signal, an alert inspection, an
-# EnsureApplicationState (app-state precondition + a UDS target), a PowerContext, an
-# odx UDS target, and a cid data-value read. None need to be *handled* -- the walk
-# only visits node dicts.
+# procedure_requirements: a lib graph exercising every extracted node kind -- three
+# CAN reads (read/monitor/compare) on ETH, a dynamic (connection-sourced) signal, an
+# alert inspection, EnsureApplicationState, PowerContext, an odx UDS target, and a cid
+# data-value read.
 _REQ_LIB = '''
 network = {
     "read": {"type": "can.CANSignalRead",
@@ -145,7 +134,7 @@ network = {
     "cidv": {"type": "cid.GetDataValue", "data_name": {"value": "carVin"}},
 }
 '''
-# Entry proc that references the lib (so the walk is transitive) + TaskInfo states.
+# Entry proc referencing the lib (transitive walk) + TaskInfo states.
 _REQ_TASK = '''
 network = {
     "task": {"type": "networks.RunReferencedSubnetwork", "basename": "Model3/lib/reqlib"},
@@ -153,7 +142,7 @@ network = {
              "valid_states": ["Parked"]},
 }
 '''
-# A read whose signal is literal but bus is absent -> grouped under the default bus.
+# Literal signal, no bus -> grouped under the default bus.
 _REQ_DEFBUS = '''
 network = {
     "r": {"type": "can.CANSignalRead", "signal_name": {"value": "BMS_state"}},
@@ -171,8 +160,7 @@ class TestProcedureRequirements:
         req = odin_service.procedure_requirements(
             "Model3/tasks/REQ", bundle=self._bundle(tmp_path))
         assert req["basename"] == "Model3/tasks/REQ"
-        # literal reads on ETH, sorted by (signal, kind); the pure-connection dyn read
-        # is excluded, but the connection-with-default read IS enumerated at its default.
+        # literal reads on ETH, sorted by (signal, kind)
         assert req["signals"]["ETH"] == [
             {"signal": "DIR_axleSpeed", "kind": "compare"},
             {"signal": "DI_gear", "kind": "monitor"},
@@ -183,15 +171,15 @@ class TestProcedureRequirements:
     def test_dynamic_signal_counted_not_enumerated(self, tmp_path):
         req = odin_service.procedure_requirements(
             "Model3/tasks/REQ", bundle=self._bundle(tmp_path))
-        assert req["dynamic_count"] == 1        # only the pure-connection read (no default)
+        assert req["dynamic_count"] == 1
         sigs = [s["signal"] for lst in req["signals"].values() for s in lst]
-        assert "src.out" not in sigs            # the bare connection is never enumerated
+        assert "src.out" not in sigs
 
     def test_alerts_and_uds_target_nodes(self, tmp_path):
         req = odin_service.procedure_requirements(
             "Model3/tasks/REQ", bundle=self._bundle(tmp_path))
         assert req["alerts"] == [{"bus": "ETH", "prefix": "DI_a0"}]
-        assert req["nodes"] == ["PMR"]      # odx + EnsureApplicationState, de-duped
+        assert req["nodes"] == ["PMR"]
 
     def test_preconditions(self, tmp_path):
         pre = odin_service.procedure_requirements(
@@ -214,7 +202,6 @@ class TestProcedureRequirements:
             odin_service.procedure_requirements("Model3/tasks/NOPE", bundle=tmp_path)
 
 
-# A tiny entry proc that captures one metric then exits 0.
 _CAP_TASK = '''
 network = {
     "enter": {"type": "networks.Enter", "start": {"connection": "cap.capture"}},
@@ -244,10 +231,9 @@ class TestRunProcedure:
             on_event=lambda kind, payload: events.append((kind, payload)))
 
         kinds = [k for k, _ in events]
-        assert "trace" in kinds                            # node execution steps
+        assert "trace" in kinds
         metrics = [p for k, p in events if k == "metric"]
         assert metrics and metrics[0]["metric"] == "m" and metrics[0]["value"] == 42
-        # the terminal event carries the same dict run_procedure returns
         assert kinds[-1] == "done"
         assert events[-1][1] == res
 
@@ -264,11 +250,9 @@ class TestRunProcedure:
         res = odin_service.run_procedure("Model3/tasks/CAP", backend=be,
                                          bundle=tmp_path)
         assert res["passed"] is True
-        assert be.closed is False        # caller owns a passed-in backend instance
+        assert be.closed is False
 
     def test_error_event_emitted_on_failure(self, tmp_path):
-        # A missing basename makes Engine.run_procedure raise (file not found);
-        # run_procedure must emit an 'error' event before propagating.
         events: list[tuple] = []
         raised = False
         try:
@@ -281,9 +265,7 @@ class TestRunProcedure:
         assert events and events[-1][0] == "error"
 
 
-# ---------------------------------------------------------------------------
-# DID read/write helpers -- FakeSession + synthetic NodeConfig (no bench).
-# ---------------------------------------------------------------------------
+# DID read/write helpers: FakeSession + synthetic NodeConfig.
 def _fs(bit_length, byte_position, bit_position=0, data_type="uint", enum=None):
     return FieldSpec(bit_length=bit_length, byte_position=byte_position,
                      bit_position=bit_position, data_type=data_type,
@@ -291,20 +273,17 @@ def _fs(bit_length, byte_position, bit_position=0, data_type="uint", enum=None):
 
 
 _MODE = _fs(8, 0, 0, "uint", {"OFF": 0, "ON": 1})
-# CFG: readable (sl0, MODE enum) + writable (sl5, MODE enum).
 _CFG = OdjEntry(
     name="CFG", hex_id=0x0500,
     read=SubSpec(security_level=0, input={}, output={"MODE": _MODE},
                  input_size=0, output_size=1),
     write=SubSpec(security_level=5, input={"MODE": _MODE}, output={},
                   input_size=1, output_size=0))
-# LOCK: read requires security level 3 (STATE byte).
 _LOCK = OdjEntry(
     name="LOCK", hex_id=0x0600,
     read=SubSpec(security_level=3, input={}, output={"STATE": _fs(8, 0)},
                  input_size=0, output_size=1),
     write=None)
-# SN: read-only ascii serial (sl0).
 _SN = OdjEntry(
     name="SN", hex_id=0xF013,
     read=SubSpec(security_level=0, input={}, output_size=4, input_size=0,
@@ -344,7 +323,7 @@ class TestListDids:
     def test_splits_readable_and_writable_with_metadata(self):
         dids = odin_service.list_dids(_did_cfg())
         assert {d["name"] for d in dids["read"]} == {"CFG", "LOCK", "SN"}
-        assert {d["name"] for d in dids["write"]} == {"CFG"}    # only CFG is writable
+        assert {d["name"] for d in dids["write"]} == {"CFG"}
         cfg_w = dids["write"][0]
         assert cfg_w["hex_id"] == "0x0500" and cfg_w["security_level"] == 5
         assert cfg_w["fields"] == ["MODE"]
@@ -369,7 +348,7 @@ class TestReadDid:
         sess = FakeSession()
         odin_service.read_did(sess, _did_cfg(), "LOCK")
         assert ("diagnostic_session", 0x02) in sess.calls
-        assert ("security_access", 0, 3) in sess.calls    # seed_level = 3
+        assert ("security_access", 0, 3) in sess.calls
         assert ("read_did", 0x0600) in sess.calls
 
     def test_resolves_by_hex_id(self):
@@ -398,7 +377,7 @@ class TestWriteDid:
         sess = FakeSession()
         res = odin_service.write_did(sess, _did_cfg(), "CFG", {"MODE": "ON"})
         assert ("diagnostic_session", 0x02) in sess.calls
-        assert ("security_access", 0, 5) in sess.calls     # write subspec sl = 5
+        assert ("security_access", 0, 5) in sess.calls
         assert ("write_did", 0x0500, b"\x01") in sess.calls
         assert res["bytes"] == "01" and res["size"] == 1
 

@@ -1,9 +1,7 @@
 #!/usr/bin/env python3
 """BMS node — HV battery liveness (feeds DIR_a092_bmsMIA).
 
-No counter/checksum: the DIR's BMS handlers reset their MIA down-counter on any
-DLC>=8 arrival regardless of payload (same as the PCS VCFRONT RE). Content is set
-to a plausible drive-ready pack so the readiness FSM can advance.
+DLC>=8 arrival clears bmsMIA regardless of payload; content is a drive-ready pack.
 """
 
 from __future__ import annotations
@@ -42,19 +40,15 @@ def _bms_driveLimits() -> bytearray:  # 0x2D2, 100ms
     )
 
 
-def _bms_packConfig_0x392() -> bytearray:  # 0x392, DLC8 — 2022.45.15 only (reassigned from epas3p)
-    # 0x392 was EPAS3P_alertMatrix in 2020, reassigned to BMS_packConfig in 2022+ (DBC-confirmed).
-    # The 2022 DIR reads the config only when byte0 (BMS_packConfigMultiplexer) == 1, then stores a
-    # scaled value -> g@1468c. byte0=1 + zeros = a valid mux-1 frame (clears bmsMIA AND delivers the
-    # packConfig value, unlike the epas3p alertMatrix frame whose byte0 != 1 was silently skipped).
+def _bms_packConfig_0x392() -> bytearray:  # 0x392, DLC8 — 2022.45.15 only
+    # 0x392 = BMS_packConfig in 2022+ (was EPAS3P_alertMatrix in 2020, DBC-confirmed). The DIR
+    # reads the config only when byte0 (BMS_packConfigMultiplexer) == 1.
     return pack_le([(0, 8, 1)], 8)
 
 
 def _bms_limits_0x452() -> bytearray:  # 0x452, DLC3, no E2E — 2022.45.15 only
-    # Two packed limits the DIR clamps torque against (b0-9 and b10-20, min()'d into the
-    # powertrain torque/power set). Values are a proven-good captured payload
-    # (bytes C2 40 1F = b0-9:194, b10-20:2000, both non-SNA); raise if a drive test needs a
-    # higher torque ceiling. SNA would floor the limit -> no torque.
+    # Two packed torque limits (b0-9, b10-20) the DIR min()'s into the powertrain torque/power set.
+    # Captured payload C2 40 1F = b0-9:194, b10-20:2000 (both non-SNA).
     return pack_le([(0, 10, 194), (10, 11, 2000)], 3)
 
 
@@ -68,9 +62,8 @@ def _bms_thermalStatus() -> bytearray:  # 0x312, 1000ms
     )
 
 
-# BMS_status 0x212 signal sets per operating mode (start,width,value), from the
-# PCS operating-mode tables + compact.json signal layout. "drive" is the pre-charge
-# default (byte-identical to the old drive build); charge/support move HV/contactors/state.
+# BMS_status 0x212 signal sets per operating mode (start,width,value), from the PCS
+# operating-mode tables + compact.json signal layout.
 _BMS_STATUS_MODES = {
     "drive": [
         (1, 1, 0),  # BMS_notEnoughPowerForDrive = 0
@@ -104,9 +97,7 @@ class Bms(Node):
         self.mode = "drive"  # drive | dcdc | charge — driver externality (BMS_status 0x212)
 
     def frames(self) -> list[SimFrame]:
-        # NOTE: this is the proven working bench set. Of these, only 0x212+0x312 exist in the
-        # 2020 DIR; 0x132/0x252/0x2D2 are 2022-new but harmless on a 2020 DU (no
-        # handler -> filtered), so they stay here rather than risk a working-bench regression.
+        # Only 0x212 + 0x312 exist in the 2020 DIR; 0x132/0x252/0x2D2 are 2022-new (no 2020 handler).
         return [
             SimFrame("BMS_hvBusStatus", 0x132, 0.010, _bms_hvBusStatus),
             SimFrame("BMS_status", 0x212, 0.100, self._bms_status),
@@ -116,9 +107,8 @@ class Bms(Node):
         ]
 
     def _frames_2022(self) -> list[SimFrame]:
-        """2022.45.15 adds two firmware-confirmed 2022-new bmsMIA a092 members absent in the 2020
-        DIR: BMS_limits 0x452 (the torque-limit input) and BMS_packConfig 0x392 (reassigned from
-        epas3p's EPAS3P_alertMatrix -- epas3p.py drops it in its 2022 variant, so no collision)."""
+        """2022.45.15 adds two bmsMIA (a092) members absent in the 2020 DIR:
+        BMS_limits 0x452 and BMS_packConfig 0x392."""
         return [
             *self.frames(),
             SimFrame("BMS_limits", 0x452, 0.100, _bms_limits_0x452),
@@ -129,8 +119,7 @@ class Bms(Node):
         return {BASELINE_FW: self.frames, "2022.45.15": self._frames_2022}
 
     def set_mode(self, mode: str) -> str:
-        """Driver externality: pack operating mode reflected in BMS_status
-        (drive|dcdc|charge). The orchestrator moves it to charge for a charge session."""
+        """Pack operating mode reflected in BMS_status (drive|dcdc|charge)."""
         key = str(mode).strip().lower()
         if key not in _BMS_STATUS_MODES:
             raise ValueError(f"BMS mode must be one of {list(_BMS_STATUS_MODES)}")
@@ -147,8 +136,7 @@ class Bms(Node):
         return {0x3A1: self._on_vcfront_status}  # VCFRONT_vehicleStatus
 
     def _on_vcfront_status(self, data, send) -> None:
-        # Follow VCFRONT: go to charge state once it authorizes HV charging
-        # (bmsHvChargeEnable @0), else drive.
+        # bmsHvChargeEnable @0: charge when set, else drive.
         charge = bool(int.from_bytes(bytes(data), "little") & 1)
         self.mode = "charge" if charge else "drive"
 

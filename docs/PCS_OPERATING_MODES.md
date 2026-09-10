@@ -1,8 +1,7 @@
 # PCS Operating Modes
 
-Reference for entering each PCS operating mode via `scripts/pcs/pcs.py`. Covers what
-we transmit, what the PCS and surrounding ECUs report back, and what confirms
-the mode is active.
+Reference for entering each PCS operating mode via `scripts/pcs/pcs.py`: what to
+transmit, what to expect back, and what confirms the mode is active.
 
 All signal layouts are from `Model3_ETH.dbc` / `Model3_ETH.compact.json`.
 

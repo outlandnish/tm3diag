@@ -37,23 +37,15 @@ warnings.filterwarnings(
     message="A CAN packet that does not start UDS message transmission")
 warnings.filterwarnings(
     "ignore", module=r"uds\.can\.transport_interface\.common")
-# Silence all warnings from the uds python_can transport (e.g. the Notifier
-# timeout UserWarning) and from the python-can library itself.
 warnings.filterwarnings(
     "ignore", module=r"uds\.can\.transport_interface\.python_can")
 warnings.filterwarnings("ignore", module=r"can(\..*)?")
 
 
-# ---------------------------------------------------------------------------
-# Product selection
-# ---------------------------------------------------------------------------
-
 def _select_product() -> _cfg.FwPaths:
-    """Prompt the user to choose a device/product when multiple are available.
+    """Prompt for a device when multiple products exist; return its FwPaths.
 
-    Returns a FwPaths for the chosen product. Falls back to the default
-    (TM3_PRODUCT env var, or the first available product) without prompting
-    when there is only one choice or TM3_PRODUCT is explicitly set.
+    Falls back to TM3_PRODUCT (or the sole product) without prompting.
     """
     products = _cfg.available_products()
 
@@ -80,7 +72,6 @@ def _select_product() -> _cfg.FwPaths:
             raise SystemExit(0) from None
         if not raw:
             continue
-        # Accept a number or the name directly
         if raw.isdigit():
             idx = int(raw) - 1
             if 0 <= idx < len(products):
@@ -117,10 +108,6 @@ _BOARD_PART_DIDS: list[tuple[int, str]] = [
 ]
 
 
-# ---------------------------------------------------------------------------
-# ODJ field decode
-# ---------------------------------------------------------------------------
-
 def _decode_fields(data: bytes, fields: dict[str, FieldSpec]) -> list[tuple[str, str]]:
     """Decode response bytes into (field_name, value_str) pairs using ODJ field specs."""
     results = []
@@ -146,10 +133,6 @@ def _decode_fields(data: bytes, fields: dict[str, FieldSpec]) -> list[tuple[str,
     return results
 
 
-# ---------------------------------------------------------------------------
-# Tab completion
-# ---------------------------------------------------------------------------
-
 class _Completer:
     def __init__(self, options: list[str]):
         self._options = options
@@ -168,10 +151,6 @@ def _setup_completion(options: list[str]) -> None:
     readline.parse_and_bind("tab: complete")
 
 
-# ---------------------------------------------------------------------------
-# Display helpers
-# ---------------------------------------------------------------------------
-
 def _hdr(text: str) -> None:
     rule = "─" * 60
     print(f"\n{_c.dim(rule)}")
@@ -180,22 +159,17 @@ def _hdr(text: str) -> None:
 
 
 def _menu_item(cmd: str, desc: str) -> None:
-    """Print one menu row: bold command, dim description."""
     print(f"  {_c.bold(f'{cmd:<11}')} {_c.dim(desc)}")
 
 
-# Prompt string shared by every input() — bold so the cursor line stands out
-# from the command output above it.
 _PROMPT = _c.bold("  > ")
 
 
 def _err(msg: str) -> None:
-    """Print an error line (red), indented two spaces like the rest of the UI."""
     print(_c.error(f"  {msg}"))
 
 
 def _warn(msg: str) -> None:
-    """Print a warning / hint line (yellow), indented two spaces."""
     print(_c.warning(f"  {msg}"))
 
 
@@ -208,10 +182,6 @@ def _print_did_response(name: str, did_id: int, data: bytes, fields: dict[str, F
     else:
         print(f"    {data.hex()}")
 
-
-# ---------------------------------------------------------------------------
-# Node selection
-# ---------------------------------------------------------------------------
 
 def _pre_connection_menu(nodes: dict, channel: str, interface: str, fw: _cfg.FwPaths) -> str | None:
     """Top-level menu shown before connecting. Returns a node name or None to quit."""
@@ -263,23 +233,14 @@ def _pre_connection_menu(nodes: dict, channel: str, interface: str, fw: _cfg.FwP
             return name
 
         else:
-            # bare node name shorthand
             name = raw.upper()
             if name in nodes:
                 return name
             print(_c.error(f"  Unknown command or node: {raw!r}"))
 
 
-# ---------------------------------------------------------------------------
-# Identity banner (0xF180)
-# ---------------------------------------------------------------------------
-
 def _show_identity(sess, cfg: NodeConfig) -> bool:
-    """Read the identity DID (0xF180) to confirm the ECU is responding.
-
-    Returns True if the ECU answered (we're really connected), False if the
-    read failed — in which case the caller should not proceed to the menu.
-    """
+    """Read the identity DID (0xF180). Returns True if the ECU answered."""
     from uds_local.client import UdsError
     from uds_local.identity import parse_f180
     try:
@@ -301,7 +262,6 @@ def _show_identity(sess, cfg: NodeConfig) -> bool:
         for fname, val in decoded:
             print(f"    {fname:<36} {val}")
 
-    # The firmware lookup key (the same one dfu.py / tm3uds.py identity report)
     try:
         ident = parse_f180(data, cfg.name)
     except ValueError:
@@ -310,10 +270,6 @@ def _show_identity(sess, cfg: NodeConfig) -> bool:
         print(f"    {'lookup_key':<36} {ident.lookup_key}")
     return True
 
-
-# ---------------------------------------------------------------------------
-# DID menu
-# ---------------------------------------------------------------------------
 
 def _did_menu(sess, cfg: NodeConfig, dids: dict[str, OdjEntry]) -> None:
     from uds_local.client import UdsError
@@ -390,10 +346,6 @@ def _did_menu(sess, cfg: NodeConfig, dids: dict[str, OdjEntry]) -> None:
         except UdsError as e:
             _err(f"Error: {e}")
 
-
-# ---------------------------------------------------------------------------
-# Routine menu
-# ---------------------------------------------------------------------------
 
 def _prompt_routine_inputs(fields: dict[str, FieldSpec]) -> bytes | None:
     """Prompt for each input field and pack into bytes. Returns None on error."""
@@ -482,7 +434,6 @@ def _routine_menu(sess, cfg: NodeConfig, routines: dict[str, RoutineEntry]) -> N
                     print(f"    0x{entry.hex_id:04X}  {name:<40} {', '.join(actions)}{sa_str}")
             continue
 
-        # Resolve to (routine_id, needs_sa, sl, entry | None)
         odj_entry: RoutineEntry | None = None
         needs_sa = False
         sl = 1
@@ -595,7 +546,6 @@ def _io_control_menu(sess, cfg: NodeConfig, io_controls: dict[str, IoControlEntr
                 print(f"    0x{entry.hex_id:04X}  {name:<52} {cp_desc}{sa_str}")
             continue
 
-        # Resolve to (ctrl_id, sl, entry | None)
         io_entry: IoControlEntry | None = None
         if raw in io_controls:
             io_entry = io_controls[raw]
@@ -662,10 +612,6 @@ def _io_control_menu(sess, cfg: NodeConfig, io_controls: dict[str, IoControlEntr
             _err(f"Error: {e}")
 
 
-# ---------------------------------------------------------------------------
-# DFU (firmware update via dfu.py phases)
-# ---------------------------------------------------------------------------
-
 def _dfu_menu(sess, cfg, artifacts_dir: Path | None, force: bool | None = None) -> None:
     from dfu import run_flash
     from flash_scripts._display import StatusDisplay
@@ -690,10 +636,6 @@ def _dfu_menu(sess, cfg, artifacts_dir: Path | None, force: bool | None = None) 
     except Exception as e:
         _err(f"Error: {e}")
 
-
-# ---------------------------------------------------------------------------
-# Main menu
-# ---------------------------------------------------------------------------
 
 def _main_menu(sess, cfg: NodeConfig, artifacts_dir: Path | None, force: bool = False) -> None:
     _setup_completion([
@@ -801,10 +743,6 @@ def _reset_cmd(sess) -> None:
         _err(f"Error: {e}")
 
 
-# ---------------------------------------------------------------------------
-# Entry point
-# ---------------------------------------------------------------------------
-
 def main() -> int:
     import argparse
 
@@ -852,8 +790,6 @@ def main() -> int:
     artifacts_dir = Path(args.artifacts).expanduser(
     ).resolve() if args.artifacts else None
 
-    # Interactive: chosen from the pre-connection menu, so a failed connect
-    # returns there. --node: a single attempt that exits with the result code.
     interactive = node_name is None
 
     while True:
@@ -873,20 +809,16 @@ def main() -> int:
         connected = _connect_and_run(
             cfg, node_name, args, artifacts_dir, fw=fw, UdsSession=UdsSession
         )
-        # Interactive: only a failed connect returns to the node menu; a session
-        # the user quit ("Disconnect and exit") ends the program as advertised.
         if interactive and not connected:
             continue
         return 0 if connected else 1
 
 
 def _connect_and_run(cfg, node_name, args, artifacts_dir, *, fw, UdsSession) -> bool:
-    """Connect to one node and run the menu. Returns False if the connect failed.
+    """Connect to one node and run the menu.
 
-    A failed connect (no 0xF180 response, or a session-level error) returns
-    False so an interactive caller can drop back to the node menu instead of
-    showing the main menu as if we were connected. Returns True once we've had
-    a live session, whether the user quit or hit Ctrl-C.
+    Returns False on a failed connect (no 0xF180 response or session error),
+    True once a live session ended (quit or Ctrl-C).
     """
     effective_artifacts = artifacts_dir or fw.artifacts_dir
     print(f"\nConnecting to {node_name} on {args.channel}...")

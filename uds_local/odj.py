@@ -1,4 +1,4 @@
-"""ODJ file types and parser — single source of truth for all ODJ parsing."""
+"""ODJ file types and parser."""
 from __future__ import annotations
 
 from dataclasses import dataclass

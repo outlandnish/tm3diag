@@ -1,12 +1,8 @@
 """Golden regression test for the node-centric bench (stateful Node model).
 
-Locks the node registry to the exact frame inventory the pre-refactor flat ``frames``
-list produced (captured from the original code): per-bus membership + each frame's
-period / rolling-counter position / checksum position / counter width / DLC. If a node
-edit changes what goes on the wire (drive scenario), this fails loudly.
-
-CI-safe: instantiates the nodes with a stub NodeContext (a minimal DB just for the GTW
-car-config), so nothing here needs the real compact DB or a CAN bus.
+Locks the node registry to a fixed frame inventory: per-bus membership plus each
+frame's period / rolling-counter position / checksum position / counter width / DLC.
+Instantiated with a stub NodeContext, so no real DB or CAN bus is needed.
 """
 from __future__ import annotations
 
@@ -14,13 +10,10 @@ import sim_core
 import sim_registry
 
 # (can_id, bus) -> (period_s, counter_start, cksum_start, counter_width, dlc)
-# Keyed on the bus too, not the id alone: one id can legitimately be sent on BOTH
-# buses (IBST_status 0x39D, below), which a can_id-keyed golden can't express.
-# The MIA-owning party frames (rcm/esp/ibst/epas3p members) transmit at
-# sim_core.PARTY_LIVENESS_S (the group2 CANB MIA-clear floor), a fixed per-frame constant
-# now -- NOT the old global --party-period flatten (removed). Truly non-waited-on party frames
-# (das 0x389/0x2B9) keep their native cycle; unknown 0x11D is at PARTY_LIVENESS_S because the DIR
-# VDC freshness watchdog waits on it.
+# Keyed on (id, bus): id 0x39D (IBST_status) ships on both buses.
+# MIA-owning party frames (rcm/esp/ibst/epas3p) transmit at sim_core.PARTY_LIVENESS_S
+# (the group2 CANB MIA-clear floor); non-waited-on das 0x389/0x2B9 keep their native
+# cycle; 0x11D is at PARTY_LIVENESS_S for the DIR VDC freshness watchdog.
 GOLDEN: dict[tuple[int, str], tuple] = {
     # ---- vehicle bus (group1 / CANA) ----
     (0x132, "vehicle"): (0.010, None, None, 4, 8),
@@ -28,14 +21,12 @@ GOLDEN: dict[tuple[int, str], tuple] = {
     (0x252, "vehicle"): (0.100, None, None, 4, 8),
     (0x2D2, "vehicle"): (0.100, None, None, 4, 8),
     (0x312, "vehicle"): (1.000, None, None, 4, 8),
-    # CP_status ships on BOTH 0x210 (catalog id) and 0x25D (what the 2022 DIR actually
-    # subscribes to -- the DIR gates on id 0x25D/dlc 8; 0x210 is not in the DIR's RX
-    # table at all). Do not collapse these to one id -- see scripts/cp/cp.py.
+    # CP_status ships on BOTH 0x210 (catalog id) and 0x25D (2022 DIR subscribes; gates
+    # on id 0x25D/dlc 8; 0x210 is not in the DIR RX table). See scripts/cp/cp.py.
     (0x210, "vehicle"): (0.100, None, None, 4, 8),
     (0x21D, "vehicle"): (0.100, None, None, 4, 8),  # CP_evseStatus (EVSE-connect report)
     (0x224, "vehicle"): (0.100, None, None, 4, 8),
-    # 20Hz, not 10Hz: the 2022 CANData cycle_time is 50ms and under-sending aged out the
-    # DIR freshness supervisor -> a155 vcfrontMIA (same for 0x3C2 below).
+    # 2022 CANData cycle 50ms (20Hz); slower -> a155 vcfrontMIA (also 0x3C2 below).
     (0x3A1, "vehicle"): (0.050, 52, 56, 4, 8),
     (0x2E1, "vehicle"): (0.017, None, None, 4, 8),
     (0x241, "vehicle"): (0.100, None, None, 4, 7),
@@ -56,37 +47,33 @@ GOLDEN: dict[tuple[int, str], tuple] = {
     (0x3ED, "vehicle"): (0.100, None, None, 4, 1),
     (0x082, "vehicle"): (1.000, None, None, 4, 8),
     (0x213, "vehicle"): (0.100, 4, 8, 4, 2),
-    # UI_vehicleModes must be DLC8: the DIR length-gate (run for every
-    # bus-A RX id) raised a094 canDataBusA on every DLC-5 frame.
+    # UI_vehicleModes: DLC8 (DIR length-gate raises a094 canDataBusA on short frames).
     (0x284, "vehicle"): (0.100, None, None, 4, 8),
     (0x293, "vehicle"): (0.100, 52, 56, 4, 8),
     (0x313, "vehicle"): (0.100, 52, 56, 4, 8),
     (0x334, "vehicle"): (0.100, None, None, 4, 8),
     (0x333, "vehicle"): (0.500, None, None, 4, 4),  # UI_chargeRequest (user charge input)
-    # 2022.45.15-only vehicle-bus members (fw_variants; default target = newest -> present here).
-    # Firmware-confirmed absent in the 2020 DIR; gated so --fw 2020.8.1 omits them.
+    # 2022.45.15-only vehicle-bus members (fw_variants); gated so --fw 2020.8.1 omits them.
     (0x452, "vehicle"): (0.100, None, None, 4, 3),  # bms limits (torque-clamp input + bmsMIA)
     (0x2A7, "vehicle"): (0.100, None, None, 4, 8),  # cmp variant (config-selected alt of 0x247)
     (0x25C, "vehicle"): (0.100, None, None, 4, 1),  # app liveness (appMIA a108)
     # cp charge-cable state (cpMIA a105 + DI_a162_chargeCableConnected); DIR-only id.
     (0x25D, "vehicle"): (0.100, None, None, 4, 8),
     (0x3B3, "vehicle"): (0.100, None, None, 4, 8),  # UI_vehicleControl2 (uiMIA a088 member, drive mode)
-    # IBST_status_A: the SAME id as the party 0x39D below, deliberately sent on bus A too.
-    # The 2022 DIR validates 0x39D on CANA (cksumCtr @dir 0xab7fb -> a110_brakeMIA); 2020
-    # wanted it on party only. Both copies ship at the 2022 target.
+    # IBST_status_A: SAME id as the party 0x39D below, sent on bus A too. The 2022 DIR
+    # validates 0x39D on CANA (cksum+counter -> a110_brakeMIA); 2020 wanted party only.
     (0x39D, "vehicle"): (0.010, 8, 0, 4, 5),        # ibst (2022.45.15 variant)
-    # 0x392 is NOT here as an add: it stays in the inventory but reassigns EPAS3P_alertMatrix (2020,
-    # epas3p) -> BMS_packConfig (2022, bms); newest target sources it from bms (see GOLDEN 0x392 above).
-    # ---- UNKNOWN holding pen: undocumented PCS-context frames (awaiting PCS RE) ----
+    # 0x392 stays in the inventory but reassigns EPAS3P_alertMatrix (2020, epas3p) ->
+    # BMS_packConfig (2022, bms); newest target sources it from bms (GOLDEN 0x392 above).
+    # undocumented PCS-context frames
     (0x13D, "vehicle"): (0.010, None, None, 4, 6),
     (0x2B2, "vehicle"): (0.100, None, None, 4, 5),
-    # ---- HVP (High Voltage Processor): commands the PCS + owns the contactors ----
-    # Both plain (no counter/checksum in 2020 fw), 10ms, on the eth/vehicle bus.
+    # HVP (High Voltage Processor): commands the PCS + owns the contactors.
+    # Both plain (no counter/checksum in 2020 fw), 10ms, on the vehicle bus.
     (0x22A, "vehicle"): (0.010, None, None, 4, 4),
     (0x20A, "vehicle"): (0.010, None, None, 4, 6),
-    # ---- party bus (group2 / CANB) ----
-    # MIA members -> PARTY_LIVENESS_S (0.010 = 100Hz, the confirmed floor); 83Hz left them in
-    # steady-state MIA. das keeps native cycle; 0x11D is also at PARTY_LIVENESS_S (VDC freshness).
+    # party bus (group2 / CANB). MIA members -> PARTY_LIVENESS_S (0.010 = 100Hz floor);
+    # das keeps native cycle; 0x11D also at PARTY_LIVENESS_S (VDC freshness).
     (0x3D1, "party"): (0.010, None, None, 4, 8),  # epas3p (native 1Hz)
     (0x370, "party"): (0.010, 48, 56, 4, 8),      # epas3p (native 10Hz)
     (0x145, "party"): (0.010, 8, 0, 4, 8),        # esp
@@ -103,7 +90,7 @@ GOLDEN: dict[tuple[int, str], tuple] = {
     (0x2B9, "party"): (0.040, 53, 56, 3, 8),      # das (non-MIA, native)
     (0x289, "party"): (0.100, 8, 0, 3, 3),        # das (dasMIA member; 2022.45.15 DIR-pinned)
     (0x39B, "party"): (0.100, 52, 56, 4, 8),      # das (dasMIA member; 2022.45.15 DIR-pinned)
-    (0x11D, "party"): (0.010, 8, 0, 4, 8),        # esp (re-homed from UNKNOWN); PARTY_LIVENESS_S -- DIR VDC freshness (a195/6/7,a210)
+    (0x11D, "party"): (0.010, 8, 0, 4, 8),        # esp; PARTY_LIVENESS_S -- DIR VDC freshness (a195/6/7, a210)
 }
 
 
@@ -137,8 +124,8 @@ def _ids(classes) -> set[int]:
     return {f.can_id for f in _frames(classes)}
 
 
-# The drive bench marks the connected rear inverter real, so the SIMULATED inventory is the
-# peers (the inverter nodes excluded). The GOLDEN dict below is that simulated peer set.
+# Drive bench marks the inverter (DI/DIR/PMR) real; the simulated inventory is the peers,
+# which is the GOLDEN set above.
 _INVERTER = ["DI", "DIR", "PMR"]
 
 
@@ -151,8 +138,7 @@ def _no_send(_cid, _data):
 
 
 def _rx(node, can_id, data, send=_no_send):
-    """Deliver a frame to a node's registered rx handler -- the test-side of the engine's
-    dispatch. A node maps id -> one callback (the engine aggregates across nodes to a list)."""
+    """Deliver a frame to a node's registered rx handler (test-side of the engine's dispatch)."""
     cb = node.rx_handlers().get(can_id)
     if cb is not None:
         cb(data, send)
@@ -175,38 +161,34 @@ def test_registry_expands_to_golden_inventory():
 
 
 def test_rolling_counter_rolls_back_on_a_dropped_send():
-    # A frame dropped locally (send failed) must NOT consume a counter value, else the DIR sees a
-    # jump and a validated-frame MIA won't reset until the sequence resyncs. note_send(False)
-    # rolls the counter back so the dropped value is REUSED by the next (successful) frame ->
-    # the on-wire sequence stays gapless (0,1,2 not 0,_,2).
+    # note_send(False) rolls the counter back so the dropped value is reused by the next
+    # frame -> the on-wire sequence stays gapless (0,1,1 not 0,1,2).
     f = sim_core.SimFrame(
         "t", 0x101, 0.0125, lambda: bytearray(8), counter_start=52, cksum_start=56,
     )
     ctr = lambda b: (b[6] >> 4) & 0xF  # 4-bit counter @ bit52 = byte6 hi-nibble  # noqa: E731
-    b0 = f.frame()          # counter 0 placed; _ctr -> 1
-    f.note_send(True)       # delivered: keep it
-    b1 = f.frame()          # counter 1 placed; _ctr -> 2  (this send will "fail")
-    f.note_send(False)      # dropped: roll _ctr 2 -> 1
-    b2 = f.frame()          # counter 1 again -- reuses the dropped value; _ctr -> 2
+    b0 = f.frame()          # counter 0
+    f.note_send(True)       # delivered
+    b1 = f.frame()          # counter 1
+    f.note_send(False)      # dropped -> roll back
+    b2 = f.frame()          # counter 1 reused
     assert (ctr(b0), ctr(b1), ctr(b2)) == (0, 1, 1)
-    # a plain (counter-less) frame's note_send is a harmless no-op
+    # counter-less frame: note_send is a no-op
     p = sim_core.SimFrame("p", 0x38E, 0.0125, lambda: bytearray(6))
     p.note_send(False)  # does not raise
 
 
 def test_builder_managed_counter_also_rolls_back_on_drop():
-    # J1850/E2E frames carry the counter INSIDE the builder (it's under a CRC), so counter_start
-    # is None -- note_send must delegate the rollback to the builder via its bound-method __self__,
-    # else those frames (IBST 0x38E, ESP 0x38D) keep desyncing on every drop while the additive
-    # frames stay gapless. Covers all four stateful builders.
+    # J1850/E2E frames carry the counter inside the builder (under a CRC), so counter_start
+    # is None; note_send delegates the rollback to the builder. Covers IBST 0x38E, ESP 0x38D.
     from tesla_frames import J1850Frame, LvPowerState, SccmRightStalk
 
     j = J1850Frame(6)
     f = sim_core.SimFrame("ibst", 0x38E, 0.0125, j.frame)  # counter @ byte1 lo-nibble
     lo = lambda b: b[1] & 0xF  # noqa: E731
-    b0 = f.frame(); f.note_send(True)     # noqa: E702  -- wire ctr 0
-    b1 = f.frame(); f.note_send(False)    # noqa: E702  -- ctr 1 built then DROPPED -> rollback
-    b2 = f.frame(); f.note_send(True)     # noqa: E702  -- ctr 1 reused (gapless)
+    b0 = f.frame(); f.note_send(True)     # noqa: E702  -- ctr 0
+    b1 = f.frame(); f.note_send(False)    # noqa: E702  -- ctr 1 dropped -> rollback
+    b2 = f.frame(); f.note_send(True)     # noqa: E702  -- ctr 1 reused
     assert (lo(b0), lo(b1), lo(b2)) == (0, 1, 1)
 
     # SccmRightStalk (0x229) + LvPowerState (0x221) expose the same rollback contract.
@@ -215,7 +197,7 @@ def test_builder_managed_counter_also_rolls_back_on_drop():
         owner.frame()
         assert owner._ctr == (start + 1) & 0xF
         owner.rollback()
-        assert owner._ctr == start  # a drop leaves the counter where it was
+        assert owner._ctr == start
 
 
 def test_bus_membership_matches_firmware_groups():
@@ -224,7 +206,7 @@ def test_bus_membership_matches_firmware_groups():
     party = {f.can_id for f in frames if f.bus == "party"}
     assert vehicle == {cid for cid, bus in GOLDEN if bus == "vehicle"}
     assert party == {cid for cid, bus in GOLDEN if bus == "party"}
-    # Board-TX'd DIR/PMR IDs must never be simulated (they collide -> canDataBusB).
+    # Board-TX'd DIR/PMR ids never simulated (collision -> canDataBusB).
     assert 0x1E5 not in vehicle and 0x1E5 not in party
     assert 0x240 not in vehicle and 0x240 not in party
 
@@ -238,9 +220,8 @@ def test_collect_frames_accepts_a_node_subset():
 
 
 def test_das_2022_variant_gates_the_new_dasmia_members():
-    # 0x289/0x39B are firmware-CONFIRMED 2022-new: no CAN-id load in the 2020.8.1 DIR; both
-    # received in the 2022.45.15 DIR. So they live in DAS.fw_variants()["2022.45.15"], NOT
-    # the 2020 baseline -- a --fw 2020 bench must not see the two extra dasMIA members.
+    # 0x289/0x39B are 2022-new dasMIA members: absent in 2020.8.1, present in 2022.45.15;
+    # they live in DAS.fw_variants()["2022.45.15"], not the 2020 baseline.
     reg = sim_registry
     das = [reg.BY_NAME["DAS"]]
     ids = lambda fw: {  # noqa: E731
@@ -257,7 +238,7 @@ def test_every_node_name_is_unique():
     assert len(names) == len(set(names)), f"duplicate node names: {names}"
 
 
-# ---- Phase 1: node selection + MIA coverage ------------------------------------
+# Phase 1: node selection + MIA coverage
 
 
 def test_select_nodes_real_drops_only_that_node():
@@ -293,12 +274,12 @@ def test_mia_coverage_warnings_partial_full_absent():
     reg = sim_registry
     esp = set(reg.MIA_AGGREGATES["espMIA"])
     assert reg.mia_coverage_warnings(esp) == []  # full coverage -> silent
-    assert reg.mia_coverage_warnings(set()) == []  # fully absent -> silent (intentional)
+    assert reg.mia_coverage_warnings(set()) == []  # fully absent -> silent
     warns = reg.mia_coverage_warnings(esp - {0x105})  # partial -> warns
     assert any("espMIA" in w and "0x105" in w for w in warns)
 
 
-# ---- Phase 2: bench config (TOML) + bus normalization -------------------------
+# Phase 2: bench config (TOML) + bus normalization
 
 
 def test_canonical_bus_eth_and_unknown_map_to_vehicle():
@@ -339,7 +320,7 @@ def test_load_bench_config_rejects_non_integer_id_key(tmp_path):
         sim_registry.load_bench_config(p)
 
 
-# ---- Orchestrator: [scenario] profiles applied via node.configure() -----------
+# Orchestrator: [scenario] profiles applied via node.configure()
 
 
 def test_configure_base_rejects_unknown_keys():
@@ -407,7 +388,7 @@ def test_load_bench_config_rejects_unknown_scenario_node(tmp_path):
         sim_registry.load_bench_config(p)
 
 
-# ---- Node model: stateful behavior (on_rx transitions) ------------------------
+# Node model: stateful behavior (on_rx transitions)
 
 
 def test_epb_node_transitions_on_di_epb_request():
@@ -419,12 +400,11 @@ def test_epb_node_transitions_on_di_epb_request():
     assert epb.epb.status == 2  # EPB_PARKED
     _rx(epb, 0x118, unpark, lambda cid, d: sent.append(cid))
     assert epb.epb.status == 1  # EPB_RELEASED
-    assert sent == []  # EPB reacts by state only, never TX's reactively
+    assert sent == []  # EPB reacts by state, never TX reactively
 
 
 def test_hvp_node_idle_default_is_safe():
-    """Default HVP state must be SHUTDOWN + contactors OPEN so a drive bench that never
-    touches HVP asserts nothing aggressive on the DIR (no HV/energize command)."""
+    """Default HVP state: SHUTDOWN + contactors OPEN (no HV/energize command)."""
     hvp = sim_registry.BY_NAME["HVP"](_ctx())
     by_id = {f.can_id: f for f in hvp.frames()}
     ctrl = by_id[0x22A].frame()
@@ -487,12 +467,12 @@ def test_cp_charge_cable_state_reaches_the_dir_on_0x25d():
     assert (int.from_bytes(by_id[0x25D].frame(), "little") >> 14) & 0x3 == 2, "CONNECTED"
     assert (int.from_bytes(by_id[0x210].frame(), "little") >> 16) & 0x3 == 2
 
-    # Never emit 0/SNA on 0x25D -- the DIR reads that as "cable connected".
+    # 0/SNA on 0x25D bits 14-15 reads as "cable connected"; never emit it.
     for connected in (False, True):
         cp.set_evse(connected)
         assert by_id[0x25D].frame()[1] & 0xC0 != 0
 
-    # 2020 target: the DIR had no 0x25D subscription, so the frame must not appear.
+    # 2020 target: DIR has no 0x25D subscription.
     assert 0x25D not in {f.can_id for f in cp.frames_for("2020.8.1")}
 
 
@@ -512,15 +492,89 @@ def test_vcfront_charge_enable_layers_onto_drive_status():
     vc = sim_registry.BY_NAME["VCFRONT"](_ctx())
     by_id = {f.can_id: f for f in vc.frames()}
     base = by_id[0x3A1].frame()
-    # default OFF: bmsHvChargeEnable(@0)=0, 12vStatusForDrive(@14w2)=0
+    # default: charging OFF (bmsHvChargeEnable@0=0) but LV READY for drive (12vStatusForDrive@14w2=1)
     bword = int.from_bytes(base, "little")
-    assert bword & 0x1 == 0 and (bword >> 14) & 0x3 == 0
+    assert bword & 0x1 == 0 and (bword >> 14) & 0x3 == 1
     vc.set_charge_enable(True)
     word = int.from_bytes(by_id[0x3A1].frame(), "little")
     assert word & 0x1 == 1, "bmsHvChargeEnable set"
-    assert (word >> 14) & 0x3 == 1, "12vStatusForDrive = READY"
+    assert (word >> 14) & 0x3 == 1, "12vStatusForDrive still READY"
     # drive-side signals still present (diPowerOnState @10 w3 == 3)
     assert (word >> 10) & 0x7 == 3
+
+
+def _esp_status_word(esp):
+    by_id = {f.can_id: f for f in esp.frames()}
+    return int.from_bytes(by_id[0x145].frame(), "little")
+
+
+def test_esp_status_defaults_are_a_healthy_stationary_bench():
+    """0x145 defaults: stability ON, no ABS event, no standstill skid, all four QF bits IN_SPEC."""
+    esp = sim_registry.BY_NAME["ESP"](_ctx())
+    w = _esp_status_word(esp)
+    assert (w >> 14) & 0x3 == 1, "stabilityControlSts2 = ON (bench-confirmed drive gate)"
+    assert (w >> 22) & 0x3 == 0, "absBrakeEvent2 = NOT_ACTIVE"
+    assert (w >> 48) & 0x1 == 0, "ebrStandstillSkid = NO_STANDSTILL_SKID"
+    for bit in (24, 25, 26, 27):
+        assert (w >> bit) & 0x1 == 1, f"QF bit {bit} = IN_SPEC"
+    assert (w >> 29) & 0x3 == 1, "driverBrakeApply = Not_Applied"
+    assert (w >> 31) & 0x1 == 0, "brakeApply inactive"
+
+
+def test_esp_status_brake_posture_and_flags_are_configurable():
+    esp = sim_registry.BY_NAME["ESP"](_ctx())
+    esp.configure(brake="applied", abs_event="front_rear", stability="faulted",
+                  standstill_skid=True, qf_in_spec=False, esp_fault_lamp=True)
+    w = _esp_status_word(esp)
+    assert (w >> 29) & 0x3 == 2 and (w >> 31) & 0x1 == 1 and (w >> 21) & 0x1 == 1
+    assert (w >> 22) & 0x3 == 1, "absBrakeEvent2 = ACTIVE_FRONT_REAR"
+    assert (w >> 14) & 0x3 == 3, "stabilityControlSts2 = FAULTED"
+    assert (w >> 48) & 0x1 == 1 and (w >> 18) & 0x1 == 1
+    assert all((w >> b) & 0x1 == 0 for b in (24, 25, 26, 27)), "QF bits cleared together"
+
+
+def test_ibst_brake_posture_drives_both_0x39d_copies():
+    """IBST_driverBrakeApply must track ESP's — and the 2022 vehicle-bus copy shares the state."""
+    ibst = sim_registry.BY_NAME["IBST"](_ctx())
+    ibst.fw = "2022.45.15"
+    ibst.configure(brake="applied")
+    copies = [f for f in ibst.frames_for() if f.can_id == 0x39D]
+    assert len(copies) == 2, "party + vehicle copies on 2022 fw"
+    for f in copies:
+        w = int.from_bytes(f.frame(), "little")
+        assert (w >> 16) & 0x3 == 2, "IBST_driverBrakeApply = DRIVER_APPLYING_BRAKES"
+        assert (w >> 18) & 0x7 == 2, "IBST_internalState = LOCAL_BRAKE_REQUEST"
+        assert (w >> 21) & 0xFFF > 320, "rod travel past the released rest position"
+
+
+def test_ibst_brake_released_is_the_default():
+    ibst = sim_registry.BY_NAME["IBST"](_ctx())
+    w = int.from_bytes({f.can_id: f for f in ibst.frames()}[0x39D].frame(), "little")
+    assert (w >> 16) & 0x3 == 1, "BRAKES_NOT_APPLIED"
+    assert (w >> 12) & 0x7 == 4, "iBoosterStatus = ACTIVE_GOOD_CHECK"
+
+
+def test_esp_status_rejects_bad_scenario_values():
+    import pytest
+
+    esp = sim_registry.BY_NAME["ESP"](_ctx())
+    for kwargs in ({"brake": "bogus"}, {"abs_event": "bogus"}, {"stability": "bogus"}):
+        with pytest.raises(ValueError):
+            esp.configure(**kwargs)
+    with pytest.raises(ValueError):
+        esp.configure(not_a_key=1)
+
+
+def test_vcfront_12v_status_for_drive_is_independent_of_charging():
+    """The DI/DIR a174 LV drive gate must not depend on HV charge-enable."""
+    vc = sim_registry.BY_NAME["VCFRONT"](_ctx())
+    by_id = {f.can_id: f for f in vc.frames()}
+    vc.set_lv_ready_for_drive(False)
+    word = int.from_bytes(by_id[0x3A1].frame(), "little")
+    assert (word >> 14) & 0x3 == 0, "NOT_READY_FOR_DRIVE_12V"
+    vc.configure(lv_ready_for_drive=True)
+    word = int.from_bytes(by_id[0x3A1].frame(), "little")
+    assert (word >> 14) & 0x3 == 1, "READY_FOR_DRIVE_12V"
 
 
 def test_bms_status_mode_drive_vs_charge():
@@ -545,8 +599,7 @@ def test_vcsec_node_answers_immo_only_with_a_key():
     challenge = bytes([0, 1, 0, 2, 0, 3, 0, 0])
     _rx(vcsec, 0x276, challenge, lambda cid, d: sent.append((cid, d)))
     assert sent == []  # no key -> silent
-    # Answering the challenge needs a user-supplied key-derivation provider; the
-    # framework ships none, so skip the response half when none is configured.
+    # The response half needs a user-supplied key-derivation provider; skip if none.
     import pytest
 
     from uds_local.security_provider import get_key_derivation_provider
@@ -558,7 +611,7 @@ def test_vcsec_node_answers_immo_only_with_a_key():
     assert len(sent) == 1 and sent[0][0] == 0x3D9  # answered on 0x3D9
 
 
-# ---- Reactive inter-node comms (the charge-session cascade) --------------------
+# Reactive inter-node comms (the charge-session cascade)
 
 
 def test_rx_handler_registration_builds_the_dispatch_table():
@@ -622,7 +675,7 @@ def test_charge_session_cascades_from_externalities():
     assert by["HVP"].control == "SUPPORT" and by["HVP"].charge_hw
 
 
-# ---- Drive-inverter nodes + drive scenario ------------------------------------
+# Drive-inverter nodes + drive scenario
 
 
 def test_inverter_nodes_source_expected_ids():
@@ -638,8 +691,8 @@ def test_inverter_nodes_source_expected_ids():
 def test_drive_config_marks_inverter_real_and_excludes_it():
     reg = sim_registry
     dut_ids = _ids([reg.BY_NAME[n] for n in ("DI", "DIR", "PMR")])
-    assert 0x118 in dut_ids and 0x108 in dut_ids  # the inverter DOES source these
-    # with the inverter marked real (drive bench), none of its IDs are simulated
+    assert 0x118 in dut_ids and 0x108 in dut_ids
+    # inverter marked real (drive bench) -> none of its ids are simulated
     assert not (dut_ids & {f.can_id for f in _sim_frames()})
 
 

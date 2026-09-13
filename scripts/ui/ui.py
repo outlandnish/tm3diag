@@ -4,7 +4,7 @@
 uiMIA (DIR a088) is an aggregate of SIX UI msgs; it clears only when all six are alive:
   0x82  UI_tripPlanning       DLC8  arrival-only
   0x213 UI_cruiseControl      DLC2  ctr@4  cks@8
-  0x284 UI_vehicleModes       DLC8  arrival-only
+  0x284 UI_vehicleModes       DLC8  arrival-only thru 2024; ctr@52 cks@56 ENFORCED from 2026.8.3
   0x293 UI_chassisControl     DLC8  ctr@52 cks@56
   0x313 UI_trackModeSettings  DLC8  ctr@52 cks@56
   0x334 UI_powertrainControl  DLC8  ctr@52 cks@56  (self-checksummed)
@@ -33,8 +33,15 @@ def _ui_tripPlanning(_c) -> bytearray:  # 0x82, DLC8, arrival-only
     return bytearray(8)
 
 
-def _ui_vehicleModes(_c) -> bytearray:  # 0x284, DLC8 arrival-only (DLC5 -> a094 canDataBusA)
-    return bytearray(8)
+def _ui_vehicleModes(c) -> bytearray:  # 0x284, DLC8 arrival-only (DLC5 -> a094 canDataBusA)
+    # UI_serviceMode @3: the DI refuses ROTOR/RESOLVER_LEARNING (NOT_IN_SERVICE_MODE) without it.
+    return pack_le([(3, 1, c.service_mode)])
+
+
+def _ui_status(c) -> bytearray:  # 0x353 UI_status, DLC8
+    # UI_developmentCar @40 (byte5 bit0) is the DIR dyno-inhibit bypass: =1 (dev car) keeps
+    # dyno latched; =0 makes dyno one-shot per ignition cycle.
+    return pack_le([(40, 1, c.development_car)])
 
 
 class Ui(Node):
@@ -67,12 +74,47 @@ class Ui(Node):
         ]
 
     def _frames_2022(self) -> list[SimFrame]:
-        # 2022.45.15 adds 0x3B3 UI_vehicleControl2 as a uiMIA a088 member (0x353/0x500 are
-        # supervised but not read). DLC8, arrival-only; zeros(8) clears the MIA. Drive-state-gated.
-        return [*self.frames(), SimFrame("UI_vehicleControl2", 0x3B3, 0.100, zeros(8))]
+        # 2022.45.15 adds 0x3B3 UI_vehicleControl2 as a uiMIA a088 member (absent in the 2020 DIR).
+        # DLC8, arrival-only; zeros(8) clears the MIA. Drive-state-gated.
+        #
+        # 0x353 UI_status is supervised separately and IS read: UI_developmentCar (@bit40) is the
+        # dyno-inhibit bypass (=1 keeps dyno latched, =0 makes it one-shot per cycle), so it is
+        # sent with the development_car knob. 0x500 is supervised-but-not-read -> droppable.
+        c = self.uicfg
+        return [
+            *self.frames(),
+            SimFrame("UI_vehicleControl2", 0x3B3, 0.100, zeros(8)),
+            SimFrame("UI_status", 0x353, 0.100, partial(_ui_status, c)),
+        ]
+
+    def _frames_2026(self) -> list[SimFrame]:
+        # 2026.8.3: UI_vehicleModes 0x284 gains a rolling counter + checksum AND the DIR now
+        # ENFORCES them -- a failed check drops the frame like a DLC mismatch. So a 2022-style
+        # 0x284 silently stops delivering UI_serviceMode and the rotor/resolver learn routines
+        # refuse to start (NOT_IN_SERVICE_MODE). Counter = byte6 bits 4-7, (prev+1)&0xF;
+        # checksum = byte7, magic 0x86 = tesla_frames.magic(0x284). DBC agrees:
+        # UI_vehicleModesChecksum @56|8, UI_vehicleModesCounter @52|4.
+        #
+        # 2026 also adds two MIA-supervised UI frames to the DIR's rx set; arrival clears the MIA:
+        #   0x238 UI_driverAssistMapData -- gated, ctr@52 cks@56; payload unread -> zeros(8).
+        #   0x3FD UI_autopilotControl -- not gated, DLC8; zeros pass its (word0 & 7) == 0 check.
+        c = self.uicfg
+        return [
+            *[
+                SimFrame("UI_vehicleModes", 0x284, 0.100, partial(_ui_vehicleModes, c), 52, 56)
+                if f.can_id == 0x284 else f
+                for f in self._frames_2022()
+            ],
+            SimFrame("UI_driverAssistMapData", 0x238, 0.100, zeros(8), 52, 56),
+            SimFrame("UI_autopilotControl", 0x3FD, 0.100, zeros(8)),
+        ]
 
     def fw_variants(self):
-        return {BASELINE_FW: self.frames, "2022.45.15": self._frames_2022}
+        return {
+            BASELINE_FW: self.frames,
+            "2022.45.15": self._frames_2022,
+            "2026.8.3": self._frames_2026,
+        }
 
     def set_ui(self, field: str, value) -> int:
         """Driver externality: set a UiConfig field (pedal_map, stopping_mode, ...)."""

@@ -14,7 +14,7 @@ prompts and reorder the selected entry list:
 # Bootloader pairs
 # ---------------------------------------------------------------------------
 
-from ._ecu_map import BL_PARENT_ECUS
+from ._ecu_map import BL_PARENT_ECUS, RAMAPP_ECU_TYPES
 
 # ecu_type → parent ECU node name, for both the updater (`<parent>bu`) and the
 # image (`<parent>bl`). Built from the authoritative BL_PARENT_ECUS list in
@@ -108,3 +108,21 @@ def find_subcomponent_entries(selected: list) -> tuple[list, list]:
         else:
             others.append(e)
     return subs, others
+
+
+# RAM apps ship under a parent node's lookup_key but carry their own ecu_type
+# (e.g. `pmramapp` under `pmr:`, `vcsecramapp` under `vcsec:`). They run from RAM
+# and aren't part of a normal app update.
+
+
+def is_ramapp_ecu_type(ecu_type: str) -> bool:
+    """True if ecu_type names a RAM-app image (resolves to a RAM-app script)."""
+    return ecu_type.lower() in RAMAPP_ECU_TYPES
+
+
+def find_ramapp_entries(selected: list) -> tuple[list, list]:
+    """Split `selected` into (ramapp_entries, other_entries), preserving order."""
+    rams, others = [], []
+    for e in selected:
+        (rams if e.component.lower() in RAMAPP_ECU_TYPES else others).append(e)
+    return rams, others

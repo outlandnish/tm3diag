@@ -174,27 +174,63 @@ def _db_free_nodes():
 
 def test_2022_variant_adds_exactly_the_fw_confirmed_new_ids():
     nodes = _db_free_nodes()
-    ids_none = {f.can_id for f in sim_registry.collect_frames(nodes, None)}
     ids_2020 = {f.can_id for f in sim_registry.collect_frames(nodes, "2020.8.1")}
-    ids_2026 = {f.can_id for f in sim_registry.collect_frames(nodes, "2026.8.3")}
-    # 2022.45.15 variants add only firmware-confirmed 2022-new IDs (absent in the 2020 DIR):
-    # DAS 0x289/0x39B (party) + BMS 0x452, CMP 0x2A7, APP 0x25C, CP 0x25D (vehicle).
-    assert ids_none == ids_2026  # newest == any target >= 2022.45.15
-    # 0x392 reassigns owner across fw (EPAS3P_alertMatrix 2020 -> BMS_packConfig 2022) but
-    # stays in the inventory at both targets.
-    assert ids_none - ids_2020 == {0x289, 0x39B, 0x452, 0x2A7, 0x25C, 0x25D, 0x3B3}
-    assert ids_2020 - ids_none == set()
-    assert 0x392 in ids_2020 and 0x392 in ids_none, "0x392 must persist across the reassignment"
+    ids_2022 = {f.can_id for f in sim_registry.collect_frames(nodes, "2022.45.15")}
+    # Nodes with a 2022.45.15 variant add ONLY firmware-confirmed 2022-new IDs (absent in the
+    # 2020 DIR): DAS 0x289/0x39B (party) + BMS 0x452, CMP 0x2A7, APP 0x25C, CP 0x25D,
+    # UI 0x3B3 UI_vehicleControl2 + 0x353 UI_status (UI_developmentCar -> dyno bypass) (vehicle).
+    # Everything else is baseline, so this is the exact 2020->2022 delta; nothing is dropped
+    # between those two (2026 IS the first revision that drops one -- see the next test).
+    # 0x392 is NOT in the delta: it reassigns owner across fw (epas3p EPAS3P_alertMatrix in 2020 ->
+    # bms BMS_packConfig in 2022) but stays in the inventory at both targets.
+    assert ids_2022 - ids_2020 == {0x289, 0x39B, 0x452, 0x2A7, 0x25C, 0x25D, 0x3B3, 0x353}
+    assert ids_2020 - ids_2022 == set()
+    assert 0x392 in ids_2020 and 0x392 in ids_2022, "0x392 must persist across the reassignment"
     assert ids_2020, "expected a non-empty simulated inventory"
 
 
+def test_2026_variant_swaps_the_app_liveness_id():
+    """2026.8.3 is the first revision that DROPS an id. Enumerating both DIRs' rx sets from
+    firmware shows 0x25C is the only frame the 2026 DIR lost, and
+    0x25B APP_environment is new -- the app-liveness message was renumbered. Everything else
+    the sim sends carries forward."""
+    nodes = _db_free_nodes()
+    ids_none = {f.can_id for f in sim_registry.collect_frames(nodes, None)}
+    ids_2022 = {f.can_id for f in sim_registry.collect_frames(nodes, "2022.45.15")}
+    ids_2026 = {f.can_id for f in sim_registry.collect_frames(nodes, "2026.8.3")}
+    assert ids_none == ids_2026  # newest == any target >= 2026.8.3
+    # 0x25B replaces 0x25C; 0x142/0x238/0x3FD are new rx ids the 2026 DIR MIA-supervises.
+    # GTW's new 0x318 GTW_carState is NOT here because _db_free_nodes drops GTW (needs a DBC);
+    # it is covered by the golden inventory in test_vehicle_sim_nodes.
+    # (0x1D5 PMF_state4 and 0x2E5 DIF_power are also new to the DIR but AWD-only -- not simulated.)
+    assert ids_2026 - ids_2022 == {0x25B, 0x142, 0x238, 0x3FD}
+    assert ids_2022 - ids_2026 == {0x25C}
+
+
 def test_only_fw_varied_nodes_diverge_from_baseline_today():
-    # IBST's variant adds no new id: re-sends IBST_status 0x39D on the vehicle bus
-    # (2022 DIR validates it on bus A, a110_brakeMIA).
-    varied = {"DAS", "BMS", "CMP", "APP", "UI", "EPAS3P", "IBST", "CP"}
+    # Nodes with a 2022.45.15 fw_variant. IBST's variant adds no new id -- it
+    # re-sends IBST_status 0x39D on the VEHICLE bus as well, because the 2022 DIR
+    # validates it on bus A (a110_brakeMIA) where 2020 only wanted it on party.
+    # DIF is in BOTH sets: DIF_status 0x2D5 is DLC 7 on 2022.45.15 and DLC 8 again on 2026.8.3,
+    # both read out of firmware. (PMF is baseline-only -- 0x1D5's placement does not move.)
+    varied_2022 = {"DAS", "BMS", "CMP", "APP", "UI", "EPAS3P", "IBST", "CP", "DIF"}
+    # Nodes that additionally author a 2026.8.3 set: BMS re-lays 0x132 (DLC 8->6) / 0x212 / 0x252,
+    # UI 0x284 gains a now-ENFORCED counter+checksum, APP swaps 0x25C -> 0x25B, and VCFRONT
+    # reseeds the 0x3A1 checksum magic (0x2A -> 0xC0). VCFRONT has no 2022 set, so on a 2022
+    # bench it correctly falls back to baseline.
+    varied_2026 = {"BMS", "UI", "APP", "VCFRONT", "VCLEFT", "GTW", "DIF"}
     for node in _db_free_nodes():
-        expected = "2022.45.15" if node.name in varied else BASELINE_FW
+        if node.name in varied_2026:
+            expected = "2026.8.3"
+        elif node.name in varied_2022:
+            expected = "2022.45.15"
+        else:
+            expected = BASELINE_FW
         assert str(node.resolved_fw("2026.8.3")) == expected, node.name
+        # a 2022 bench must keep resolving to the 2022 set -- adding a 2026 set must not
+        # drag newer messages onto an older target.
+        expected_2022 = "2022.45.15" if node.name in varied_2022 else BASELINE_FW
+        assert str(node.resolved_fw("2022.45.15")) == expected_2022, node.name
 
 
 # BenchConfig / load_bench_config — [firmware] version

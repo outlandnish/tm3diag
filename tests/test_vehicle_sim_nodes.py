@@ -6,6 +6,7 @@ Instantiated with a stub NodeContext, so no real DB or CAN bus is needed.
 """
 from __future__ import annotations
 
+import pytest
 import sim_core
 import sim_registry
 
@@ -16,7 +17,9 @@ import sim_registry
 # cycle; 0x11D is at PARTY_LIVENESS_S for the DIR VDC freshness watchdog.
 GOLDEN: dict[tuple[int, str], tuple] = {
     # ---- vehicle bus (group1 / CANA) ----
-    (0x132, "vehicle"): (0.010, None, None, 4, 8),
+    # 2026.8.3 shortens BMS_hvBusStatus to DLC 6 (BMS_chgTimeToFull dropped); the DIR's DLC
+    # check is an exact match, so the old 8-byte build is rejected outright on a 2026 DU.
+    (0x132, "vehicle"): (0.010, None, None, 4, 6),
     (0x212, "vehicle"): (0.100, None, None, 4, 8),
     (0x252, "vehicle"): (0.100, None, None, 4, 8),
     (0x2D2, "vehicle"): (0.100, None, None, 4, 8),
@@ -47,8 +50,9 @@ GOLDEN: dict[tuple[int, str], tuple] = {
     (0x3ED, "vehicle"): (0.100, None, None, 4, 1),
     (0x082, "vehicle"): (1.000, None, None, 4, 8),
     (0x213, "vehicle"): (0.100, 4, 8, 4, 2),
-    # UI_vehicleModes: DLC8 (DIR length-gate raises a094 canDataBusA on short frames).
-    (0x284, "vehicle"): (0.100, None, None, 4, 8),
+    # UI_vehicleModes: DLC8 (DIR length-gate raises a094 canDataBusA on short frames). From
+    # 2026.8.3 it also carries a counter+checksum the DIR enforces.
+    (0x284, "vehicle"): (0.100, 52, 56, 4, 8),
     (0x293, "vehicle"): (0.100, 52, 56, 4, 8),
     (0x313, "vehicle"): (0.100, 52, 56, 4, 8),
     (0x334, "vehicle"): (0.100, None, None, 4, 8),
@@ -56,10 +60,21 @@ GOLDEN: dict[tuple[int, str], tuple] = {
     # 2022.45.15-only vehicle-bus members (fw_variants); gated so --fw 2020.8.1 omits them.
     (0x452, "vehicle"): (0.100, None, None, 4, 3),  # bms limits (torque-clamp input + bmsMIA)
     (0x2A7, "vehicle"): (0.100, None, None, 4, 8),  # cmp variant (config-selected alt of 0x247)
-    (0x25C, "vehicle"): (0.100, None, None, 4, 1),  # app liveness (appMIA a108)
+    # app liveness (appMIA a108). 2026.8.3 renumbers it 0x25C -> 0x25B APP_environment and
+    # grows it to a gated DLC8 (counter@52 + checksum@56, reseeded magic 0x5B). GOLDEN is built
+    # at the newest target, so 0x25B is the entry here; 0x25C is asserted in test_fw_versioning.
+    (0x25B, "vehicle"): (0.100, 52, 56, 4, 8),
+    # 2026.8.3-new rx ids the DIR MIA-supervises. All zeros(8) liveness; the two GATED ones
+    # (0x238, 0x318) carry counter@52 + checksum@56 with the default id_lo+id_hi magic
+    # (0x3A / 0x1B), the other two have no validator at all.
+    (0x142, "vehicle"): (0.100, None, None, 4, 8),  # VCLEFT_liftgateStatus (ungated)
+    (0x238, "vehicle"): (0.100, 52, 56, 4, 8),      # UI_driverAssistMapData (gated)
+    (0x318, "vehicle"): (0.100, 52, 56, 4, 8),      # GTW_carState (gated)
+    (0x3FD, "vehicle"): (0.100, None, None, 4, 8),  # UI_autopilotControl (ungated)
     # cp charge-cable state (cpMIA a105 + DI_a162_chargeCableConnected); DIR-only id.
     (0x25D, "vehicle"): (0.100, None, None, 4, 8),
     (0x3B3, "vehicle"): (0.100, None, None, 4, 8),  # UI_vehicleControl2 (uiMIA a088 member, drive mode)
+    (0x353, "vehicle"): (0.100, None, None, 4, 8),  # UI_status: UI_developmentCar @40 -> DIR dyno-inhibit bypass
     # IBST_status_A: SAME id as the party 0x39D below, sent on bus A too. The 2022 DIR
     # validates 0x39D on CANA (cksum+counter -> a110_brakeMIA); 2020 wanted party only.
     (0x39D, "vehicle"): (0.010, 8, 0, 4, 5),        # ibst (2022.45.15 variant)
@@ -91,19 +106,39 @@ GOLDEN: dict[tuple[int, str], tuple] = {
     (0x289, "party"): (0.100, 8, 0, 3, 3),        # das (dasMIA member; 2022.45.15 DIR-pinned)
     (0x39B, "party"): (0.100, 52, 56, 4, 8),      # das (dasMIA member; 2022.45.15 DIR-pinned)
     (0x11D, "party"): (0.010, 8, 0, 4, 8),        # esp; PARTY_LIVENESS_S -- DIR VDC freshness (a195/6/7, a210)
+    # ---- DIF: the simulated FRONT drive unit of an AWD pair ----
+    # The entire front->rear surface an AWD ("Master") rear rx's; a RWD rear rx's none of them.
+    # Resolved at the node's newest authored revision (2026.8.3) like every other entry here --
+    # the 2022.45.15 set differs and is locked separately below. Checksum byte 0 / counter byte 1
+    # low nibble, which is the firmware's placement, not the byte7/byte6 one.
+    (0x186, "party"): (0.010, 8, 0, 4, 8),        # DIF_torque
+    (0x187, "party"): (0.010, 8, 0, 4, 8),        # DIF, in no ETH DBC at any revision
+    (0x2D5, "party"): (0.010, 8, 0, 4, 8),        # DIF_status (DLC 7 on 2022.45.15 -- see below)
+    (0x2E5, "vehicle"): (0.010, None, None, 4, 8),  # DIF_power; ungated, and the one on bus A
+    # PMF: the front unit's CPU1, the other half of a simulated front. 3-BIT counter at 53 (not
+    # the usual 4 at 52) -- a 4-bit one would run into the checksum byte.
+    (0x1D5, "vehicle"): (0.010, 53, 56, 3, 8),    # PMF_state4
 }
 
 
 class _StubDb:
     """Minimal CAN DB for the GTW node's MuxedConfigTx (0x7FF) -- no real DB needed."""
 
+    # value_description is what lets a scenario name an enum LABEL ("AWD") rather than a raw
+    # number -- the shipped drive profiles do, since a label survives a revision renumbering.
     messages = {
         0x7FF: {
             "name": "GTW_carConfig",
             "signals": {
                 "GTW_muxer": {"is_muxer": True},
-                "GTW_chassisType": {"mux_id": 0, "width": 4},
-                "GTW_drivetrainType": {"mux_id": 0, "width": 4},
+                "GTW_chassisType": {
+                    "mux_id": 0, "width": 4,
+                    "value_description": {"3_CHASSIS": 2, "Y_CHASSIS": 3},
+                },
+                "GTW_drivetrainType": {
+                    "mux_id": 0, "width": 4,
+                    "value_description": {"RWD": 0, "AWD": 1},
+                },
             },
         },
     }
@@ -233,6 +268,148 @@ def test_das_2022_variant_gates_the_new_dasmia_members():
     assert ids(None) == {0x389, 0x2B9, 0x289, 0x39B}  # default = newest authored
 
 
+def test_dif_0x2d5_is_dlc7_on_2022_and_dlc8_on_2026():
+    # The DBC says DLC 8 for DIF_status at EVERY revision. The 2022.45.15 AWD DIR
+    # gates it at 7, and the DLC check is an exact match -- a DLC-8 frame is rejected outright and
+    # the frame goes MIA while looking healthy on the wire. It is 8 again on 2026.8.3. Both read
+    # out of firmware; the DBC is not evidence here.
+    reg = sim_registry
+    dif = [reg.BY_NAME["DIF"]]
+    dlc = lambda fw: {  # noqa: E731
+        len(f.frame())
+        for f in reg.collect_frames(reg.instantiate(dif, _ctx()), fw=fw)
+        if f.can_id == 0x2D5
+    }
+    assert dlc("2022.45.15") == {7}
+    assert dlc("2026.8.3") == {8}
+
+
+def test_dif_frames_carry_the_firmware_checksum_seed_and_counter_placement():
+    # Seed is the plain id_lo+id_hi rule (0x186 -> 0x87), checksum in byte 0, rolling counter in
+    # byte 1's low nibble. With a zero payload the checksum IS seed+counter, so the first three
+    # transmissions pin seed, placement and roll-forward in one go.
+    reg = sim_registry
+    f = next(
+        x
+        for x in reg.collect_frames(reg.instantiate([reg.BY_NAME["DIF"]], _ctx()), fw="2022.45.15")
+        if x.can_id == 0x186
+    )
+    assert [tuple(f.frame()[:2]) for _ in range(3)] == [(0x87, 0), (0x88, 1), (0x89, 2)]
+
+
+def test_awd_both_real_profile_stops_simulating_the_front():
+    # A bench with BOTH physical units marks DIF+PMF `real` -- the same nodes the RWD profile
+    # calls `absent`. That collision is why the two keys exist separately: one claims hardware,
+    # the other denies it exists, and picking the wrong one on a two-unit bench means the sim
+    # transmits over a real inverter.
+    cfg, _nodes, frames = _load_scenario("drive-awd-both.toml")
+    assert set(cfg.real) == {"DI", "DIR", "PMR", "DIF", "PMF"}
+    assert not cfg.absent
+    assert not (_FRONT_IDS & {f.can_id for f in frames})
+    # The car is still an AWD car; only who simulates the front changed.
+    assert cfg.scenario["GTW"]["drivetrain_type"] == "AWD"
+
+
+def test_a_simulated_front_is_both_cores():
+    # The front is ONE physical unit running two cores, so standing it in needs both nodes:
+    # DIF (CPU2) sources the four DIF_* frames, PMF (CPU1) sources 0x1D5 PMF_state4. Simulating
+    # only DIF leaves a 2026 rear in pmfMIA (DI_a042); the 2022 rear does not subscribe to 0x1D5.
+    _cfg, _nodes, frames = _load_scenario("drive-awd.toml")
+    ids = {f.can_id for f in frames}
+    assert ids >= _FRONT_IDS
+    pmf = next(f for f in frames if f.can_id == 0x1D5)
+    # 3-bit counter: a 4-bit one would overflow bit 56 and corrupt the checksum byte.
+    assert (pmf.counter_start, pmf.cksum_start, pmf.counter_width) == (53, 56, 3)
+    assert pmf.bus == "vehicle"
+
+
+def test_pmf_state4_carries_the_firmware_seed_and_3bit_counter():
+    # Seed 0xD6 = id_lo + id_hi, checksum in byte 7, counter at 53 wrapping at 8 not 16. With a
+    # zero payload the checksum is seed+counter, so eight sends pin the width: the 9th repeats.
+    f = next(
+        x
+        for x in sim_registry.collect_frames(
+            sim_registry.instantiate([sim_registry.BY_NAME["PMF"]], _ctx())
+        )
+        if x.can_id == 0x1D5
+    )
+    seen = [f.frame() for _ in range(9)]
+    # counter n sits at bit 53, so it contributes n << 5 to byte 6; checksum is mod 256.
+    assert [b[7] for b in seen] == [(0xD6 + 0x20 * n) & 0xFF for n in range(8)] + [0xD6]
+    assert seen[8] == seen[0], "3-bit counter must wrap after 8, not 16"
+
+
+def test_real_and_absent_are_mutually_exclusive():
+    with pytest.raises(ValueError, match="both real and absent"):
+        sim_registry.select_nodes(real=["DIF"], absent=["dif"])
+
+
+def test_load_bench_config_rejects_a_node_that_is_both_real_and_absent(tmp_path):
+    p = tmp_path / "sim.toml"
+    p.write_text('[nodes]\nreal = ["DIF"]\nabsent = ["DIF"]\n')
+    with pytest.raises(ValueError, match="both real and absent"):
+        sim_registry.load_bench_config(p)
+
+
+def test_front_unit_is_absent_from_a_rwd_bench_only_by_deselection():
+    # A RWD ("Single") rear rx's none of the front's IDs, so they are harmless-but-unhandled
+    # there. There is no RWD/AWD switch in the nodes themselves -- a RWD bench drops them via
+    # `absent`, the same mechanism that keeps the sim off a connected physical inverter.
+    ids = _ids(sim_registry.select_nodes(absent=["DIF", "PMF"]))
+    assert not (_FRONT_IDS & ids)
+
+
+# Everything a simulated FRONT drive unit sources: DIF (CPU2) + PMF (CPU1).
+_FRONT_IDS = {0x186, 0x187, 0x2D5, 0x2E5, 0x1D5}
+
+
+def _load_scenario(name):
+    """Load a shipped scenario TOML and expand it the way vehicle_sim does."""
+    from pathlib import Path
+    path = Path(__file__).resolve().parent.parent / "scenarios" / name
+    bc = sim_registry.load_bench_config(path)
+    nodes = sim_registry.instantiate(
+        sim_registry.select_nodes(bc.sim, bc.real, bc.absent), _ctx()
+    )
+    for n in nodes:
+        n.fw = bc.fw
+        if bc.scenario.get(n.name):
+            n.configure(**dict(bc.scenario[n.name]))
+    return bc, nodes, sim_registry.collect_frames(nodes)
+
+
+def test_drive_scenarios_differ_only_in_drivetrain_and_the_front_unit():
+    # The two shipped drive profiles bench the same rear hardware; what separates them is the
+    # drivetrain the car config declares and whether the front unit is simulated. An AWD rear
+    # raises difMIA without a front, and a RWD rear subscribes to none of the front's IDs.
+    dif_ids = _FRONT_IDS
+
+    rwd_cfg, rwd_nodes, rwd_frames = _load_scenario("drive.toml")
+    awd_cfg, awd_nodes, awd_frames = _load_scenario("drive-awd.toml")
+
+    gtw = lambda nodes: next(n for n in nodes if n.name == "GTW")  # noqa: E731
+    assert gtw(rwd_nodes).config["drivetrain_type"] == 0  # RWD
+    assert gtw(awd_nodes).config["drivetrain_type"] == 1  # AWD
+    # Both are Model 3, and neither leaves the pairing-relevant keys unexpressible on this rev.
+    for nodes in (rwd_nodes, awd_nodes):
+        assert gtw(nodes).config["chassis_type"] == 2
+        assert "drivetrain_type" not in gtw(nodes).unsupported
+
+    assert not (dif_ids & {f.can_id for f in rwd_frames}), "RWD bench must not simulate a front"
+    assert dif_ids <= {f.can_id for f in awd_frames}, "AWD bench must simulate the front"
+    # Same rear hardware on both. The RWD car has no front at all -- `absent`, not `real` -- and
+    # that means both of its cores.
+    assert set(rwd_cfg.real) == set(awd_cfg.real) == {"DI", "DIR", "PMR"}
+    assert set(rwd_cfg.absent) == {"DIF", "PMF"} and not awd_cfg.absent
+
+    # Both pin the bench unit's revision -- load-bearing for the front, where DIF_status 0x2D5 is
+    # DLC 7 on 2022.45.15 and every DBC says 8.
+    assert rwd_cfg.fw == awd_cfg.fw == "2022.45.15"
+    d5 = next(f for f in awd_frames if f.can_id == 0x2D5)
+    assert len(d5.frame()) == 7 and d5.bus == "party"
+    assert next(f for f in awd_frames if f.can_id == 0x2E5).bus == "vehicle"
+
+
 def test_every_node_name_is_unique():
     names = [n.name for n in sim_registry.NODES]
     assert len(names) == len(set(names)), f"duplicate node names: {names}"
@@ -243,7 +420,8 @@ def test_every_node_name_is_unique():
 
 def test_select_nodes_real_drops_only_that_node():
     full = _ids(None)
-    assert full - _ids(sim_registry.select_nodes(real=["GTW"])) == {0x7FF, 0x528, 0x3ED}
+    # 0x318 GTW_carState joins GTW's set at 2026.8.3 (the default target is the newest authored).
+    assert full - _ids(sim_registry.select_nodes(real=["GTW"])) == {0x7FF, 0x528, 0x3ED, 0x318}
 
 
 def test_select_nodes_sim_is_a_case_insensitive_whitelist():
@@ -265,8 +443,9 @@ def test_legacy_no_flags_alias_to_real_nodes():
     # --no-shifter/--no-gtw/--no-ui are documented aliases for --real SCCM/GTW/UI.
     full = _ids(None)
     assert _ids(sim_registry.select_nodes(real=["SCCM"])) == full - {0x229}
+    # 0x238 + 0x3FD join UI's set at 2026.8.3 (the default target is the newest authored).
     assert _ids(sim_registry.select_nodes(real=["UI"])) == full - {
-        0x82, 0x213, 0x284, 0x293, 0x313, 0x334, 0x333, 0x3B3,
+        0x82, 0x213, 0x284, 0x293, 0x313, 0x334, 0x333, 0x3B3, 0x353, 0x238, 0x3FD,
     }
 
 
@@ -577,6 +756,301 @@ def test_vcfront_12v_status_for_drive_is_independent_of_charging():
     assert (word >> 14) & 0x3 == 1, "READY_FOR_DRIVE_12V"
 
 
+def test_vcleft_owns_0x3c2_and_vcfront_does_not():
+    """0x3C2 was split out of VCFRONT into its own VCLEFT node (distinct DBC sender)."""
+    vcl = sim_registry.BY_NAME["VCLEFT"](_ctx())
+    assert {f.can_id for f in vcl.frames()} == {0x3C2}
+    assert 0x3C2 not in {f.can_id for f in sim_registry.BY_NAME["VCFRONT"](_ctx()).frames()}
+
+
+def test_vcleft_switch_status_tracks_the_brake_switch():
+    vcl = sim_registry.BY_NAME["VCLEFT"](_ctx())
+    f = {x.can_id: x for x in vcl.frames()}[0x3C2]
+    w = int.from_bytes(f.frame(), "little")
+    assert (w >> 4) & 1 == 0 and (w >> 60) & 1 == 0, "default released"
+    vcl.set_brake_switch(True)
+    w = int.from_bytes(f.frame(), "little")
+    assert (w >> 4) & 1 == 1 and (w >> 60) & 1 == 1, "VCLEFT_brakeSwitchPressed asserted"
+    vcl.configure(brake_switch_pressed=False)
+    assert not vcl.brake_switch_pressed
+
+
+def test_brake_pressure_is_stored_and_validated():
+    esp = sim_registry.BY_NAME["ESP"](_ctx())
+    ibst = sim_registry.BY_NAME["IBST"](_ctx())
+    esp.set_brake("applied", pressure=42)
+    ibst.set_brake("applied", pressure=42)
+    assert esp.brake_pressure == 42.0 and ibst.brake_pressure == 42.0
+    esp.set_brake("released")  # pressure omitted -> cleared
+    assert esp.brake_pressure is None
+    import pytest
+
+    for bad in (150, -1, "nope"):
+        with pytest.raises(ValueError):
+            esp.set_brake("applied", pressure=bad)
+
+
+def test_esp_party3_emits_master_cyl_pressure():
+    """0x38D carries the DI brake-vote VoteB: MC pressure (measured + virtual), QF=NORMAL,
+    with a valid J1850 CRC + rolling counter."""
+    from tesla_frames import j1850_crc8
+
+    esp = sim_registry.BY_NAME["ESP"](_ctx())
+    f = {x.can_id: x for x in esp.frames()}[0x38D]
+    b = f.frame()
+    v = int.from_bytes(b, "little")
+    assert len(b) == 7 and b[0] == j1850_crc8(bytes(b[1:])), "DLC 7 + valid CRC"
+    assert round(((v >> 44) & 0x3FF) * 0.3 - 30.0) == 0, "released -> 0 bar measured"
+    assert (v >> 54) & 0x3 == 1 and (v >> 26) & 0x3 == 1, "both QF = NORMAL"
+    esp.set_brake("applied", pressure=80)
+    v = int.from_bytes(f.frame(), "little")
+    assert round(((v >> 44) & 0x3FF) * 0.3 - 30.0) == 80, "80% -> ~80 bar measured"
+    assert ((v >> 16) & 0x3FF) * 0.25 == 80.0, "80% -> 80 bar virtual"
+
+
+def test_control_facade_brake_fans_out_to_esp_ibst_vcleft():
+    """One dash brake toggle drives ESP 0x145 + IBST 0x39D posture and the VCLEFT 0x3C2 switch."""
+    import vehicle_sim
+
+    by = {n: sim_registry.BY_NAME[n](_ctx()) for n in ("ESP", "IBST", "VCLEFT")}
+    fac = vehicle_sim._ControlFacade(by)
+    out = fac.brake(True, pressure=42)
+    assert out["pressed"] and sorted(out["nodes"]) == ["ESP", "IBST", "VCLEFT"]
+    w145 = int.from_bytes({f.can_id: f for f in by["ESP"].frames()}[0x145].frame(), "little")
+    w39d = int.from_bytes({f.can_id: f for f in by["IBST"].frames()}[0x39D].frame(), "little")
+    w3c2 = int.from_bytes({f.can_id: f for f in by["VCLEFT"].frames()}[0x3C2].frame(), "little")
+    assert (w145 >> 29) & 0x3 == 2, "ESP driverBrakeApply = applied"
+    assert (w39d >> 16) & 0x3 == 2, "IBST driverBrakeApply = applied"
+    assert (w3c2 >> 4) & 1 == 1, "VCLEFT brake switch asserted"
+    assert fac.state()["brake_pressed"] is True and fac.state()["brake_pressure"] == 42.0
+    fac.brake(False)
+    w3c2 = int.from_bytes({f.can_id: f for f in by["VCLEFT"].frames()}[0x3C2].frame(), "little")
+    assert (w3c2 >> 4) & 1 == 0 and fac.state()["brake_pressed"] is False
+
+
+def _di_1d6(di):
+    return {f.can_id: f for f in di.frames()}[0x1D6].frame()
+
+
+def test_di_broadcasts_wired_brake_switch_on_0x1d6():
+    di = sim_registry.BY_NAME["DI"](_ctx())
+    assert (int.from_bytes(_di_1d6(di), "little") >> 33) & 1 == 0, "released default"
+    di.set_brake_switch(True)
+    assert (int.from_bytes(_di_1d6(di), "little") >> 33) & 1 == 1, "0x1D6 bit33 = pressed"
+
+
+def test_vcleft_mirrors_di_wired_switch_when_shared_and_ignores_when_vc_only():
+    di = sim_registry.BY_NAME["DI"](_ctx())
+    vcl = sim_registry.BY_NAME["VCLEFT"](_ctx())
+    di.set_brake_switch(True)
+
+    def vc_bit():
+        return (int.from_bytes({f.can_id: f for f in vcl.frames()}[0x3C2].frame(), "little") >> 4) & 1
+
+    vcl.set_brake_line_switch_type("di_vc_shared")
+    _rx(vcl, 0x1D6, _di_1d6(di))
+    assert vc_bit() == 1, "DI_VC_SHARED: VCLEFT relays the DI wired switch onto 0x3C2"
+    vcl.set_brake_line_switch_type("vc_only")  # the bench default
+    vcl.set_brake_switch(False)
+    _rx(vcl, 0x1D6, _di_1d6(di))
+    assert vc_bit() == 0, "VC_ONLY: VCLEFT sources its own switch, ignores the DI report"
+
+
+def test_vcleft_reads_brake_line_switch_type_from_carconfig_mux3():
+    vcl = sim_registry.BY_NAME["VCLEFT"](_ctx())
+    assert vcl.brake_line_switch_type == "vc_only", "bench default VC_ONLY"
+    cc = bytearray(8)
+    cc[0], cc[4] = 3, 0  # mux3, GTW_brakeLineSwitchType @39|1 = DI_VC_SHARED(0)
+    _rx(vcl, 0x7FF, bytes(cc))
+    assert vcl.brake_line_switch_type == "di_vc_shared"
+    cc[4] = 1 << 7  # VC_ONLY(1)
+    _rx(vcl, 0x7FF, bytes(cc))
+    assert vcl.brake_line_switch_type == "vc_only"
+
+
+def test_esp_and_ibst_mirror_the_di_wired_brake_switch():
+    # DI_VC_SHARED: ESP/IBST follow the DI's 0x1D6 wired switch (the bench default is VC_ONLY).
+    di = sim_registry.BY_NAME["DI"](_ctx())
+    esp = sim_registry.BY_NAME["ESP"](_ctx())
+    ibst = sim_registry.BY_NAME["IBST"](_ctx())
+    esp.configure(brake_line_switch_type="di_vc_shared")
+    ibst.configure(brake_line_switch_type="di_vc_shared")
+    di.set_brake_switch(True)
+    _rx(esp, 0x1D6, _di_1d6(di))
+    _rx(ibst, 0x1D6, _di_1d6(di))
+    assert esp.brake == "applied" and ibst.brake == "applied"
+    di.set_brake_switch(False)
+    _rx(esp, 0x1D6, _di_1d6(di))
+    _rx(ibst, 0x1D6, _di_1d6(di))
+    assert esp.brake == "released" and ibst.brake == "released"
+
+
+def test_esp_and_ibst_ignore_the_di_switch_in_vc_only():
+    """VC_ONLY (learned from GTW_carConfig mux3): ESP/IBST ignore 0x1D6 so UI/manual control wins."""
+    di = sim_registry.BY_NAME["DI"](_ctx())
+    esp = sim_registry.BY_NAME["ESP"](_ctx())
+    ibst = sim_registry.BY_NAME["IBST"](_ctx())
+    di.set_brake_switch(True)
+    cc = bytearray(8)
+    cc[0], cc[4] = 3, 1 << 7  # mux3, GTW_brakeLineSwitchType = VC_ONLY(1)
+    for n in (esp, ibst):
+        _rx(n, 0x7FF, bytes(cc))
+        assert n.brake_line_switch_type == "vc_only"
+        n.set_brake("applied")          # UI/manual request
+        _rx(n, 0x1D6, _di_1d6(di))       # DI switch pressed -> must be ignored
+        assert n.brake == "applied", "VC_ONLY: 0x1D6 does not override manual/UI control"
+
+
+def test_control_facade_brake_drives_the_virtual_di_switch():
+    import vehicle_sim
+
+    by = {n: sim_registry.BY_NAME[n](_ctx()) for n in ("DI", "ESP", "IBST", "VCLEFT")}
+    out = vehicle_sim._ControlFacade(by).brake(True)
+    assert "DI" in out["nodes"] and by["DI"].brake_switch_pressed is True
+    assert (int.from_bytes(_di_1d6(by["DI"]), "little") >> 33) & 1 == 1
+
+
+# The 16 GTW_carConfig signals the DIR reads, as {scenario key: DBC signal}. Golden: the
+# scenario keys are the node's public surface, and the signal names are what the loaded CAN
+# database is asked to encode.
+GTW_CARCONFIG_KEYS = {
+    "country": "GTW_country",
+    "brake_hw_type": "GTW_brakeHWType",
+    "drivetrain_type": "GTW_drivetrainType",
+    "tpms_type": "GTW_tpmsType",
+    "vdc_type": "GTW_vdcType",
+    "cabin_ptc_heater_type": "GTW_cabinPTCHeaterType",
+    "spoiler_type": "GTW_spoilerType",
+    "autopilot": "GTW_autopilot",
+    "number_hvil_nodes": "GTW_numberHVILNodes",
+    "performance_package": "GTW_performancePackage",
+    "chassis_type": "GTW_chassisType",
+    "pack_energy": "GTW_packEnergy",
+    "pack_performance_deviation": "GTW_packPerformanceDeviation",
+    "di_burn_in_type": "GTW_diBurnInType",
+    "compressor_type": "GTW_compressorType",
+    "brake_line_switch_type": "GTW_brakeLineSwitchType",  # 2022+; absent in 2020
+}
+# Only these two are non-zero by default -- the frame must stay what it was before the node
+# had state (GTW_chassisType = 3_CHASSIS, everything else 0).
+GTW_CARCONFIG_DEFAULTS = {"chassis_type": 2, "brake_line_switch_type": 1}  # VC_ONLY bench default
+
+
+def _carcfg_db(omit=()):
+    """A GTW_carConfig database shaped like CanDatabase.from_dbc's output, so the node runs
+    through the real encoder. ``omit`` drops signals, standing in for an older revision that
+    doesn't carry them (2020 has no compressorType/diBurnInType/packPerformanceDeviation/
+    cabinPTCHeaterType/brakeLineSwitchType)."""
+    from can_decoder import CanDatabase
+
+    def sig(start, width, mux_id, is_muxer=False, vd=None):
+        return {
+            "start_position": start, "width": width, "mux_id": mux_id, "is_muxer": is_muxer,
+            "value_description": vd, "endianness": "LITTLE", "signedness": "UNSIGNED",
+            "scale": 1, "offset": 0,
+        }
+
+    labels = {
+        "GTW_chassisType": {"3_CHASSIS": 2, "Y_CHASSIS": 3},
+        "GTW_packEnergy": {"SR": 0, "LR": 1, "MR": 2},
+        "GTW_drivetrainType": {"RWD": 0, "AWD": 1},
+    }
+    signals = {"GTW_carConfigMultiplexer": sig(0, 8, None, is_muxer=True)}
+    for i, (key, name) in enumerate(GTW_CARCONFIG_KEYS.items()):
+        if key in omit:
+            continue
+        # Spread across 3 mux pages; distinct byte per page so nothing overlaps.
+        signals[name] = sig(8 + (i // 3) * 8, 5, 1 + i % 3, vd=labels.get(name))
+
+    db = CanDatabase.__new__(CanDatabase)
+    db.messages = {0x7FF: {"message_id": 0x7FF, "name": "GTW_carConfig",
+                           "length_bytes": 8, "signals": signals}}
+    db._by_node = {}
+    db._cantools_db = None
+    return db
+
+
+def _gtw(omit=()):
+    return sim_registry.BY_NAME["GTW"](sim_core.NodeContext(db=_carcfg_db(omit)))
+
+
+def test_gtw_carconfig_stages_every_signal_the_database_carries():
+    gtw = _gtw()
+    assert set(gtw.config) == set(GTW_CARCONFIG_KEYS)
+    assert gtw.unsupported == []
+    for key in GTW_CARCONFIG_KEYS:
+        assert gtw.config[key] == GTW_CARCONFIG_DEFAULTS.get(key, 0), key
+
+
+def test_gtw_carconfig_defaults_leave_the_frame_byte_identical():
+    """The node's idle frame matches an explicit MuxedConfigTx with the same defaults
+    (chassisType 3_CHASSIS + brakeLineSwitchType VC_ONLY; everything else 0)."""
+    from tesla_frames import GTW_CARCONFIG_ID, MuxedConfigTx
+
+    db = _carcfg_db()
+    old = MuxedConfigTx(db, GTW_CARCONFIG_ID,
+                        defaults={"GTW_chassisType": 2, "GTW_drivetrainType": 0,
+                                  "GTW_brakeLineSwitchType": 1})
+    new = sim_registry.BY_NAME["GTW"](sim_core.NodeContext(db=db)).carcfg
+    for _ in range(len(old.pages) * 2):  # two full mux cycles
+        assert bytes(old.next_frame()) == bytes(new.next_frame())
+
+
+def test_gtw_carconfig_takes_enum_labels_not_just_numbers():
+    """A raw number means different things across revisions (performancePackage 4 is
+    BASE_PLUS_AWD in 2020, BASE_2022 after), so labels are the portable spelling."""
+    import pytest
+
+    gtw = _gtw()
+    assert gtw.set_config("pack_energy", "LR") == 1
+    assert gtw.set_config("chassis_type", "Y_CHASSIS") == 3
+    assert gtw.config["pack_energy"] == 1
+    assert gtw.set_config("pack_energy", 2) == 2  # raw still accepted
+    with pytest.raises(ValueError):
+        gtw.set_config("pack_energy", "74_KWH")  # the 2020 spelling, absent here
+
+
+def test_gtw_carconfig_skips_signals_the_revision_lacks():
+    """2020 has no compressorType / brakeLineSwitchType; the node reports them rather than
+    failing the bench."""
+    import pytest
+
+    gtw = _gtw(omit={"compressor_type", "di_burn_in_type", "brake_line_switch_type"})
+    assert set(gtw.unsupported) == {"compressor_type", "di_burn_in_type", "brake_line_switch_type"}
+    assert "compressor_type" not in gtw.config
+    with pytest.warns(UserWarning, match="not in the loaded CAN database"):
+        assert gtw.set_config("compressor_type", 3) is None
+
+
+def test_gtw_carconfig_rejects_an_unknown_parameter():
+    import pytest
+
+    gtw = _gtw()
+    with pytest.raises(ValueError, match="unknown car-config parameter"):
+        gtw.set_config("nonsense", 1)
+    with pytest.raises(ValueError):
+        gtw.configure(nonsense=1)
+
+
+def test_gtw_carconfig_configure_applies_scenario_keys():
+    gtw = _gtw()
+    gtw.configure(chassis_type="Y_CHASSIS", pack_energy="MR", autopilot=3)
+    assert gtw.config["chassis_type"] == 3
+    assert gtw.config["pack_energy"] == 2
+    assert gtw.config["autopilot"] == 3
+
+
+def test_gtw_2022_variant_sends_a_real_clock():
+    # 2022 DIR brake-temp estimator needs 0x528 now > the time saved at power-off; 0 -> DI_a228.
+    import time
+
+    gtw = _gtw()
+    t20 = {f.can_id: f for f in gtw.frames_for("2020.8.1")}[0x528].frame()
+    assert bytes(t20) == bytes(4)  # 2020 baseline unchanged
+    t22 = {f.can_id: f for f in gtw.frames_for("2022.45.15")}[0x528].frame()
+    assert len(t22) == 4 and abs(int.from_bytes(t22, "big") - time.time()) < 5
+
+
 def test_bms_status_mode_drive_vs_charge():
     bms = sim_registry.BY_NAME["BMS"](_ctx())
     by_id = {f.can_id: f for f in bms.frames()}
@@ -591,6 +1065,31 @@ def test_bms_status_mode_drive_vs_charge():
 
     with pytest.raises(ValueError, match="BMS mode"):
         bms.set_mode("bogus")
+
+
+def test_bms_2022_variant_uses_2022_dbc_scaling():
+    # 2020 LSBs on a 2022 DI read minBusVoltage 300 V as 600 V > the 373 V pack -> DI_a125.
+    import pytest
+
+    bms = sim_registry.BY_NAME["BMS"](_ctx())
+
+    def fields(fw, cid, *spans):
+        v = int.from_bytes({f.can_id: f for f in bms.frames_for(fw)}[cid].frame(), "little")
+        return [(v >> s) & ((1 << w) - 1) for s, w in spans]
+
+    # 2020 baseline stays byte-identical
+    by20 = {f.can_id: bytes(f.frame()) for f in bms.frames_for("2020.8.1")}
+    assert by20[0x2D2].hex() == "3075409c0000420f"
+    assert by20[0x252].hex() == "7017983a00000100"
+    assert by20[0x132].hex() == "b491000010270000"
+    # 2022.45.15 DBC scaling -> same engineering values
+    vmin, vmax, idis = fields("2022.45.15", 0x2D2, (0, 16), (16, 16), (48, 14))
+    assert (vmin * 0.02, vmax * 0.02) == pytest.approx((300.0, 400.0))
+    assert idis * 0.15 == pytest.approx(500.0, abs=0.15)
+    (pdis,) = fields("2022.45.15", 0x252, (16, 16))
+    assert pdis * 0.013 == pytest.approx(150.0, abs=0.013)
+    (iunf,) = fields("2022.45.15", 0x132, (32, 16))
+    assert iunf * 0.05 - 822.0 == pytest.approx(0.0)
 
 
 def test_vcsec_node_answers_immo_only_with_a_key():
@@ -702,4 +1201,7 @@ def test_load_drive_scenario_marks_inverter_real():
     p = Path(sim_registry.__file__).resolve().parents[1] / "scenarios" / "drive.toml"
     cfg = sim_registry.load_bench_config(p)
     assert set(cfg.real) == {"DI", "DIR", "PMR"}
+    # No front drive unit on a RWD car -- absent, not real, and that means both of its cores.
+    assert set(cfg.absent) == {"DIF", "PMF"}
     assert cfg.scenario["VCFRONT"] == {"lv_power_state": "drive"}
+    assert cfg.scenario["GTW"] == {"drivetrain_type": "RWD", "chassis_type": "3_CHASSIS"}

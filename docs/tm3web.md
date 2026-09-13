@@ -51,14 +51,16 @@ it the panels show only the name-derived title.
 - **Alert log** — the ECUs' own `<NODE>_alertLog` broadcasts, decoded; identical payloads fold
   into one row with first/last-seen + count. **Clear log** drops the log and latched bits.
 
-Log decode resolves, in order: every field of an alert with a recovered bit layout (e.g.
-`DI_a162_shiftDenied` → `SYS_STATE_NOT_ENABLED`, gear N→D); CAN-rationality alerts (offending
-message + both bad values); any alert whose leading log signal is an enum (the *reason* it
-fired); otherwise name + description with the raw payload listed.
+Log decode resolves, in order: every field of any alert the firmware decodes field-by-field
+(e.g. `DI_a162_shiftDenied` → `SYS_STATE_NOT_ENABLED`, gear N→D); CAN-rationality alerts
+(offending message + both bad values); any alert whose leading log signal is an enum (the
+*reason* it fired); otherwise name + description with the raw payload listed.
 
-Bit layouts aren't in any shipped artifact — they're recovered from DU firmware and supplied
-separately per rev (point `TM3_ALERTLOG_LAYOUTS` at a layouts file). Without one the first three
-tiers still work — it's enrichment, never a dependency.
+Fields come from the CAN database's decode of the frame — the MCU decoder run under emulation
+(`vapi_emu`) or the geometry recovered statically from it — so the decode tracks the loaded
+firmware. On a checkout with neither the firmware libs nor unicorn, point `TM3_ALERTLOG_LAYOUTS`
+at a per-rev layouts file as an offline fallback. Without one the other tiers still work —
+it's enrichment, never a dependency.
 
 > **Active faults** needs alert-matrix messages in the loaded DB. A per-rev `compact.json` is
 > partial (2022.4.15 carries only `DIR_alertMatrix3`), so use `--dbc` with a year DBC to

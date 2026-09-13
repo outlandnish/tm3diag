@@ -33,13 +33,12 @@ from aiohttp import web
 
 import alert_log
 import config as _cfg
-from can_decoder import CanDatabase
+from can_decoder import CanDatabase, default_db
 
 sys.path.insert(0, str(Path(__file__).parent / "scripts"))
 # di report-decode maps for the dashboard. Import via the di package — adding
 # scripts/di to the path would shadow it and break other di.* imports.
 from di.di import (  # noqa: E402
-    _DI_0X118_RECOVERED,
     DI_GEAR_LABELS,
     DI_IMMO_LABELS,
     DI_SYS_LABELS,
@@ -50,7 +49,7 @@ _DB: CanDatabase | None = None
 
 log = logging.getLogger("tm3web")
 
-# --- dashboard: DI signals we surface as a driver HUD (2020 Model3_ETH DB) -----
+# --- dashboard: DI signals we surface as a driver HUD -----
 # Decoded every flush tick regardless of viewer subscriptions so the dashboard
 # always has fresh state. 0x118 DI_systemStatus, 0x257 DI_speed, 0x256 DIR_status,
 # 0x2B6 DI_chassisControlStatus (the real telltale lamps: VDC / TC / vehicle-hold).
@@ -207,22 +206,6 @@ def _num(v: object) -> object:
     return round(v, 2) if isinstance(v, float) else v
 
 
-def _overlay_0x118(sig: dict[str, object], data: bytes) -> None:
-    """Recover DI_immobilizerState/systemState/accelPedalPos straight from the
-    0x118 bytes at their 2020 positions — needed when a 2022+ compact.json is
-    loaded that stripped them from the DB. Reuses di.py's ``_DI_0X118_RECOVERED``.
-    Harmless when the DB already decodes them (identical raw bits)."""
-    if len(data) < 8:
-        return
-    val = int.from_bytes(bytes(data[:8]), "little")
-    for name, (sb, w) in _DI_0X118_RECOVERED.items():
-        raw = (val >> sb) & ((1 << w) - 1)
-        if name == "DI_accelPedalPos":
-            sig[name] = None if raw == 255 else raw * 0.4
-        else:
-            sig[name] = raw
-
-
 def _alert_catalog():
     """The MCU alert catalog decoder, or None when the firmware libs are absent.
 
@@ -258,25 +241,29 @@ def _faults_list(faults: dict[str, bool] | None) -> list[dict]:
     return out
 
 
-def _record_alertlog(store: dict, dec, can_id: int, data: bytes, ts: float) -> None:
+def _record_alertlog(store: dict, dec, can_id: int, data: bytes, ts: float,
+                     signals=None) -> None:
     """Fold one ``<NODE>_alertLog`` frame into the distinct-payload store.
 
     An all-zero payload is the idle "nothing logged" broadcast every ECU emits,
     so it's skipped. ``count`` is how many flush ticks saw this exact payload as
     the newest frame for its id — a liveness measure, not a frame count (frames
-    are coalesced per tick before we get here).
+    are coalesced per tick before we get here). ``signals`` is the database's own
+    decode of this frame (the firmware's decoder, run over it); the alert decoder
+    takes the per-field values straight from it, in lockstep with the firmware.
     """
     if not any(data):
         return
     key = (can_id, bytes(data))
     ent = store.get(key)
     if ent is None:
-        r = dec.decode(can_id, bytes(data))
+        r = dec.decode(can_id, bytes(data), signals=signals)
         if r is None:
             return
         ent = r.to_dict()
-        ent.update(key=f"{can_id:03X}:{bytes(data).hex()}", data=list(data),
-                   first=ts, last=ts, count=0)
+        ent.update(
+            key=f"{can_id:03X}:{bytes(data).hex()}", data=list(data), first=ts, last=ts, count=0
+        )
         store[key] = ent
         if len(store) > _ALERT_LOG_CAP:
             del store[min(store, key=lambda k: store[k]["last"])]
@@ -347,6 +334,9 @@ def _build_dash_snapshot(
         # Commanded state comes from vehicle_sim's VehicleController (control server).
         "lv_state": st.get("lv_state"),
         "lv_options": st.get("lv_options", []),
+        "brake_pressed": st.get("brake_pressed"),
+        "brake_pressure": st.get("brake_pressure"),
+        "brake_controllable": st.get("brake_controllable", False),
         "ui": st.get("ui"),
         "ui_schema": st.get("ui_schema", {}),
     }
@@ -653,11 +643,27 @@ def _fanout_decoded(clients: list[_Channel], frames: list[dict], rx: int) -> Non
             chan.offer(shared)
 
 
+async def _decode_batch(db, items: list[tuple[int, bytes]]) -> dict[tuple[int, bytes], list | None]:
+    """Decode a whole tick's worth of frames in one go.
+
+    The VAPI shim (``vapi_emu.VapiDatabase``) runs the firmware's real decoder
+    in worker processes, so it offers an async batch entry point: one round trip
+    per tick instead of one per frame, with the event loop free while the
+    workers run. A layout-decoding ``CanDatabase`` has no such method and is
+    called inline, where a decode costs microseconds.
+    """
+    if not items:
+        return {}
+    batch = getattr(db, "decode_frames_async", None)
+    if batch is None:
+        return {key: db.decode_frame(*key) for key in items}
+    return dict(zip(items, await batch(items), strict=True))
+
+
 async def _flusher(app: web.Application) -> None:
     hubs: list[_BusHub] = app["hubs"]
     interval: float = app["flush_interval"]
     messages = _DB.messages
-    decode = _DB.decode_frame
 
     dash_sig: dict[str, object] = app["dash_sig"]
     faults: dict[str, bool] = app["faults"]
@@ -666,8 +672,9 @@ async def _flusher(app: web.Application) -> None:
     alert_dec = app["alert_decoder"]
     alertlog_ids = app["alertlog_ids"]
     seen_msg: dict[int, float] = app["seen_msg"]
+    last_frame: dict[str, dict] = app["last_frame"]
     show_unknown: bool = app["show_unknown"]
-    unknown_ids: set[int] = set()   # ids not in the DB, already announced
+    unknown_ids: set[int] = set()  # ids not in the DB, already announced
     unknown_capped = False
 
     while True:
@@ -686,36 +693,68 @@ async def _flusher(app: web.Application) -> None:
         dec_frames: list[dict] = []
         rx = 0
 
+        # Pass 1: drain every hub and work out which frames need decoding, so the
+        # decodes can go out as ONE batch. Under the VAPI shim a decode is a round
+        # trip to a worker process, so doing them one at a time inside this walk
+        # would stall the event loop for the whole tick.
+        drained: list[tuple[_BusHub, dict[int, tuple[bytes, float]], dict[int, int]]] = []
+        need: set[tuple[int, bytes]] = set()
         for hub in hubs:
             latest, counts = hub.drain()  # always drain, even with no clients
+            drained.append((hub, latest, counts))
             # ODIN live cross-reference: stamp every arriving id, regardless of viewer
-            # subscriptions, so the "requires on bus" panel can mark signals present.
-            for aid in latest:
+            # subscriptions, so the "requires on bus" panel can mark signals present,
+            # and RETAIN the payload the drain would otherwise drop so ODIN can decode
+            # any signal on demand. Both are plain dict stores -- no decode cost here.
+            keep = last_frame.setdefault(hub.label, {})
+            for aid, cell in latest.items():
                 seen_msg[aid] = now
-            # Dashboard: decode the handful of DI status IDs every tick, regardless
+                keep[aid] = cell
+                if aid in alert_ids or aid in alertlog_ids:
+                    need.add((aid, cell[0]))
+            for aid in _DASH_IDS:
+                cell = latest.get(aid)
+                if cell is not None:
+                    need.add((aid, cell[0]))
+            if not want_dec:
+                continue
+            for aid, (data, _ts) in latest.items():
+                # Same three skips the emit pass applies, hoisted so an unchanged
+                # or unsubscribed frame is never handed to the decoder at all.
+                if hub.last_sent.get(aid) == data:
+                    continue
+                db_msg = messages.get(aid)
+                if db_msg is not None and (wants_all or db_msg.get("originNode", "") in wanted):
+                    need.add((aid, data))
+
+        decoded_by = await _decode_batch(_DB, sorted(need))
+
+        # Pass 2: emit. Every decode below is a dict lookup -- nothing awaits.
+        for hub, latest, counts in drained:
+            # Dashboard: the handful of DI status IDs go out every tick, regardless
             # of viewer subscriptions, so the HUD stays live even with no WS client.
             for aid in _DASH_IDS:
                 cell = latest.get(aid)
                 if cell is None:
                     continue
-                dec = decode(aid, cell[0])
-                if dec:
-                    for s in dec:
-                        dash_sig[s["signal"]] = s["value"]
-                if aid == 0x118:
-                    _overlay_0x118(dash_sig, cell[0])
+                for s in decoded_by.get((aid, cell[0])) or ():
+                    dash_sig[s["signal"]] = s["value"]
             # Faults: accumulate active alert-matrix bits (muxed -> update per page
             # as it cycles). Runs every tick regardless of viewer subscriptions.
             for aid, cell in latest.items():
                 if aid in alert_ids:
-                    for s in decode(aid, cell[0]) or []:
-                        if _ALERT_RE.search(s["signal"]):
+                    for s in decoded_by.get((aid, cell[0])) or ():
+                        # The VAPI shim reports the firmware's own per-signal
+                        # validity; a store it marks invalid must not latch a
+                        # fault. The layout decoder cannot tell, and says nothing.
+                        if s.get("valid", True) and _ALERT_RE.search(s["signal"]):
                             faults[s["signal"]] = bool(s["value"])
                 # <NODE>_alertLog: the ECU's own log of WHY an alert was raised
                 # (for CAN-rationality alerts, the offending id + error type).
                 # No sim node transmits these, so anything seen here is a real ECU.
                 elif aid in alertlog_ids:
-                    _record_alertlog(alertlog_store, alert_dec, aid, cell[0], cell[1])
+                    _record_alertlog(alertlog_store, alert_dec, aid, cell[0], cell[1],
+                                     signals=decoded_by.get((aid, cell[0])))
             if not (want_raw or want_dec):
                 continue
             label = hub.label
@@ -754,16 +793,24 @@ async def _flusher(app: web.Application) -> None:
                                     log.warning(
                                         "unknown-id cap reached (%d): further ids absent from "
                                         "the DB are dropped from the decoded view. Raw Frames "
-                                        "still shows everything.", _UNKNOWN_ID_CAP,
+                                        "still shows everything.",
+                                        _UNKNOWN_ID_CAP,
                                     )
                                     unknown_capped = True
                                 continue
                             unknown_ids.add(aid)
-                            log.info("id 0x%03X on %s is not in the signal DB -- "
-                                     "showing it undecoded", aid, label)
+                            log.info(
+                                "id 0x%03X on %s is not in the signal DB -- showing it undecoded",
+                                aid,
+                                label,
+                            )
                         frame = {
-                            "node": _UNKNOWN_NODE, "msg_id": aid, "timestamp": ts,
-                            "bus": label, "n": n, "unknown": 1,
+                            "node": _UNKNOWN_NODE,
+                            "msg_id": aid,
+                            "timestamp": ts,
+                            "bus": label,
+                            "n": n,
+                            "unknown": 1,
                         }
                         if unchanged:
                             frame["same"] = 1
@@ -786,7 +833,7 @@ async def _flusher(app: web.Application) -> None:
                         }
                     )
                     continue
-                decoded = decode(aid, data)
+                decoded = decoded_by.get((aid, data))
                 if decoded is None:
                     continue
                 dec_frames.append(
@@ -819,6 +866,10 @@ async def _start_reader(app: web.Application) -> None:
     app["dash_sig"] = {}  # latest decoded DI signals for the driver HUD
     app["faults"] = {}  # alert-matrix bit name -> currently-set bool
     app["seen_msg"] = {}  # CAN id -> last-arrival monotonic (ODIN live cross-ref)
+    # bus label (= channel) -> {CAN id: (data, ts)}: the latest frame retained per
+    # id, so ODIN can read ANY signal this viewer has seen (decoded on demand, in
+    # its own thread) instead of opening a second socket. Bounded by distinct ids.
+    app["last_frame"] = {}
     # CAN id -> the signal names it carries; a signal is "seen" when its id arrives.
     app["msg_signals"] = {mid: tuple(m["signals"].keys()) for mid, m in _DB.messages.items()}
     app["alert_ids"] = {
@@ -831,8 +882,9 @@ async def _start_reader(app: web.Application) -> None:
     # ~0.7 s .so parse never lands inside a request.
     app["alert_log"] = {}
     app["alert_decoder"] = _alert_catalog()
-    app["alertlog_ids"] = frozenset(
-        app["alert_decoder"].alertlog_node) if app["alert_decoder"] else frozenset()
+    app["alertlog_ids"] = (
+        frozenset(app["alert_decoder"].alertlog_node) if app["alert_decoder"] else frozenset()
+    )
     app["stop"] = threading.Event()
     app["threads"] = [
         threading.Thread(
@@ -936,7 +988,18 @@ def _odin_backend(app: web.Application):
                 "config bus TM3_VEHICLE_CHANNEL, or start tm3web with --channel "
                 "<iface> (tm3web reads on the 'any' interface, but UDS TX cannot)."
             )
-        be = odin_runner.BenchBackend(channel, app.get("can_interface") or "socketcan")
+        # This viewer is already listening on every configured bus, so hand ODIN its
+        # retained frames (keyed by bus label = channel name, which is what
+        # config.can_channel resolves an ODIN bus token to). ODIN then reads any
+        # signal seen here -- decoded on demand in its worker thread -- and opens no
+        # second socket for RX. UDS TX still uses its own concrete channel.
+        be = odin_runner.BenchBackend(
+            channel,
+            app.get("can_interface") or "socketcan",
+            frame_source=app["last_frame"].get,
+            db=_DB,  # decode with the DB THIS viewer loaded (--dbc), not ETH_COMPACT
+            sim_url=app.get("sim_url"),  # service mode on the bus during a run
+        )
         app["odin_bench"] = be
     return be
 
@@ -957,14 +1020,15 @@ async def _api_alerts(request: web.Request) -> web.Response:
     ``catalog`` says whether that text is available at all.
     """
     app = request.app
-    log_entries = sorted(app.get("alert_log", {}).values(),
-                         key=lambda e: e["last"], reverse=True)
-    return web.json_response({
-        "catalog": app.get("alert_decoder") is not None,
-        "catalog_error": _ALERT_CAT_ERR,
-        "faults": _faults_list(app.get("faults")),
-        "log": log_entries,
-    })
+    log_entries = sorted(app.get("alert_log", {}).values(), key=lambda e: e["last"], reverse=True)
+    return web.json_response(
+        {
+            "catalog": app.get("alert_decoder") is not None,
+            "catalog_error": _ALERT_CAT_ERR,
+            "faults": _faults_list(app.get("faults")),
+            "log": log_entries,
+        }
+    )
 
 
 async def _api_alerts_clear(request: web.Request) -> web.Response:
@@ -1022,6 +1086,11 @@ async def _api_ui(request: web.Request) -> web.Response:
 async def _api_lv(request: web.Request) -> web.Response:
     """POST {"value":"off|conditioning|accessory|drive"} — set LV power (via sim)."""
     return await _forward_cmd(request, "lv")
+
+
+async def _api_brake(request: web.Request) -> web.Response:
+    """POST {"pressed":bool, "pressure":0-100?} — set the brake pedal across ESP/IBST/VCLEFT."""
+    return await _forward_cmd(request, "brake")
 
 
 async def _api_carconfig(request: web.Request) -> web.Response:
@@ -1100,6 +1169,7 @@ def _build_app(
     app.router.add_post("/api/gear", _api_gear)
     app.router.add_post("/api/ui", _api_ui)
     app.router.add_post("/api/lv", _api_lv)
+    app.router.add_post("/api/brake", _api_brake)
     app.router.add_get("/api/carconfig", _api_carconfig)
     app.router.add_post("/api/carconfig", _api_carconfig)
     app.router.add_get("/ws", _ws_handler)
@@ -1197,16 +1267,32 @@ def main() -> None:
         default="http://localhost:8770",
         help="vehicle_sim control server URL for --control (default localhost:8770)",
     )
+    parser.add_argument(
+        "--no-vapi",
+        action="store_true",
+        help="decode from the bit layouts recovered out of the firmware instead of "
+        "RUNNING the firmware's own decoder (vapi_emu). The A/B for a suspected "
+        "layout bug, and the way back if the emulator misbehaves.",
+    )
     args = parser.parse_args()
 
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
 
     global _DB
+    if args.no_vapi:
+        _cfg.VAPI_ENABLED = False
     if args.dbc:
         _DB = CanDatabase.from_dbc(args.dbc)
         log.info("Loaded DBC: %s (%d messages)", args.dbc, len(_DB.messages))
     else:
-        _DB = CanDatabase()
+        _DB = default_db()
+        log.info(
+            "Signal DB: %d messages, decoded by %s",
+            len(_DB.messages),
+            "the firmware's own decoder (VAPI)"
+            if hasattr(_DB, "decode_frames_async")
+            else "recovered bit layouts",
+        )
 
     def _open(channel: str, interface: str, bitrate: int | None) -> can.BusABC:
         kw: dict = {"channel": channel, "interface": interface}
@@ -1258,8 +1344,15 @@ def main() -> None:
             "hidden" if filt.tx_hidden else "visible (--show-tx)",
         )
 
-    app = _build_app(buses, filt, args.ui_rate, sim_url, channel=channel,
-                     interface=interface, show_unknown=not args.hide_unknown)
+    app = _build_app(
+        buses,
+        filt,
+        args.ui_rate,
+        sim_url,
+        channel=channel,
+        interface=interface,
+        show_unknown=not args.hide_unknown,
+    )
 
     url = f"http://localhost:{args.port}"
     in_wsl = (

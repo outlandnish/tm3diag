@@ -14,6 +14,7 @@ from alert_log import (
     _rat_pcs,
     alert_view,
     apply_layout,
+    decoded_from_signals,
     pretty_alert_title,
     split_alert_name,
 )
@@ -138,6 +139,45 @@ def test_inferred_fill_marked_and_anchored():
         bv1 = a133["badValue1"]                       # keys are field suffixes
         assert tuple(bv1[:2]) == (16, 16) and len(bv1) > 3 and bool(bv1[3])
         assert len(a133["capacitorTemp"]) == 3        # recovered, unflagged
+
+
+def test_decoded_from_signals_groups_this_alert():
+    """The default field decode: the database's own rows for the frame, grouped
+    to the alert, whole-number doubles coerced to int, everything else dropped."""
+    rows = [
+        {"signal": "alertCode", "value": 162, "label": "DI_a162_shiftDenied"},
+        {"signal": "DI_alertID", "value": 162.0, "label": "a162_shiftDenied"},
+        {"signal": "DI_a162_shiftDeniedReason", "value": 4.0,
+         "label": "SYS_STATE_NOT_ENABLED", "units": None},
+        {"signal": "DI_a162_currentGear", "value": 1.0, "label": "P", "units": None},
+        {"signal": "DI_a162_motorSpeed", "value": 0.0, "label": None, "units": "MPH"},
+        {"signal": "DI_a099_somethingElse", "value": 7.0, "label": None},   # other alert
+    ]
+    d = decoded_from_signals("DI", 162, rows)
+    assert set(d) == {"DI_a162_shiftDeniedReason", "DI_a162_currentGear",
+                      "DI_a162_motorSpeed"}
+    assert d["DI_a162_shiftDeniedReason"] == {
+        "value": 4, "label": "SYS_STATE_NOT_ENABLED", "units": None}
+    assert d["DI_a162_currentGear"]["value"] == 1 and d["DI_a162_currentGear"]["label"] == "P"
+    assert d["DI_a162_motorSpeed"]["units"] == "MPH"
+    # whole-number doubles land as ints, not floats, so log_values renders them clean
+    assert all(isinstance(v["value"], int) for v in d.values())
+
+
+def test_decoded_from_signals_feeds_log_values():
+    """A decode fed from database rows resolves every field through log_values."""
+    d = AlertLogDecode(
+        can_id=0x527, node="DI", alert_code=162,
+        log_signals=["ETH_DI_a162_shiftDeniedReason", "ETH_DI_a162_currentGear"],
+        decoded=decoded_from_signals("DI", 162, [
+            {"signal": "DI_a162_shiftDeniedReason", "value": 4.0,
+             "label": "SYS_STATE_NOT_ENABLED", "units": None},
+            {"signal": "DI_a162_currentGear", "value": 3.0, "label": "N", "units": None},
+        ]))
+    vals = {v["name"]: v for v in d.log_values()}
+    assert vals["DI_a162_shiftDeniedReason"]["value"] == "SYS_STATE_NOT_ENABLED"
+    assert vals["DI_a162_shiftDeniedReason"]["raw"] == 4
+    assert vals["DI_a162_currentGear"]["value"] == "N"
 
 
 def test_log_values_uses_decoded_layout():

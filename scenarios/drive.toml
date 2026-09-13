@@ -21,6 +21,20 @@ version = "2022.45.15"
 
 [nodes]
 real = ["DI", "DIR", "PMR"]
+# A RWD car has no front drive unit at all -- `absent`, not `real`: nothing on the bus sources its
+# frames. Both halves of it, since the front is one unit running two cores (DIF = CPU2, PMF = CPU1).
+# A RWD ("Single") rear subscribes to none of their IDs anyway, so simulating them would only add
+# unhandled traffic. The same two nodes are `real` on a bench that has a physical front
+# (scenarios/drive-awd-both.toml) and simulated on one that doesn't (scenarios/drive-awd.toml).
+absent = ["DIF", "PMF"]
+
+# Car config must match the unit under test: a RWD rear is selected by drivetrainType=RWD, and
+# the rear/front pairing + several DIR behaviours key off it. Both of these are already the GTW
+# node's defaults -- stated explicitly so the RWD bench and the AWD one differ visibly in one
+# place rather than by omission.
+[scenario.GTW]
+drivetrain_type = "RWD"
+chassis_type = "3_CHASSIS"   # Model 3; Y_CHASSIS for a Model Y
 
 # VCFRONT already defaults to drive power; set it explicitly for clarity. Command a gear with
 # e.g.  [scenario.SCCM]  gear = "D"  (held at standstill; watch DI_gear on 0x118).

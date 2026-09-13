@@ -15,14 +15,17 @@ Run OFFSET first (coarse alignment), then RESOLVER (fine per-angle table). Both 
 persist to EEPROM themselves.
 
 This tool drives ONLY the UDS side. The CAN preconditions must be met by vehicle_sim.py
-running alongside and by the operator spinning the motor:
+running alongside and by the operator spinning the motor. On 2022.45.15 the required
+traction mode differs per routine, so switch it between the two phases:
 
-  python scripts/vehicle_sim.py --channel <A> --party-channel <B> \
-         --traction-mode dyno
+  # offset phase (0x0406):   --traction-mode rolls   (UI_tractionControlMode = 4)
+  # resolver phase (0x0407): --traction-mode dyno    (UI_tractionControlMode = 5)
+  python scripts/vehicle_sim.py --channel <A> --party-channel <B> --traction-mode <rolls|dyno>
 
 Firmware gates (DIR precondition checks):
-  * DIR_readTractionControlMode == 5 (TC_DYNO_MODE)   <- vehicle_sim --traction-mode dyno
-      (CAN 0x293 UI_chassisControl, UI_tractionControlMode = 5)
+  * traction control mode on CAN 0x293 UI_tractionControlMode -- per routine on 2022.45.15:
+      RESOLVER_LEARNING (0x0407) -> DYNO_MODE (5); OFFSET_LEARNING (0x0406) -> ROLLS_MODE (4).
+      (2020.8.1 wants DYNO (5) for both.)
   * immobilizer DISARMED (0x118 immo state == 3)      <- vehicle_sim immo responder
   * motor SPINNING, valid gear, above the speed gate  <- physical accelerator
       (the 2020 RWD pedal is hardwired, not CAN, so YOU spin it)
@@ -318,7 +321,7 @@ def main() -> int:
     print("PREREQUISITES (must already be running): vehicle_sim.py --traction-mode dyno "
           "(immo DISARM + dyno mode + liveness), and be ready to spin the motor.\n")
 
-    cfg = load_node_config("DIR", _cfg.NODES_JSON, _cfg.ETH_COMPACT, _cfg.ODJ_DIR)
+    cfg = load_node_config("DIR", _cfg.NODES_JSON, _cfg.ETH_DBC or _cfg.ETH_COMPACT, _cfg.ODJ_DIR)
     codes: list[tuple[str, int | None]] = []
     with UdsSession(cfg, args.channel, interface=args.interface) as sess:
         sess.diagnostic_session(0x03)      # extended session

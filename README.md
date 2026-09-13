@@ -77,6 +77,40 @@ If your firmware's `.compact.json` and ODJ files are encrypted `.bin` files, you
 
 The framework contains no seed/key or immobilizer algorithms. Tools that need a UDS SecurityAccess key or an immobilizer response resolve it through a provider you supply. If none is configured they fail closed with a pointer to the docs. See [docs/SECURITY_PROVIDER.md](docs/SECURITY_PROVIDER.md) for the interface.
 
+The ODIN diagnostic graphs ship as a zip that nothing unpacks for you. Unzip it in place, or the ODIN panel reports `no ODIN bundle`:
+
+```bash
+cd "$TM3_ROOT/opt/odin" && unzip -q odin_bundle.zip     # -> opt/odin/odin_bundle/networks
+```
+
+### 4. Signal database
+
+With `TM3_ROOT` set, CAN frames are decoded by **running the MCU's own decoder** — `GUICanCracker::crackMessage` out of `libQtCarVAPI.so`, emulated, with the signal catalog from `libQtCarCANData.so` naming what it stores. Nothing is modelled, so nothing can be modelled wrong, and there is no build step: point `TM3_ROOT` at an extraction and every tool has the full database.
+
+`default_db()` resolves three sources, best first:
+
+| | Source | Covers |
+|---|---|---|
+| 1 | **The firmware's own decoder** (`vapi_emu`) | the whole catalog, exactly as the car decodes it |
+| 2 | A generated DBC (`candata_to_dbc.py`) | the whole catalog, from bit layouts recovered out of that same decoder |
+| 3 | `Model3_ETH.compact.json` | only the subset Tesla ships to the diagnostic tool, and it shrinks every release |
+
+Set `TM3_VAPI=0` to force the layout path — the A/B for a suspected layout bug.
+
+**Decoding needs no DBC.** Encoding does: `crackMessage` only runs one way, so `vehicle_sim.py`, `ecu_bench.py` and the frame builders need bit layouts. Build one once per firmware revision:
+
+```bash
+python candata_to_dbc.py dbc        # writes Model3_ETH.<rev>.dbc, ~1-2 min
+```
+
+The revision is taken from the `TM3_ROOT` directory name — a trailing `.ice`, `.extracted` or `.ice.extracted` is stripped — and that same name is how `config` finds the DBC again, so the two cannot drift. Without a DBC, encoding falls back to whatever layouts `compact.json` carries.
+
+To check the recovered layouts against the firmware itself:
+
+```bash
+python vapi_emu.py parity           # same / different / only-emu / only-dbc
+```
+
 ## Tools
 
 | Tool | Description |

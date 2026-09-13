@@ -160,27 +160,44 @@
   }
 
   /* Repaint a faults container. Returns the number rendered. */
+  /* True when `box` already shows exactly `items`, so a repaint would be a no-op.
+
+     Both containers are repainted on a 1 Hz poll, and a repaint replaces the
+     very node the pointer is over -- so :hover dropped and re-applied once a
+     second and the card visibly flickered under the cursor. The content rarely
+     changes between polls, so compare first and leave the DOM alone. */
+  function unchanged(box, items) {
+    const sig = JSON.stringify(items || []);
+    if (box.dataset.sig === sig) return true;
+    box.dataset.sig = sig;
+    return false;
+  }
+
   function renderFaults(box, faults, onOpen, emptyHtml) {
+    const n = (faults || []).length;
+    if (unchanged(box, faults)) return n;
     box.innerHTML = '';
-    if (!faults || !faults.length) {
+    if (!n) {
       box.innerHTML = emptyHtml || '<div class="no-faults">No active faults</div>';
       return 0;
     }
     faults.forEach(f => box.appendChild(faultCard(f, onOpen)));
-    return faults.length;
+    return n;
   }
 
   /* Repaint an alert-log container. Returns the number rendered. */
   function renderLog(box, entries, onOpen, emptyHtml) {
+    const n = (entries || []).length;
+    if (unchanged(box, entries)) return n;
     box.innerHTML = '';
-    if (!entries || !entries.length) {
+    if (!n) {
       box.innerHTML = emptyHtml
         || '<div class="hint">Nothing logged yet — ECUs broadcast an empty alert log '
            + 'until something is wrong.</div>';
       return 0;
     }
     entries.forEach(e => box.appendChild(logRow(e, onOpen)));
-    return entries.length;
+    return n;
   }
 
   window.TMAlerts = {

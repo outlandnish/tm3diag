@@ -35,28 +35,24 @@ from decode_bin import load_json
 
 _LAYOUT_KEYS = ("start_position", "width")
 
-# Extraction-dir suffixes to strip when deriving a rev from the firmware root.
-_ROOT_SUFFIXES = (".ice.extracted", ".extracted", ".model3", ".modely")
 
-
-def _rev_from_lib(lib: Path, root: Path | None = None) -> str:
+def _rev_from_lib(lib: Path, root: Path | None = None) -> str | None:
     """Derive a firmware revision token from the firmware root directory name.
 
     The lib lives at ``<root>/usr/tesla/UI/lib/libQtCarCANData.so*`` so the root
-    is the path component just above ``usr/``. The extraction suffix (e.g.
-    ``.ice.extracted`` or ``.model3``) is stripped, yielding tokens like
-    ``2022.45.15`` or ``2020.8.1-9-ae1963092f``.
+    is the path component just above ``usr/``. Suffix stripping is shared with
+    ``config.rev_from_root`` -- the token names the DBC we write here and the
+    one config looks for, so the two must not drift.
+
+    None when nothing can be derived, so a caller can fall through to its own
+    last resort rather than being handed a placeholder that looks like an answer.
     """
+    import config as _cfg
     if root is None:
         parts = Path(lib).resolve().parts
         cut = next((parts.index(m) for m in ("usr", "opt") if m in parts), None)
         root = Path(*parts[:cut]) if cut else Path(lib).resolve().parent
-    name = Path(root).name
-    for suf in _ROOT_SUFFIXES:
-        if name.endswith(suf):
-            name = name[:-len(suf)]
-            break
-    return name or "unknown"
+    return _cfg.rev_from_root(root)
 
 
 def _has_layout(sig: dict) -> bool:
@@ -155,6 +151,15 @@ def enrich(cat: so_candata.SoCatalog, donors: list[dict], *,
     by_name, by_id = _index_donor_messages(donors)
     donor_labels = [db.get("_label") or db.get("version") or f"donor{idx}"
                     for idx, db in enumerate(donors)]
+    # compact.json spells every node lowercase ("vcfront") where the .so catalog
+    # uses "VCFRONT", so a message the catalog does NOT carry takes its node from
+    # the donor and lands under a second spelling. That is every *_udsRequest /
+    # *_udsResponse pair -- diagnostic messages Tesla ships only in compact.json
+    # -- so each ECU gained a near-empty twin node holding just those, shadowing
+    # the real one in every node list (25 such pairs on 2022.45.15). Canonicalise
+    # a donor's spelling to the catalog's.
+    canon = {n.lower(): n for n in
+             (m.get("originNode") for m in cat.messages.values()) if n}
 
     messages: dict[str, dict] = {}
     gaps: list[dict] = []
@@ -192,6 +197,7 @@ def enrich(cat: so_candata.SoCatalog, donors: list[dict], *,
         node = (m_so or {}).get("originNode") \
             or (chosen[1].get("originNode") if chosen else None) \
             or mname.split("_", 1)[0]
+        node = canon.get(node.lower(), node)
         return {
             "message_id": mid,
             "length_bytes": length,
@@ -274,7 +280,7 @@ def _load_donors(paths: list[Path]) -> list[dict]:
     donors = []
     for p in paths:
         db = load_json(p)
-        db["_label"] = _rev_from_lib(Path(p))
+        db["_label"] = _rev_from_lib(Path(p)) or "unknown"
         n = len(db.get("messages", {}))
         print(f"  donor {db['_label']} ({p.name}): {n} messages",
               file=sys.stderr)
@@ -298,8 +304,17 @@ def _resolve_lib(args) -> tuple[Path, Path | None]:
 
 
 def _resolve_rev(args, lib: Path, root: Path | None) -> str:
+    """The revision token naming what we are about to write.
+
+    It labels an artifact built from THIS lib, so the root it came out of wins
+    over TM3_FW -- which is the revision vehicle_sim transmits, a different
+    thing entirely and often deliberately older. With it first, ``TM3_FW=2020.8.1``
+    (to emulate an older car) made a DBC built from a 2026 root come out named
+    ``Model3_ETH.2020.8.1.dbc``, which config would then load as if it were 2020.
+    Same order as config._resolve_eth_dbc, which reads these files back.
+    """
     import config as _cfg
-    return args.rev or _cfg.FW_VERSION or _rev_from_lib(lib, root)
+    return args.rev or _rev_from_lib(lib, root) or _cfg.FW_VERSION or "unknown"
 
 
 def cmd_extract(args) -> None:
@@ -316,6 +331,34 @@ def cmd_extract(args) -> None:
     print(f"wrote {out}")
 
 
+_PROGRESS_LEN = 0
+
+
+def _progress(stage: str, done: int = 0, total: int = 0) -> None:
+    """Redraw a one-line status on a terminal; one line per stage otherwise.
+
+    Recovering layout from libQtCarVAPI disassembles ~1.1 MB of generated code
+    several times over, so without this the tool sits silent for half a minute.
+    """
+    global _PROGRESS_LEN
+    pct = f" {100.0 * done / total:4.0f}%" if total else ""
+    line = f"    {stage}{pct}"
+    if not sys.stderr.isatty():
+        if not pct:                       # piped: stages only, no redraw spam
+            print(line, file=sys.stderr, flush=True)
+        return
+    pad = max(_PROGRESS_LEN - len(line), 0)
+    _PROGRESS_LEN = len(line)
+    print(f"\r{line}{' ' * pad}", end="", file=sys.stderr, flush=True)
+
+
+def _progress_done() -> None:
+    global _PROGRESS_LEN
+    if sys.stderr.isatty() and _PROGRESS_LEN:
+        print(f"\r{' ' * _PROGRESS_LEN}\r", end="", file=sys.stderr, flush=True)
+    _PROGRESS_LEN = 0
+
+
 def cmd_dbc(args) -> None:
     lib, root = _resolve_lib(args)
     rev = _resolve_rev(args, lib, root)
@@ -329,6 +372,42 @@ def cmd_dbc(args) -> None:
                      "(set TM3_ROOT or pass --compact)")
         args.compact = [_cfg.ETH_COMPACT]
     donors = _load_donors(args.compact)
+    # Highest-priority layout source: the MCU's OWN decoder for this same
+    # revision (libQtCarVAPI's GUICanCracker). It covers the whole catalog rather
+    # than compact.json's stripped subset, and -- unlike an older compact.json
+    # donor -- never borrows a layout from a different release, which matters
+    # because layouts move (0x118 DI_immobilizerState 27|3 in 2020 -> 13|3 in
+    # 2022). See vapi_layout.
+    if not args.no_vapi:
+        vlib = args.vapi or next((p for p in lib.parent.glob("libQtCarVAPI.so*")
+                                  if p.suffix not in ("", ".1")), None)
+        if vlib and Path(vlib).exists():
+            try:
+                import vapi_layout
+                print(f"  decoding layout from {Path(vlib).name} "
+                      f"(disassembling, ~30s)", file=sys.stderr)
+                vdonor, vrep = vapi_layout.extract_layouts(
+                    vlib, lib, progress=_progress)
+                _progress_done()
+                donors.insert(0, vdonor)
+                print(f"  donor {vdonor['_label']}: {len(vdonor['messages'])} messages,"
+                      f" {vrep.recovered}/{vrep.catalog_signals} signals",
+                      file=sys.stderr)
+                # A misread dispatch shifts every page by a constant, so the
+                # DBC still looks complete while each alert decodes as another
+                # alert. Say so here rather than let it ship quietly.
+                if vrep.alert_pages_wrong:
+                    print(f"  WARNING: {len(vrep.alert_pages_wrong)} alertLog "
+                          "signals are on the wrong mux page, e.g. "
+                          + ", ".join(f"{w['signal']} (page {w['page']}, "
+                                      f"alert {w['alert']})"
+                                      for w in vrep.alert_pages_wrong[:3]),
+                          file=sys.stderr)
+            except (ImportError, ValueError, SystemExit) as e:
+                print(f"  vapi layout skipped: {e}", file=sys.stderr)
+        else:
+            print("  no libQtCarVAPI beside the catalog; compact.json donors only",
+                  file=sys.stderr)
     enriched_db, report = enrich(cat, donors, prefer_order=args.prefer_order)
     enriched_db["dbc_version"] = rev
 
@@ -383,6 +462,11 @@ def main(argv: list[str] | None = None) -> None:
     pd.add_argument("-o", "--out", type=Path, help="output DBC path")
     pd.add_argument("--report", type=Path, help="write coverage/gap report")
     pd.add_argument("--json", type=Path, help="also write enriched compact JSON")
+    pd.add_argument("--vapi", type=Path,
+                    help="libQtCarVAPI.so to recover same-rev layout from "
+                         "(default: sibling of the catalog lib)")
+    pd.add_argument("--no-vapi", action="store_true",
+                    help="skip VAPI layout recovery; use compact.json donors only")
     pd.add_argument("--prefer-order", action="store_true",
                     help="per message, take layout from the first donor that "
                          "has it (current-rev fidelity) instead of the richest "

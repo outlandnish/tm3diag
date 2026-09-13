@@ -151,7 +151,10 @@ if __name__ == "__main__":
         if root is None:
             sys.exit("no lib given and config.ROOT (TM3_ROOT) is unset")
         lib = root / "usr/tesla/UI/lib/libQtCarAlerts.so"
-    rev = a.rev or _cfg.FW_VERSION or _rev_from_lib(Path(lib), root)
+    # The root this .so came out of names the artifact, ahead of TM3_FW -- which
+    # is the revision vehicle_sim TRANSMITS, and may deliberately be older. Same
+    # order as candata_to_dbc._resolve_rev and config._resolve_eth_dbc.
+    rev = a.rev or _rev_from_lib(Path(lib), root) or _cfg.FW_VERSION or "unknown"
 
     cat = extract_alerts(lib)
     doc = to_dict(cat, product=a.product, rev=rev)

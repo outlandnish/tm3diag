@@ -26,9 +26,15 @@ and labelled; values outside the table are reported raw. Example::
     0x527 A2 80 04 00 00 01 22 7C
       -> DI_a162_shiftDenied, DI_a162_shiftDeniedReason = SYS_STATE_NOT_ENABLED
 
-Full per-field decode needs bit layouts that no shipped artifact carries; point
-``TM3_ALERTLOG_LAYOUTS`` at a rev-tagged ``alertlog_layouts_<rev>.json`` to
-enable them. Without one, decode yields the reason and nothing further.
+Field decode comes from the active CAN database's decode of the frame:
+``VapiDatabase`` runs the MCU's own decoder under emulation, and a layout-backed
+``CanDatabase`` uses the same geometry recovered statically. The caller passes
+those decoded rows to :meth:`AlertLogDecoder.decode`; this module groups the ones
+that belong to the alert and labels them from the catalog.
+
+Without a firmware decode, an optional offline fallback reads field widths from a
+rev-tagged ``alertlog_layouts_<rev>.json`` (``TM3_ALERTLOG_LAYOUTS``). Absent that
+too, decode yields the reason and the CAN-rationality fields.
 """
 
 from __future__ import annotations
@@ -80,9 +86,10 @@ _RATIONALITY["PCS"] = _rat_pcs
 
 # alertLog field layouts, keyed (node, code) -> {field: (bit_offset, width,
 # signed)} over the log-payload area (frame bytes 2-7) as a little-endian bit
-# string -- offset 0 is byte2 bit0. Enum/unit labels come from the per-revision
-# catalog at decode time, so a layout serves any revision that keeps those
-# fields. Layouts are not shipped: point TM3_ALERTLOG_LAYOUTS at a rev-tagged
+# string -- offset 0 is byte2 bit0. OFFLINE FALLBACK only: the default field decode
+# is the CAN database's own decode, passed in to decode(). Enum/unit labels come from
+# the per-revision catalog at decode time, so a layout serves any revision that keeps
+# those fields. Layouts are not shipped: point TM3_ALERTLOG_LAYOUTS at a rev-tagged
 # alertlog_layouts_<rev>.json, or drop such files in an alertlog_layouts/ dir
 # beside this module.
 _LAYOUTS_DIR = Path(__file__).with_name("alertlog_layouts")
@@ -143,6 +150,34 @@ def apply_layout(layout: dict[str, tuple[int, int, bool]], payload: int) -> dict
         if signed and raw >= (1 << (width - 1)):
             raw -= 1 << width
         out[name] = raw
+    return out
+
+
+def decoded_from_signals(node: str, code: int, signals) -> dict[str, dict]:
+    """Group a database's own decode of an alertLog frame by log field.
+
+    ``signals`` is the list of signal rows the active :class:`CanDatabase`
+    returned for the frame (``{"signal", "value", "label", "units", ...}``) --
+    the firmware's own decode, so the field geometry is the firmware's, not a
+    model. Only the rows that belong to this alert (``<node>_a<code>_<field>``)
+    are kept; the header/mux and any other alert's fields are dropped. The result
+    is keyed by the non-``ETH_`` signal name, exactly as :attr:`AlertLogDecode.
+    decoded` and :meth:`AlertLogDecode.log_values` expect.
+    """
+    out: dict[str, dict] = {}
+    for row in signals or ():
+        short = str(row.get("signal", "")).removeprefix("ETH_")
+        n, ctype, c, suffix = split_alert_name(short)
+        if n != node or ctype != "a" or c != code or not suffix:
+            continue
+        val = row.get("value")
+        if isinstance(val, float) and val.is_integer():
+            val = int(val)                     # enum/int fields read as whole doubles
+        out[short] = {
+            "value": val,
+            "label": row.get("label") or None,
+            "units": row.get("units") or None,
+        }
     return out
 
 
@@ -224,6 +259,9 @@ class AlertLogDecode:
     bad_value2: int | None = None
     log_signals: list = field(default_factory=list)
     # <NODE>_aNNN_<field> -> {"value": int, "label": str|None, "units": str|None}
+    # for alerts the database decoded field-by-field (the firmware's own decode by
+    # default; the offline layouts as a fallback). Empty for the
+    # rationality/reason-only paths.
     decoded: dict = field(default_factory=dict)
     view: dict = field(default_factory=dict)
     header: int = 0                   # byte1 verbatim (state + unknown bits)
@@ -267,9 +305,10 @@ class AlertLogDecode:
     def log_values(self) -> list[dict]:
         """The alert's logged signals paired with whatever can be decoded.
 
-        Reversed-layout alerts resolve every field; rationality alerts resolve
-        their fields by name; any other alert resolves its leading enum (the
-        reason) and lists the rest by name with ``value: None``.
+        Fields the database decoded (``out.decoded``) resolve with value + label +
+        units; rationality alerts resolve their fields by name; any other alert
+        resolves its leading enum (the reason) and lists the rest by name with
+        ``value: None``.
         """
         out = []
         for i, sig in enumerate(self.log_signals):
@@ -441,7 +480,17 @@ class AlertLogDecoder:
                 # 4th spec element flags an inferred (lower-confidence) value.
                 "inferred": bool(len(spec) > 3 and spec[3])}
 
-    def decode(self, can_id: int, data: bytes) -> AlertLogDecode | None:
+    def decode(self, can_id: int, data: bytes, signals=None) -> AlertLogDecode | None:
+        """Decode one ``<NODE>_alertLog`` frame.
+
+        ``signals`` is the active CAN database's own decode of this frame -- the
+        firmware's decoder run over it (see the module docstring). When supplied,
+        the alert's per-field values come straight from it, so the geometry is the
+        firmware's and stays in lockstep with the build. It is the default path:
+        tm3web and can_decoder hand in the rows they already computed. Without
+        it (a firmware-less checkout), the fields fall back to the offline layouts
+        (``_LAYOUTS``) if present, then to the leading-enum reason alone.
+        """
         node = self.alertlog_node.get(can_id)
         if node is None or len(data) < 2:
             return None
@@ -457,7 +506,11 @@ class AlertLogDecoder:
             out.description = rec.get("description")
             out.log_signals = rec.get("log_signals", [])
         out.view = alert_view(out.alert or f"{node}_a{code:03d}", rec)
-        # CAN-rationality alerts carry the offending id + error type.
+        # CAN-rationality alerts carry the offending id + error type. Their four
+        # fields resolve by NAME (offending id -> message name, error type -> the
+        # ERROR_TYPES label), richer than the raw numeric a database would report,
+        # and the packing is firmware-independent bit math -- so they keep the
+        # rationality path whether or not a firmware decode was handed in.
         is_rat = bool(rec) and (
             "canData" in (out.alert or "") or "canRationality" in (out.alert or "")
             or "_canRationality" in (out.alert or ""))
@@ -471,10 +524,25 @@ class AlertLogDecoder:
             out.error_name = ERROR_TYPES.get(etype, f"?{etype}")
             out.bad_value1, out.bad_value2 = bv1, bv2
         else:
+            # Read the leading enum (the reason) for every alert, then fill the
+            # remaining fields: the firmware's own decode by default, the offline
+            # layouts only when that decode was unavailable or yielded nothing for
+            # this alert (a bare database with no alertLog fields).
             payload = int.from_bytes(d[2:8], "little")
             self._decode_reason(out, payload)
-            self._decode_layout(out, payload)
+            if signals is not None:
+                self._decode_from_signals(out, signals)
+            if not out.decoded and _LAYOUTS:
+                self._decode_layout(out, payload)
         return out
+
+    def _decode_from_signals(self, out: AlertLogDecode, signals) -> None:
+        """Fill ``out.decoded`` from the database's .so-native decode of the frame.
+
+        The values (and their geometry) are the firmware's; enum/unit labels come
+        from the same database's decode, already resolved in each row.
+        """
+        out.decoded.update(decoded_from_signals(out.node, out.alert_code, signals))
 
 
 _DEFAULT: AlertLogDecoder | None = None
@@ -502,7 +570,16 @@ if __name__ == "__main__":
     cid = int(a.can_id, 16)
     raw = bytes.fromhex(a.data.replace(" ", ""))
     dec = get_decoder(a.lib_dir)
-    res = dec.decode(cid, raw)
+    # Default path: let the active CAN database decode the frame with the
+    # firmware's own decoder and hand those rows in. Falls back to the offline
+    # layouts when no database is available (see decode()).
+    signals = None
+    try:
+        import can_decoder
+        signals = can_decoder.default_db().decode_frame(cid, raw)
+    except Exception:
+        pass
+    res = dec.decode(cid, raw, signals=signals)
     if res is None:
         print(f"0x{cid:X} is not a known *_alertLog message")
     else:

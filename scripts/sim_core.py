@@ -165,6 +165,9 @@ class SimFrame:
     bus: str = "vehicle"  # logical bus: "vehicle" | "party" | "charge"
     # (start_bit, width, value) overrides layered onto the payload before counter/checksum.
     overrides: list = field(default_factory=list)
+    # Per-message checksum seed override. None => tesla_frames.magic(can_id). Set this in a
+    # node's fw_variants entry when a revision reseeds the message (see place_checksum).
+    cksum_magic: int | None = None
     _ctr: int = field(default=0)
 
     def frame(self) -> bytes:
@@ -175,7 +178,7 @@ class SimFrame:
             place_counter(data, self.counter_start, self._ctr, self.counter_width)
             self._ctr = (self._ctr + 1) & ((1 << self.counter_width) - 1)
         if self.cksum_start is not None:
-            place_checksum(data, self.can_id, self.cksum_start)
+            place_checksum(data, self.can_id, self.cksum_start, self.cksum_magic)
         return bytes(data)
 
     def note_send(self, ok: bool) -> None:
@@ -202,6 +205,19 @@ def zeros(n: int = 8) -> Callable[[], bytearray]:
     signal values, so a zero payload of the exact DLC keeps such a handler's MIA cleared.
     """
     return lambda: bytearray(n)
+
+
+def clamp_pct(value):
+    """None -> None; else a 0-100 float (ValueError if non-numeric or out of range)."""
+    if value is None:
+        return None
+    try:
+        v = float(value)
+    except (TypeError, ValueError):
+        raise ValueError(f"pressure must be a number 0-100, got {value!r}") from None
+    if not 0.0 <= v <= 100.0:
+        raise ValueError(f"pressure must be 0-100, got {v}")
+    return v
 
 
 @dataclass

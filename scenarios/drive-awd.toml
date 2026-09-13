@@ -1,0 +1,45 @@
+# Drive scenario profile: bench a real AWD REAR drive inverter, with the front unit SIMULATED.
+#
+#   python scripts/vehicle_sim.py --config scenarios/drive-awd.toml --channel can0 --party-channel can1
+#
+# Same as scenarios/drive.toml except the unit under test is an AWD rear ("Master", usage digit 0,
+# DID 0xF180) rather than a RWD rear ("Single", usage 2). Two differences, and
+# they are not independent -- an AWD rear expects a front drive unit on the bus:
+#
+#   1. GTW_carConfig declares drivetrainType=AWD.
+#   2. DIF and PMF are simulated (NOT in `real`), so the sim stands in for the front unit.
+#
+# Without (2) the rear raises difMIA (DIR_a040) and frontUnitDisabled (DI_a138). Both halves are
+# needed because the front is one physical unit running two cores: DIF (CPU2) sources 0x186
+# DIF_torque, 0x187, 0x2D5 DIF_status and 0x2E5 DIF_power; PMF (CPU1) sources 0x1D5 PMF_state4.
+# Five frames total -- no second physical inverter is needed to get the rear out of MIA.
+#
+# All five are required on THIS revision. 0x1D5 looked 2026-only at first because the 2022 rear
+# DIR does not subscribe to it -- but the rear PMR (CPU1) does, and the PMR is real hardware here,
+# so omitting PMF leaves it in pmfMIA (DI_a042) on a 2022 bench too.
+
+# Pin the layouts to the bench unit's firmware, as drive.toml does. This also picks the DIF node's
+# 2022.45.15 set, where DIF_status 0x2D5 is DLC 7 -- every DBC says 8, and the DIR's length check is
+# an exact match, so the revision pin is load-bearing here rather than cosmetic.
+[firmware]
+version = "2022.45.15"
+
+[nodes]
+# The rear inverter hardware is connected -> don't simulate its IDs. DIF and PMF are deliberately
+# absent from this list: the front is what we are standing in for. If a real front unit is also on
+# the bench, use scenarios/drive-awd-both.toml instead.
+real = ["DI", "DIR", "PMR"]
+
+# drivetrainType is what makes a pair a pair: it is the condition that selects a Master image over
+# a Single one, and the rear's front-related logic is gated on it. A RWD car config in front of an
+# AWD rear is a mismatch, not a no-op.
+#
+# Not set, deliberately: number_hvil_nodes. A two-DU car really does have more HVIL nodes, but the
+# 2022 images are not gated on it and the value only feeds a144 configMismatch -- leaving it at the
+# default is what the working RWD bench already does. Revisit if a144 shows up.
+[scenario.GTW]
+drivetrain_type = "AWD"
+chassis_type = "3_CHASSIS"   # Model 3; Y_CHASSIS for a Model Y
+
+[scenario.VCFRONT]
+lv_power_state = "drive"

@@ -1,0 +1,41 @@
+# Drive scenario profile: bench a real AWD pair -- rear (DIR/PMR) AND front (DIF) both physical.
+#
+#   python scripts/vehicle_sim.py --config scenarios/drive-awd-both.toml --channel can0 --party-channel can1
+#
+# Differs from scenarios/drive-awd.toml in one line: DIF and PMF are `real` rather than simulated,
+# because the front unit is actually on the bus. Both, because the front is one physical unit
+# running two cores -- DIF is its CPU2 and PMF its CPU1, and a unit on the bench brings both.
+# Everything else -- drivetrainType=AWD, the firmware pin -- is the same, since the car config
+# describes the CAR, not which halves the sim is standing in for.
+#
+# Both units must sit on the SAME two networks as on the car: the rear->front frames travel on the
+# PARTY bus (0x108 DIR_torque, 0x118 DI_systemStatus, 0x136, 0x142, 0x148 DI_chassisControl,
+# 0x257 DI_speed), and only 0x2E5 DIF_power of the front->rear set is on vehicle. A front wired to
+# the vehicle bus alone hears none of the rear's commands.
+#
+# The sim does NOT need to fill anything extra for the front. All seven rear->front frames are in
+# the rear's own TX tables (verified in the 2022 firmware),
+# so the real DIR sources them; 0x1D5 PMF_state4 comes from the physical front's own PMF; and the
+# remaining 25 of the front's 33 rx frames are rest-of-car that this profile already simulates.
+#
+# What to watch instead: the rear cross-checks the front rather than merely waiting on it --
+# DI_a207 vdcPowertrainTorque_dif and DI_a211 vdcMotorSpeed_dif compare the front's torque and
+# speed against its own. Two units on separate stands with no shared mechanical link is exactly
+# the condition those exist to catch, and no amount of frame coverage fixes it.
+
+[firmware]
+version = "2022.45.15"
+
+[nodes]
+# The whole drivetrain is physical here: rear unit (DIR CPU2 + PMR CPU1) and front unit
+# (DIF CPU2 + PMF CPU1). PMF belongs in this list even though the sim would only send one frame
+# for it -- 0x1D5 PMF_state4 -- because the rear's PMR supervises that frame already on 2022, so
+# transmitting it over a physical PMF is exactly the collision `real` exists to prevent.
+real = ["DI", "DIR", "PMR", "DIF", "PMF"]
+
+[scenario.GTW]
+drivetrain_type = "AWD"
+chassis_type = "3_CHASSIS"   # Model 3; Y_CHASSIS for a Model Y
+
+[scenario.VCFRONT]
+lv_power_state = "drive"

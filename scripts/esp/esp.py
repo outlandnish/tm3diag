@@ -17,8 +17,16 @@ when the matching availability status bit is SET, so these builders assert those
 """
 from __future__ import annotations
 
-from sim_core import PARTY_RATE_S, Node, SimFrame, zeros
-from tesla_frames import J1850Frame, pack_le
+from sim_core import PARTY_RATE_S, Node, SimFrame, clamp_pct, zeros
+from tesla_frames import (
+    DI_BRAKE_SWITCH_ID,
+    GTW_CARCONFIG_ID,
+    J1850Frame,
+    di_brake_switch_pressed,
+    gtw_brake_line_switch_type,
+    normalize_brake_line_switch_type,
+    pack_le,
+)
 
 # ESP_status 0x145 brake posture -> (driverBrakeApply@29w2, brakeApply@31, brakeLamp@21).
 _BRAKE = {
@@ -29,6 +37,9 @@ _BRAKE = {
 }
 _ABS_EVENT = {"none": 0, "front_rear": 1, "front": 2, "rear": 3}  # ESP_absBrakeEvent2 @22w2
 _STABILITY = {"init": 0, "on": 1, "engaged": 2, "faulted": 3}     # ESP_stabilityControlSts2 @14w2
+
+_APPLIED_DEFAULT_PCT = 50.0  # 0x38D master-cyl pressure when "applied" with no explicit pressure
+_BAR_PER_PCT = 1.0           # bench mapping: 100% pedal -> 100 bar master-cyl pressure
 
 
 def _esp_0x105_valid() -> bytearray:  # 0x105: brake torque=0 + MC pressure=0 bar + availability
@@ -68,6 +79,11 @@ class Esp(Node):
         # ABS/skid event, all QF in spec. stability=ON (not the INIT the original builder left
         # at 0 by omission) — bench-confirmed as required for the DIR to permit drive.
         self.brake = "released"
+        self.brake_pressure = None  # optional 0-100% MC pressure; stored for a future 0x38D pack
+        # GTW_brakeLineSwitchType; default VC_ONLY -> ignore the DI's 0x1D6 and keep UI/manual
+        # control. Learned live from GTW_carConfig 0x7FF mux3 (or set via configure); DI_VC_SHARED
+        # -> follow the DI's wired switch.
+        self.brake_line_switch_type = "vc_only"
         self.abs_event = "none"
         self.stability = "on"
         self.standstill_skid = False
@@ -88,8 +104,32 @@ class Esp(Node):
                 "ESP_0x185_wheelSpeeds", 0x185, rate, _esp_0x185_wheelspeeds_valid,
                 52, 56, bus="party",
             ),
-            SimFrame("ESP_party3", 0x38D, rate, J1850Frame(7).frame, bus="party"),
+            SimFrame("ESP_party3", 0x38D, rate, J1850Frame(7, self._esp_party3).frame, bus="party"),
         ]
+
+    def _brake_bar(self) -> float:
+        if self.brake_pressure is not None:
+            pct = self.brake_pressure
+        elif self.brake == "applied":
+            pct = _APPLIED_DEFAULT_PCT
+        else:
+            pct = 0.0
+        return pct * _BAR_PER_PCT
+
+    def _esp_party3(self) -> bytearray:  # 0x38D payload (CRC@0 + counter@8 filled by J1850Frame)
+        # Master-cyl pressure = the DI brake vote's VoteB. Both the measured (brakeMasterCylPress,
+        # 0.3/-30) and modeled (pMcVirtual, 0.25) fields carry it, QF=NORMAL so the DIR reads it
+        # valid. 0 bar -> brakeMasterCylPress raw 100 (0x64), matching the 0x105 convention.
+        bar = self._brake_bar()
+        return pack_le(
+            [
+                (16, 10, round(bar / 0.25)),      # ESP_pMcVirtual (bar)
+                (26, 2, 1),                       # ESP_pMcVirtualQF = NORMAL
+                (44, 10, round((bar + 30.0) / 0.3)),  # ESP_brakeMasterCylPress (bar)
+                (54, 2, 1),                       # ESP_brakeMasterCylPressQF = NORMAL
+            ],
+            length=7,
+        )
 
     def _esp_status(self) -> bytearray:  # 0x145, 20ms, ctr@8 cksum@0 magic 0x46
         brake_apply, apply_flag, lamp = _BRAKE[self.brake]
@@ -116,14 +156,29 @@ class Esp(Node):
             ]
         )
 
-    def set_brake(self, posture: str) -> str:
-        """Driver externality: brake pedal posture (released|applied|off|sna) -> 0x145
-        driverBrakeApply + brakeApply + brakeLamp."""
+    def set_brake(self, posture: str, pressure=None) -> str:
+        """Brake posture (released|applied|off|sna) -> 0x145 driverBrakeApply/brakeApply/lamp.
+        Optional pressure (0-100%) is stored for a later 0x38D MC-pressure pack, not yet packed."""
         key = str(posture).strip().lower()
         if key not in _BRAKE:
             raise ValueError(f"ESP brake must be one of {list(_BRAKE)}")
         self.brake = key
+        self.brake_pressure = clamp_pct(pressure)
         return key
+
+    def rx_handlers(self):
+        # Mirror the DI's wired brake switch (0x1D6) into ESP brake posture -- but only in
+        # DI_VC_SHARED (the switch is shared with the DI). VC_ONLY -> ignore 0x1D6, keep UI control.
+        return {DI_BRAKE_SWITCH_ID: self._on_di_brake, GTW_CARCONFIG_ID: self._on_carconfig}
+
+    def _on_di_brake(self, data, send) -> None:
+        if self.brake_line_switch_type == "di_vc_shared":
+            self.set_brake("applied" if di_brake_switch_pressed(data) else "released")
+
+    def _on_carconfig(self, data, send) -> None:
+        t = gtw_brake_line_switch_type(data)
+        if t is not None:
+            self.brake_line_switch_type = t
 
     def set_abs_event(self, event: str) -> str:
         """Driver externality: ESP_absBrakeEvent2 (none|front_rear|front|rear). Anything but
@@ -158,6 +213,9 @@ class Esp(Node):
             val = s.pop(flag, None)
             if val is not None:
                 setattr(self, flag, bool(val))
+        lt = s.pop("brake_line_switch_type", None)
+        if lt is not None:
+            self.brake_line_switch_type = normalize_brake_line_switch_type(lt)
         super().configure(**s)
 
 

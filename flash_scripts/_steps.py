@@ -297,10 +297,11 @@ def step_transfer_loop(sess: UdsSession, ctx: FlashContext) -> None:
             _label: str = seg_label,
             _addr: int = seg.start_address,
         ) -> None:
-            display.set_detail(
-                f"Transfer {_bar(_start + sent, total_bytes)}"
-                f"  {_label}  addr=0x{_addr:08X}"
-            )
+            # The bar IS the progress render (StatusDisplay.set_progress); the
+            # step name stays a detail, so a collected log gets one line per
+            # step instead of one per transfer block.
+            display.set_progress(_start + sent, total_bytes,
+                                 f"{_label}  addr=0x{_addr:08X}")
 
         on_progress(0, seg.length)
         sess.transfer_data(seg.data, max_block_len, progress_cb=on_progress)
@@ -333,10 +334,11 @@ def step_transfer_loop_inter_shdr(sess: UdsSession, ctx: FlashContext) -> None:
             _label: str = seg_label,
             _addr: int = seg.start_address,
         ) -> None:
-            display.set_detail(
-                f"Transfer {_bar(_start + sent, total_bytes)}"
-                f"  {_label}  addr=0x{_addr:08X}"
-            )
+            # The bar IS the progress render (StatusDisplay.set_progress); the
+            # step name stays a detail, so a collected log gets one line per
+            # step instead of one per transfer block.
+            display.set_progress(_start + sent, total_bytes,
+                                 f"{_label}  addr=0x{_addr:08X}")
 
         on_progress(0, seg.length)
         sess.transfer_data(seg.data, max_block_len, progress_cb=on_progress)

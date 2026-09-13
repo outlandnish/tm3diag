@@ -42,10 +42,18 @@ def place_counter(frame: bytearray, start_bit: int, ctr: int, width: int = 4) ->
     frame[bi] = (frame[bi] & ~(mask << sh) & 0xFF) | ((ctr & mask) << sh)
 
 
-def place_checksum(frame: bytearray, msg_id: int, cksum_start_bit: int) -> None:
+def place_checksum(
+    frame: bytearray, msg_id: int, cksum_start_bit: int, magic_value: int | None = None
+) -> None:
+    """``magic_value`` overrides the per-message seed. Needed because the seed is not purely a
+    function of the ID -- Tesla reseeds individual messages across firmware revisions, so the
+    same ID wants a different constant per target (0x3A1: 0xA4 in 2020, 0x2A in 2022+, 0xC0 in
+    2026.8.3 -- all three read straight out of the DIR's validator). A revision-specific seed
+    belongs in that node's fw_variants entry as ``SimFrame(..., cksum_magic=...)``, not here."""
     cb = cksum_start_bit // 8
     s = sum(frame[i] for i in range(len(frame)) if i != cb)
-    frame[cb] = (magic(msg_id) + s) & 0xFF
+    seed = magic(msg_id) if magic_value is None else (magic_value & 0xFF)
+    frame[cb] = (seed + s) & 0xFF
 
 
 def set_bitfield(frame: bytearray, start_bit: int, width: int, value: int) -> None:
@@ -54,6 +62,47 @@ def set_bitfield(frame: bytearray, start_bit: int, width: int, value: int) -> No
     mask = ((1 << width) - 1) << start_bit
     acc = (acc & ~mask) | ((int(value) << start_bit) & mask)
     frame[:] = acc.to_bytes(len(frame), "little")
+
+
+# DIR broadcasts its own wired brake-switch line on 0x1D6 bit33 (=1 pressed). Peers mirror it
+# into the brake vote (VCLEFT 0x3C2 / ESP / IBST) when the switch is shared with the DI
+# (GTW_brakeLineSwitchType == DI_VC_SHARED).
+DI_BRAKE_SWITCH_ID = 0x1D6
+DI_BRAKE_SWITCH_BIT = 33
+
+
+def di_brake_switch_pressed(data) -> bool:
+    """True if 0x1D6 reports the DI's wired brake switch pressed (frame bit 33)."""
+    raw = int.from_bytes(bytes(data)[:8].ljust(8, b"\x00"), "little")
+    return bool((raw >> DI_BRAKE_SWITCH_BIT) & 1)
+
+
+# GTW_brakeLineSwitchType (GTW_carConfig 0x7FF mux3 @39|1): 0 DI_VC_SHARED (switch shared with the
+# DI -> peers mirror the DI's 0x1D6), 1 VC_ONLY (switch on the VC only -> peers ignore 0x1D6).
+BRAKE_LINE_SWITCH_TYPES = ("di_vc_shared", "vc_only")
+
+
+def normalize_brake_line_switch_type(value) -> str:
+    """Accept the enum label (di_vc_shared|vc_only) or raw 0/1 -> canonical label."""
+    if isinstance(value, bool):
+        raise ValueError("brake_line_switch_type must be a label or 0/1, not a bool")
+    if isinstance(value, (int, float)):
+        try:
+            return BRAKE_LINE_SWITCH_TYPES[int(value)]
+        except IndexError:
+            raise ValueError(f"brake_line_switch_type {value!r} out of range") from None
+    key = str(value).strip().lower()
+    if key not in BRAKE_LINE_SWITCH_TYPES:
+        raise ValueError(f"brake_line_switch_type must be one of {list(BRAKE_LINE_SWITCH_TYPES)}")
+    return key
+
+
+def gtw_brake_line_switch_type(data):
+    """GTW_carConfig 0x7FF mux3 -> 'di_vc_shared'|'vc_only', or None if not the mux3 page."""
+    d = bytes(data)
+    if len(d) >= 5 and d[0] == 3:  # mux3 carries GTW_brakeLineSwitchType @39|1 = byte4 bit7
+        return "vc_only" if (d[4] >> 7) & 1 else "di_vc_shared"
+    return None
 
 
 # SCCM_rightStalk 0x229 -- the gear stalk (bus A / CANA, len 3, 100 ms).
@@ -126,15 +175,22 @@ def j1850_crc8(data: bytes) -> int:
 
 
 class J1850Frame:
-    """CANB liveness frame with J1850 CRC@byte0 + 4-bit rolling counter@byte1 lo-nibble
-    (ESP_party3 0x38D len7, IBST 0x38E len6). The CRC covers bytes 1..len-1."""
+    """CANB liveness frame with J1850 CRC@byte0 + 4-bit rolling counter@byte1
+    lo-nibble (ESP_party3 0x38D len7, IBST 0x38E len6). The CRC covers bytes
+    1..len-1 (all data except the CRC byte). Own rolling counter, like the other
+    validated-frame builders here.
 
-    def __init__(self, length: int) -> None:
+    ``payload`` is an optional ``() -> bytearray(length)`` supplying the signal bytes
+    (e.g. ESP_party3 master-cyl pressure); byte0 (CRC) and byte1's lo-nibble (counter)
+    are always overwritten, so a payload need not fill them."""
+
+    def __init__(self, length: int, payload=None) -> None:
         self._ctr = 0
         self._len = length
+        self._payload = payload
 
     def frame(self) -> bytes:
-        data = bytearray(self._len)
+        data = bytearray(self._payload()) if self._payload else bytearray(self._len)
         data[1] = (data[1] & 0xF0) | (self._ctr & 0xF)  # counter in byte1 lo-nibble
         data[0] = j1850_crc8(bytes(data[1:]))  # CRC over bytes 1..len-1
         self._ctr = (self._ctr + 1) & 0xF
@@ -219,6 +275,8 @@ class UiConfig:
     winch_mode: int = 0  # UI_winchModeRequest: IDLE
     trailer_mode: int = 0  # UI_trailerMode: OFF
     traction_mode: int = 0  # UI_tractionControlMode: NORMAL
+    service_mode: int = 0  # UI_serviceMode (0x284): the DI's rotor/resolver-learn start gate
+    development_car: int = 0  # UI_developmentCar (0x353): DIR dyno-inhibit BYPASS (dyno not one-shot)
 
 
 def ui_cruise_control(_c: UiConfig) -> bytearray:  # 0x213, DLC2
@@ -291,6 +349,8 @@ UI_SETTINGS: dict[str, dict] = {
     "winch_mode": {"label": "Winch mode", "options": dict(WINCH_MODE)},
     "track_mode": {"label": "Track mode", "options": {"on": 1, "off": 2}},
     "trailer_mode": {"label": "Trailer mode", "options": {"off": 0, "on": 1}},
+    "service_mode": {"label": "Service mode", "options": {"off": 0, "on": 1}},
+    "development_car": {"label": "Development car", "options": {"off": 0, "on": 1}},
 }
 
 

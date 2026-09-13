@@ -12,7 +12,7 @@ Submodules:
   _scripts    SCRIPT_* FlashScript definitions
   _ecu_map    ECU_SCRIPT_MAP and get_script
   _dual_cpu   PCS-family prog 1 runner + detector
-  _groups     bootloader and subcomponent detection helpers
+  _groups     bootloader, subcomponent and RAM-app detection helpers
 """
 
 from ._constants import FLASH_COUNT_LIMITS as FLASH_COUNT_LIMITS
@@ -26,12 +26,18 @@ from ._ecu_map import ECU_SCRIPT_MAP as ECU_SCRIPT_MAP
 from ._ecu_map import get_script as get_script
 from ._groups import (  # noqa: F401
     find_bootloader_entries,
+    find_ramapp_entries,
     find_subcomponent_entries,
     is_bootloader_ecu_type,
+    is_ramapp_ecu_type,
     is_subcomponent_ecu_type,
     parent_node_for_bootloader,
     parent_node_for_subcomponent,
 )
+from ._headless import QuietDisplay as QuietDisplay
+from ._headless import flash_components as flash_components
+from ._headless import select_entries as select_entries
+from ._headless import uds_node_for as uds_node_for
 from ._scripts import (  # noqa: F401
     SCRIPT_APS,
     SCRIPT_BL,

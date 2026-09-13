@@ -7,3 +7,5 @@ pytest>=9.0.0
 aiohttp>=3.9.0
 python-dotenv>=1.0.0
 cantools>=39.0.0
+capstone>=5.0.0  # vapi_layout: disassembles GUICanCracker to recover CAN bit-layout
+unicorn>=2.1.0   # vapi_emu: RUNS GUICanCracker, so decoding needs no layout at all

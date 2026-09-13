@@ -134,6 +134,21 @@ class TestEncode:
                       input={"V": _fs(16, 0, data_type="int")})
         assert encode_request(sub, {"V": -1}) == b"\xff\xff"
 
+    def test_negative_on_a_uint_field_wraps_to_twos_complement(self):
+        # ROTOR_LEARNING's ROTOR_TEMPERATURE is typed uint in the ODJ but the DIR
+        # learn script sends a signed degC (-40); the ECU reads it as two's
+        # complement, so -40 must pack as 0xD8, not raise OverflowError.
+        sub = SubSpec(security_level=0, input_size=2, output_size=0, output={},
+                      input={"LEARN_SELECT": _fs(8, 0, data_type="uint"),
+                             "ROTOR_TEMPERATURE": _fs(8, 1, data_type="uint")})
+        assert encode_request(sub, {"LEARN_SELECT": 1, "ROTOR_TEMPERATURE": -40}) \
+            == b"\x01\xd8"
+
+    def test_a_non_negative_uint_is_unchanged(self):
+        sub = SubSpec(security_level=0, input_size=1, output_size=0, output={},
+                      input={"T": _fs(8, 0, data_type="uint")})
+        assert encode_request(sub, {"T": 25}) == b"\x19"
+
     def test_sub_byte_bitfield(self):
         sub = SubSpec(security_level=0, input_size=1, output_size=0, output={},
                       input={"FLAG": _fs(1, 0, 4, "uint")})

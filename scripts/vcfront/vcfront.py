@@ -2,7 +2,8 @@
 """VCFRONT node — front vehicle controller: vehicle status + LV power state.
 
 vcfrontMIA (DIR a155) is an aggregate over SEVEN frames: {0x221, 0x241, 0x321, 0x3A1,
-0x102, 0x3C2} here + 0x103 (VCRIGHT_doorStatus, sourced by the VCRIGHT node). The aggregate
+0x102} here + 0x103 (VCRIGHT_doorStatus, VCRIGHT node) + 0x3C2 (VCLEFT_switchStatus, VCLEFT
+node -- the shared brake-switch line lives there now). The aggregate
 clears only when every member arrives with a valid checksum + counter (0x3A1 / 0x221) or DLC8
 (the plain ones). 0x2E1 is NOT a member, but it and 0x102 carry status codes the DIR chassis
 hold/roll FSM gates on (must be 2, not 0); see _vcfront_0x102 / _vcfront_status_0x2e1.
@@ -12,7 +13,7 @@ driver sets ``power`` (off|accessory|conditioning|drive) via ``set_lv``.
 """
 from __future__ import annotations
 
-from sim_core import Node, SimFrame, zeros
+from sim_core import BASELINE_FW, Node, SimFrame, zeros
 from tesla_frames import VEHICLE_POWER_STATE, LvPowerState, pack_le
 
 
@@ -44,9 +45,6 @@ class Vcfront(Node):
         # 12vStatusForDrive (0x3A1) — the DI/DIR drive-start LV gate. Independent of charging:
         # the bench LV supply is healthy, so default READY. Set False to exercise the deny path.
         self.lv_ready_for_drive = True
-        # Physical brake-switch line as the VC sees it (0x3C2). Must match what the DI reads on
-        # its own GPIO, or DI_brakePedalState goes INVALID -- see _vcleft_switch_status.
-        self.brake_switch_pressed = False
         # Reactive inputs observed on the bus (see on_rx): user charge request + EVSE present.
         self._ui_charge_req = False
         self._cp_evse = False
@@ -58,7 +56,6 @@ class Vcfront(Node):
             SimFrame("VCFRONT_coolant", 0x241, 0.100, zeros(7)),
             SimFrame("VCFRONT_sensors", 0x321, 0.100, _vcfront_sensors, 52, 56),  # 2022 DIR gates 0x321: cksum@byte7 + ctr@byte6[4:7] (magic 0x24)
             SimFrame("VCFRONT_0x102", 0x102, 0.100, _vcfront_0x102),
-            SimFrame("VCLEFT_switchStatus", 0x3C2, 0.050, self._vcleft_switch_status),  # a155 member
             SimFrame("VCFRONT_LVPowerState", 0x221, 0.050, self.lv.frame),
         ]
 
@@ -88,6 +85,31 @@ class Vcfront(Node):
             sigs.append((0, 1, 1))  # VCFRONT_bmsHvChargeEnable = 1
         return pack_le(sigs)
 
+    def _frames_2026(self) -> list[SimFrame]:
+        # 2026.8.3 RESEEDS the 0x3A1 checksum magic: 0xA4 (2020) -> 0x2A (2022+) -> 0xC0 (2026).
+        # Read out of the DIR's 0x3A1 check in each revision (2022 gives 0x2A, matching
+        # tesla_frames.magic()'s existing special case; 2026 gives 0xC0). Every other gated
+        # frame's seed is still id_lo+id_hi in 2026 --
+        # checked all 17, only 0x3A1 and 0x25B deviate.
+        #
+        # This one is easy to miss and expensive: a wrong seed fails the validator, the handler
+        # returns the same 0 as a DLC mismatch, and 0x3A1 is a vcfrontMIA (a155) member -- so the
+        # symptom is an MIA on a frame that looks perfectly healthy on the wire.
+        #
+        # 0x221 and 0x321 also became gated / stayed gated in 2026, but both keep magic
+        # id_lo+id_hi (0x23 / 0x24) and already carry counter+checksum, so they are unchanged.
+        return [
+            SimFrame(
+                "VCFRONT_vehicleStatus", 0x3A1, 0.050, self._vehicle_status, 52, 56,
+                cksum_magic=0xC0,
+            )
+            if f.can_id == 0x3A1 else f
+            for f in self.frames()
+        ]
+
+    def fw_variants(self):
+        return {BASELINE_FW: self.frames, "2026.8.3": self._frames_2026}
+
     def set_lv(self, state: str) -> int:
         """Driver externality: VCFRONT_vehiclePowerState (off|accessory|conditioning|drive)."""
         key = str(state).strip().lower()
@@ -116,9 +138,6 @@ class Vcfront(Node):
         rd = s.pop("lv_ready_for_drive", None)
         if rd is not None:
             self.set_lv_ready_for_drive(rd)
-        bs = s.pop("brake_switch_pressed", None)
-        if bs is not None:
-            self.brake_switch_pressed = bool(bs)
         super().configure(**s)
 
     def rx_handlers(self):

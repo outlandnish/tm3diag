@@ -87,7 +87,7 @@ from tesla_frames import (  # noqa: E402
 
 import config as _cfg  # noqa: E402
 import ecu_bench  # noqa: E402
-from can_decoder import CanDatabase  # noqa: E402
+from can_decoder import default_db  # noqa: E402
 from uds_local.security_provider import (  # noqa: E402
     Keystore,
     resolve_di_key,
@@ -168,7 +168,7 @@ def _parse_set_overrides(spec: str | None) -> dict[int, list[tuple[int, int, int
 def _start_control_server(controller, port: int) -> ThreadingHTTPServer:
     """Tiny stdlib HTTP server so tm3web can push new command states into the sim.
 
-    POST /cmd {"type":"gear"|"lv"|"ui"|"carconfig", ...}; GET /state (commanded state);
+    POST /cmd {"type":"gear"|"lv"|"ui"|"carconfig"|"brake", ...}; GET /state (commanded state);
     GET /carconfig (the GTW schema for the dashboard editor). Runs in a daemon thread.
     """
 
@@ -208,6 +208,8 @@ def _start_control_server(controller, port: int) -> ThreadingHTTPServer:
                     v = controller.set_ui(cmd["field"], cmd["value"])
                 elif t == "carconfig":
                     v = controller.set_carconfig(cmd["signal"], cmd["value"])
+                elif t == "brake":
+                    v = controller.brake(cmd["pressed"], cmd.get("pressure"))
                 else:
                     return self._send(400, {"error": f"unknown command type {t!r}"})
             except (KeyError, ValueError) as e:
@@ -240,6 +242,29 @@ class _ControlFacade:
     def set_carconfig(self, signal, value):
         return self._n["GTW"].set_carconfig(signal, value)
 
+    def brake(self, pressed, pressure=None):
+        """Fan a brake-pedal press out to every brake-reporting node: ESP 0x145 + IBST 0x39D
+        CAN posture and the VCLEFT 0x3C2 physical switch line (a real press asserts all three).
+        Optional pressure (0-100%) is forwarded to the CAN-posture nodes for later use."""
+        posture = "applied" if pressed else "released"
+        touched = []
+        # Drive the virtual DI's wired switch too (if simulated): it broadcasts 0x1D6, which the
+        # peers mirror -- so the toggle and the mirror agree. On a real-DIR bench DI is absent and
+        # the real unit sources 0x1D6; the direct peer sets below still apply.
+        if "DI" in self._n:
+            self._n["DI"].set_brake_switch(pressed)
+            touched.append("DI")
+        for name in ("ESP", "IBST"):
+            if name in self._n:
+                self._n[name].set_brake(posture, pressure=pressure)
+                touched.append(name)
+        if "VCLEFT" in self._n:
+            self._n["VCLEFT"].set_brake_switch(pressed)
+            touched.append("VCLEFT")
+        if not touched:
+            raise KeyError("no brake-capable node selected (ESP/IBST/VCLEFT)")
+        return {"pressed": bool(pressed), "pressure": pressure, "nodes": touched}
+
     @property
     def carcfg(self):
         return self._n["GTW"].carcfg
@@ -248,6 +273,17 @@ class _ControlFacade:
         n = self._n
         uicfg = n["UI"].uicfg if "UI" in n else None
         lv_vps = n["VCFRONT"].lv.vps if "VCFRONT" in n else None
+        # Brake: the physical switch (VCLEFT) is the canonical toggle state; fall back to the
+        # ESP/IBST CAN posture if VCLEFT isn't selected.
+        esp = n.get("ESP")
+        vcl = n.get("VCLEFT")
+        brake_nodes = [x for x in (esp, n.get("IBST"), vcl) if x is not None]
+        if vcl is not None:
+            brake_pressed = vcl.brake_switch_pressed
+        elif brake_nodes:
+            brake_pressed = brake_nodes[0].brake == "applied"
+        else:
+            brake_pressed = None
         return {
             "commanded_gear": n["SCCM"].last_gear_cmd if "SCCM" in n else None,
             "lv_state": next((k for k, v in _VEHICLE_POWER_STATE.items() if v == lv_vps), None),
@@ -257,6 +293,9 @@ class _ControlFacade:
                 f: {"label": s["label"], "options": s["options"]} for f, s in UI_SETTINGS.items()
             },
             "epb_status": n["EPB"].epb.status if "EPB" in n else None,
+            "brake_pressed": brake_pressed,
+            "brake_pressure": esp.brake_pressure if esp is not None else None,
+            "brake_controllable": bool(brake_nodes),
         }
 
 
@@ -505,7 +544,7 @@ def main() -> None:
         except ValueError as e:
             p.error(str(e))
         print(f"firmware target: {_fw_label(list_fw)}")
-        ctx = sim_core.NodeContext(db=CanDatabase())
+        ctx = sim_core.NodeContext(db=default_db())
         for node in sim_registry.instantiate(sim_registry.NODES, ctx):
             fr = node.frames_for(list_fw)
             ids = (
@@ -534,7 +573,7 @@ def main() -> None:
 
     # One CAN DB + node context. Each selected node OWNS its state (gear stalk, UI, LV, EPB,
     # car-config, immobilizer); the driver seeds the drive scenario + externalities below.
-    db = CanDatabase()
+    db = default_db()
     ctx = sim_core.NodeContext(db=db)
 
     # Top-level bench config (TOML): [nodes] sim/real selection + [bus] id->bus overrides.
@@ -575,7 +614,9 @@ def main() -> None:
     else:
         sim_names = list(bench.sim) if bench.sim else None
     try:
-        node_classes = sim_registry.select_nodes(sim=sim_names, real=sorted(real_names))
+        node_classes = sim_registry.select_nodes(
+            sim=sim_names, real=sorted(real_names), absent=sorted(bench.absent)
+        )
     except ValueError as e:
         p.error(str(e))
 

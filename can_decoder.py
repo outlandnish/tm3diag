@@ -10,6 +10,75 @@ import config as _cfg
 from decode_bin import load_json as _load_json
 
 _ETH_COMPACT = _cfg.ETH_COMPACT
+_FALLBACK_WARNED = False
+
+
+def _build_vapi_db(vapi: Path, candata: Path, layouts: Path | None) -> CanDatabase:
+    """Construct the shim. Kept separate so an absent unicorn (ImportError) is
+    distinguishable from a library that will not load, and so this is a seam a
+    test can stand in for without a 14 MB firmware image."""
+    import vapi_emu
+    return vapi_emu.VapiDatabase.build(vapi, candata, layouts)
+
+
+def _vapi_db() -> CanDatabase | None:
+    """The firmware's own decoder, when this machine can actually run it.
+
+    Needs two things: the firmware .so pair and unicorn. NOT a DBC -- the
+    catalog in ``libQtCarCANData`` carries every name, unit, enum table and node
+    the decode path renders, so no build step stands between a firmware
+    extraction and a full database. A layout source is layered on when there is
+    one (the generated DBC, else the stripped compact.json) purely for
+    ``encode_frame`` and for decoding a frame whose emulation faulted, because
+    crackMessage only runs one way. ``TM3_VAPI=0`` forces the layout path, which
+    is how the two are A/B'd against each other.
+    """
+    if not _cfg.VAPI_ENABLED:
+        return None
+    libs = _cfg.vapi_libs()
+    if libs is None:
+        return None
+    try:
+        return _build_vapi_db(libs[0], libs[1], _cfg.ETH_DBC or _ETH_COMPACT)
+    except ImportError:
+        return None                        # no unicorn installed: not an error
+    except Exception as exc:
+        warnings.warn(
+            f"the VAPI decoder ({libs[0].name}) would not load ({exc}); "
+            "decoding from the recovered layouts instead", stacklevel=3)
+        return None
+
+
+def default_db() -> CanDatabase:
+    """The signal database every tm3diag tool should use.
+
+    Three sources, best first:
+
+    1. ``VapiDatabase`` -- the MCU's OWN decoder, run under emulation. Ground
+       truth by construction: no layout is modelled, so nothing can be modelled
+       wrong. Needs the firmware libs and unicorn (see vapi_emu).
+    2. The generated same-revision DBC (``config.ETH_DBC``), which covers the
+       whole catalog the MCU knows -- 2022.45.15: 446 messages / 26227 signals
+       -- with the bit-layout recovered from that firmware's own decoder.
+    3. ``Model3_ETH.compact.json``, only the subset Tesla ships to the
+       diagnostic tool (140 / 347), and it shrinks every release, so a tool on
+       this fallback silently cannot see most of the bus. Warned, not silent.
+    """
+    global _FALLBACK_WARNED
+    vapi = _vapi_db()
+    if vapi is not None:
+        return vapi
+    if _cfg.ETH_DBC:
+        return CanDatabase.from_dbc(_cfg.ETH_DBC)
+    if not _FALLBACK_WARNED:
+        _FALLBACK_WARNED = True
+        warnings.warn(
+            "no generated DBC found (config.ETH_DBC); falling back to the "
+            "stripped compact.json, which covers a fraction of the catalog. "
+            "Build the full database with:  python candata_to_dbc.py dbc "
+            "<fw>/usr/tesla/UI/lib/libQtCarCANData.so.1.0.0",
+            stacklevel=2)
+    return CanDatabase()
 
 
 def _warn_extended_mux(msg_name: str, sig_name: str, mux_ids: list) -> None:
@@ -157,17 +226,16 @@ class CanDatabase:
     """Parsed representation of a compact JSON or DBC CAN database."""
 
     def __init__(self, path: Path | None = _ETH_COMPACT) -> None:
+        # No compact JSON configured -> empty DB (a DBC can be supplied via from_dbc()).
+        # _load_json auto-decrypts an encrypted .bin twin (Model3_ETH.compact.json.bin).
+        self._ingest({"messages": {}} if path is None else _load_json(Path(path)))
+
+    def _ingest(self, raw: dict[str, Any]) -> None:
+        """Populate from a compact-schema dict -- a file, or a catalog read out of the
+        firmware (vapi_emu.VapiDatabase)."""
         self.messages: dict[int, dict[str, Any]] = {}  # msg_id -> msg
         self._by_node: dict[str, list[int]] = {}
         self._cantools_db = None
-
-        # No compact JSON configured -> empty DB (callers still work; a DBC can be
-        # supplied via CanDatabase.from_dbc(); decoding just names nothing).
-        if path is None:
-            return
-
-        # _load_json auto-decrypts an encrypted .bin twin (Model3_ETH.compact.json.bin).
-        raw = _load_json(Path(path))
 
         for name, msg in raw["messages"].items():
             mid = msg["message_id"]

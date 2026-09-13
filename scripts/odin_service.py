@@ -5,7 +5,9 @@ Thin layer over the engine (odin_runner) + coverage (odin_coverage) returning
 JSON-friendly data, so the odin_runner CLI and tm3web share one core.
 
   * list_procedures(...)  -> [{basename, name, title, principals, valid_states,
-                               description, runnable, missing_types, has_dynamic}]
+                               description, user_facing_impact, additional_info,
+                               gtw_diag_level, cancelable, post_fusing_allowed,
+                               runnable, missing_types, has_dynamic}]
     Uses odin_coverage to decide runnable-now; pulls metadata off each entry proc's
     comments.TaskInfo node.
 
@@ -26,6 +28,7 @@ from pathlib import Path
 
 import odin_coverage
 import odin_runner
+import odin_script_api
 
 DEFAULT_ENTRIES = "Model3/tasks"
 
@@ -78,18 +81,112 @@ def _as_list(v) -> list:
 def _proc_meta(info: dict | None) -> dict:
     """Extract the human/precondition fields off a comments.TaskInfo node."""
     if not info:
-        return {"title": None, "principals": [], "valid_states": [], "description": None}
+        return {"title": None, "principals": [], "valid_states": [], "description": None,
+                "user_facing_impact": None, "additional_info": None,
+                "gtw_diag_level": [], "cancelable": None, "post_fusing_allowed": None}
     title = _unwrap(info.get("title"))
     desc = _unwrap(info.get("description"))
+    impact = _unwrap(info.get("user_facing_impact"))
+    extra = _unwrap(info.get("additional_info"))
+    cancelable = _unwrap(info.get("cancelable"))
+    post_fusing = _unwrap(info.get("post_fusing_allowed"))
     return {
         "title": title if isinstance(title, str) and title else None,
         "principals": _as_list(_unwrap(info.get("principals"))),
         "valid_states": _as_list(_unwrap(info.get("valid_states"))),
         "description": desc if isinstance(desc, str) and desc else None,
+        # The operator-facing "what will physically happen" warning (e.g. "Axles
+        # and wheels will physically rotate"); shown in the picker before a run.
+        "user_facing_impact": impact if isinstance(impact, str) and impact else None,
+        # Free-form extra note some procedures carry (e.g. "Returns pass if target
+        # is fused."); shown alongside the description.
+        "additional_info": extra if isinstance(extra, str) and extra else None,
+        # Bench preconditions/flags some procedures declare. `gtw_diag_level` is the
+        # gateway diagnostic level(s) the proc needs; the two bools are None when the
+        # proc doesn't declare them (so the UI can tell "not set" from "false").
+        "gtw_diag_level": _as_list(_unwrap(info.get("gtw_diag_level"))),
+        "cancelable": bool(cancelable) if cancelable is not None else None,
+        "post_fusing_allowed": bool(post_fusing) if post_fusing is not None else None,
     }
 
 
 # discovery
+# Trees a vehicle LAYERS ON, rather than vehicles in their own right. Measured,
+# not assumed: Model3's own tasks reference Gen3/ 432 times and Common/ 84, so a
+# vehicle tree is a thin specialisation over these. Anything else carrying
+# tasks/ is a vehicle. If a bundle has neither, a vehicle simply stands alone.
+_SHARED_TREES = ("Gen3", "Common")
+# Carries entries but is not a car and is not layered onto one: 6 sample graphs.
+_NOT_A_CAR = (*_SHARED_TREES, "Tutorials")
+
+
+def list_trees(*, bundle=None) -> list[str]:
+    """Every tree in the bundle holding entry procedures.
+
+    A tree qualifies by having a ``tasks/`` dir; one with only ``lib/`` is
+    pulled in by reference and is never an entry point. On 2022.45.15:
+    ``Common 212, Gen3 625, Model3 569, ModelY 49, Tutorials 6``.
+    """
+    bundle = _resolve_bundle(bundle)
+    return sorted(p.name for p in bundle.iterdir()
+                  if p.is_dir() and (p / "tasks").is_dir())
+
+
+def list_vehicles(*, bundle=None) -> list[str]:
+    """The trees that name a car, e.g. ``["Model3", "ModelY"]``."""
+    return [t for t in list_trees(bundle=bundle) if t not in _NOT_A_CAR]
+
+
+def trees_for(vehicle: str, *, bundle=None) -> list[str]:
+    """The trees a vehicle draws procedures from, most specific first."""
+    present = set(list_trees(bundle=bundle))
+    return [vehicle] + [t for t in _SHARED_TREES if t in present]
+
+
+def default_vehicle(*, bundle=None) -> str:
+    """The vehicle to show first: TM3_PRODUCT when the bundle has it, else
+    Model3, else whatever comes first."""
+    try:
+        found = list_vehicles(bundle=bundle)
+    except (ValueError, OSError):
+        return DEFAULT_ENTRIES.split("/")[0]
+    import config
+    for cand in (getattr(config, "PRODUCT", None), "Model3"):
+        if cand and cand in found:
+            return cand
+    return found[0] if found else DEFAULT_ENTRIES.split("/")[0]
+
+
+def list_procedures_for(vehicle: str, *, bundle=None,
+                        runnable_only: bool = True) -> list[dict]:
+    """Every procedure ``vehicle`` can run: its own tree plus the shared ones.
+
+    A task NAME appearing in more than one tree resolves to the most specific --
+    Model3 and Gen3 share 217 names on 2022.45.15 and 172 of them DIFFER, so
+    which one wins is not cosmetic. Each entry carries the ``tree`` it came from.
+
+    Runnability is filtered AFTER that choice, so a blocked procedure does not
+    silently fall through to a different tree's version of the same name.
+    """
+    seen: dict[str, dict] = {}
+    for i, tree in enumerate(trees_for(vehicle, bundle=bundle)):
+        try:
+            procs = list_procedures(bundle=bundle, entries=f"{tree}/tasks",
+                                    runnable_only=False)
+        except FileNotFoundError:
+            # The SHARED trees are optional -- a bundle need not carry Gen3 or
+            # Common. The car's own tree (first) is not: without this, an unknown
+            # vehicle would quietly return the shared procedures instead of
+            # saying it does not exist.
+            if i == 0:
+                raise
+            continue
+        for p in procs:
+            seen.setdefault(p["name"], {**p, "tree": tree})
+    out = sorted(seen.values(), key=lambda p: p["name"])
+    return [p for p in out if p["runnable"]] if runnable_only else out
+
+
 def list_procedures(
     *, bundle=None, entries: str = DEFAULT_ENTRIES, runnable_only: bool = True
 ) -> list[dict]:
@@ -102,13 +199,28 @@ def list_procedures(
     bundle = _resolve_bundle(bundle)
     handled = odin_coverage.handled_types()
     entry_dir = bundle / entries
+    if not entry_dir.is_dir():
+        # Globbing a missing dir yields nothing, so a typo (or a platform this
+        # bundle does not carry) would read as "no procedures here" instead of
+        # "wrong place".
+        raise FileNotFoundError(f"no entries dir in the bundle: {entries}")
     out: list[dict] = []
     for f in sorted(entry_dir.glob("*.py")):
         relbase = f"{entries}/{f.stem}"
         types: collections.Counter = collections.Counter()
         missing_files: set = set()
         dynamic: list = []
-        odin_coverage.collect(bundle, relbase, set(), types, missing_files, dynamic)
+        flashes = []
+
+        def note_flash(source, _relbase, _inputs, _found=flashes):
+            # Riding the same descent the coverage counter uses: a procedure
+            # that reaches the MCU's flasher writes firmware, and the UI has to
+            # know that BEFORE offering to run it.
+            if "smashclicker" in source:
+                _found.append(True)
+
+        odin_coverage.collect(bundle, relbase, set(), types, missing_files, dynamic,
+                              script_visit=note_flash)
         missing = sorted(t for t in types if t not in handled)
         runnable = not missing
         if runnable_only and not runnable:
@@ -122,6 +234,7 @@ def list_procedures(
                 "runnable": runnable,
                 "missing_types": missing,
                 "has_dynamic": bool(dynamic),
+                "flashes": bool(flashes),
                 **meta,
             }
         )
@@ -164,6 +277,50 @@ def _lit_str(node: dict, key: str) -> str | None:
     return v if isinstance(v, str) and v else None
 
 
+def _resolved_str(graph: dict, node: dict, key: str, inputs: dict) -> str | None:
+    """`_lit_str`, but following resolvable connections first (see
+    odin_coverage.resolve_field, which the descent itself uses too)."""
+    v = odin_coverage.resolve_field(graph, node.get(key), inputs)
+    return v if isinstance(v, str) and v else None
+
+
+def flash_targets(basename: str, *, bundle=None) -> dict | None:
+    """What this procedure would FLASH, or None if it flashes nothing.
+
+    The 55 UPDATE_* procedures all end at Gen3/scripts/UPDATE_MODULE, which
+    shells out to the MCU's flasher with the component lists their task bound:
+    UPDATE_PMR binds update_list ['pmr','dir'], hwidacq_list ['pmr'],
+    node_to_lock 'PMR'. Reading them statically is what lets a caller show the
+    operator what is about to be written BEFORE the run starts, rather than
+    announcing it once the first image is already going down the wire.
+    """
+    bundle = _resolve_bundle(bundle)
+    if not (bundle / (basename + ".py")).exists():
+        raise FileNotFoundError(f"no such procedure: {basename}")
+    found: dict = {}
+
+    def script_visit(source, relbase, inputs):
+        # UPDATE_MODULE is the only script that drives the flasher; it takes the
+        # lists as parameters, so the caller's bindings ARE the answer.
+        if "smashclicker" not in source or found:
+            return
+        update = inputs.get("update_component_list")
+        if not update:
+            return
+        found.update({
+            "script": relbase,
+            "update": [str(c) for c in update],
+            "hwidacq": [str(c) for c in (inputs.get("hwidacq_component_list") or [])],
+            "node_to_lock": inputs.get("node_to_lock"),
+            "power_state": inputs.get("power_state"),
+            "bootloader_update": bool(inputs.get("bootloader_update")),
+        })
+
+    odin_coverage.collect(bundle, basename, set(), collections.Counter(), set(), [],
+                          script_visit=script_visit)
+    return found or None
+
+
 def procedure_requirements(basename: str, *, bundle=None) -> dict:
     """Statically list what an ODIN procedure expects on the bus before it runs, transitive
     over the proc's whole graph:
@@ -194,40 +351,46 @@ def procedure_requirements(basename: str, *, bundle=None) -> dict:
     power_states: list = []
     counters = {"dynamic": 0}      # CAN reads with a connection-sourced signal name
 
-    def visit(name, node, relbase):
+    def visit(name, node, relbase, graph, inputs):
         t = node.get("type")
+
+        def lit(key):
+            """The field's static value, following a resolvable connection (and
+            the literal the caller bound) before falling back to its default."""
+            return _resolved_str(graph, node, key, inputs)
+
         if t in _CAN_READ_KINDS:
-            sig = _lit_str(node, "signal_name")
+            sig = lit("signal_name")
             if sig is None:
-                counters["dynamic"] += 1   # connection-sourced (or missing) signal name
+                counters["dynamic"] += 1   # a loop item / run-time variable
                 return
-            bus = _lit_str(node, "bus_name") or default_bus
+            bus = lit("bus_name") or default_bus
             key = (bus, sig, _CAN_READ_KINDS[t])
             if key not in seen_sig:
                 seen_sig.add(key)
                 signals.setdefault(bus, []).append({"signal": sig, "kind": _CAN_READ_KINDS[t]})
         elif t == "can.ActiveAlerts":
-            key = (_lit_str(node, "bus_name"), _lit_str(node, "prefix"))
+            key = (lit("bus_name"), lit("prefix"))
             if key not in seen_alert:
                 seen_alert.add(key)
                 alerts.append({"bus": key[0], "prefix": key[1]})
         elif t and (t.startswith("odx.") or t.startswith("uds.")):
-            nn = _lit_str(node, "node_name")
+            nn = lit("node_name")
             if nn:
                 nodes.add(nn)
         elif t == "vehiclecontrols.EnsureApplicationState":
-            nn = _lit_str(node, "node_name")
+            nn = lit("node_name")
             if nn:
                 nodes.add(nn)
-            st = _lit_str(node, "application_state")
+            st = lit("application_state")
             if st and st not in app_states:
                 app_states.append(st)
         elif t in ("vehiclecontrols.PowerContext", "vehiclecontrols.EnsurePowerState"):
-            st = _lit_str(node, "power_state")
+            st = lit("power_state")
             if st and st not in power_states:
                 power_states.append(st)
         elif t in _CID_READ_DATANAME:
-            dn = _lit_str(node, "data_name")
+            dn = lit("data_name")
             if dn:
                 cid_values.add(dn)
         elif t == "cid.ListDataValues":
@@ -236,7 +399,32 @@ def procedure_requirements(basename: str, *, bundle=None) -> dict:
                 if isinstance(n, str) and n:
                     cid_values.add(n)
 
-    odin_coverage.collect(bundle, basename, set(), collections.Counter(), set(), [], visit=visit)
+    def script_visit(source, relbase, inputs):
+        """Same gathering for a NATIVE SCRIPT in the descent: it has no nodes, so
+        its requirements come from the api calls it makes (odin_script_api),
+        read against the literals its caller bound."""
+        req = odin_script_api.script_requirements(source, inputs)
+        for sig, bus, kind in req["signals"]:
+            bus = bus or default_bus
+            if (bus, sig, kind) not in seen_sig:
+                seen_sig.add((bus, sig, kind))
+                signals.setdefault(bus, []).append({"signal": sig, "kind": kind})
+        for bus, prefix in req["alerts"]:
+            if (bus, prefix) not in seen_alert:
+                seen_alert.add((bus, prefix))
+                alerts.append({"bus": bus, "prefix": prefix})
+        nodes.update(req["nodes"])
+        cid_values.update(req["cid_values"])
+        for st in req["app_states"]:
+            if st not in app_states:
+                app_states.append(st)
+        for st in req["power_states"]:
+            if st not in power_states:
+                power_states.append(st)
+        counters["dynamic"] += req["dynamic"]
+
+    odin_coverage.collect(bundle, basename, set(), collections.Counter(), set(), [],
+                          visit=visit, script_visit=script_visit)
 
     net = _load_network(entry)
     valid_states = _proc_meta(_task_info(net) if net else None)["valid_states"]
@@ -280,6 +468,49 @@ def _resolve_backend(backend, *, scenario, channel, interface):
     raise ValueError(f"unknown backend {backend!r}: use 'mock', 'bench', or a Backend instance")
 
 
+def flash_preflight(
+    basename: str, *, backend="mock", bundle=None, channel=None, interface=None,
+    scenario: str = "success", conditions=None, allow_flash=None,
+    include_bootloaders=None, ramapps=None,
+) -> dict:
+    """Resolve what `basename` would flash WITHOUT writing anything.
+
+    Reads the ECU's identity and matches it against the signed metadata, so the
+    operator sees the actual images -- and the car config that chose them --
+    before the run starts. `flashes: False` means the procedure touches no
+    firmware and needs no preflight at all.
+
+    `allow_flash` declares whether this bench is armed. It is reported, never
+    acted on -- nothing here writes -- but the preview must answer for the SAME
+    arming the run will use, or it reports an unarmed bench for an armed one and
+    the operator can never confirm. When `backend` is a name rather than an
+    instance, this is the only place that arming can be applied at all.
+    """
+    bundle = _resolve_bundle(bundle)
+    targets = flash_targets(basename, bundle=bundle)
+    if targets is None:
+        return {"basename": basename, "flashes": False}
+
+    be, owns = _resolve_backend(backend, scenario=scenario, channel=channel,
+                               interface=interface)
+    try:
+        if conditions is not None and hasattr(be, "conditions"):
+            be.conditions = dict(conditions)
+        if allow_flash is not None and hasattr(be, "allow_flash"):
+            be.allow_flash = bool(allow_flash)
+        if include_bootloaders is not None and hasattr(be, "include_bootloaders"):
+            be.include_bootloaders = bool(include_bootloaders)
+        if ramapps is not None and hasattr(be, "ramapps"):
+            be.ramapps = str(ramapps)
+        plan = be.flash_preview(update=targets["update"],
+                                hwidacq=targets["hwidacq"])
+    finally:
+        if owns:
+            with contextlib.suppress(Exception):
+                be.close()
+    return {"basename": basename, "flashes": True, **targets, **plan}
+
+
 def _result_dict(basename: str, result: odin_runner.RunResult) -> dict:
     return {
         "basename": basename,
@@ -301,6 +532,8 @@ def run_procedure(
     on_event=None,
     verbose: bool = False,
     time_scale=None,
+    cid_values=None,
+    on_engine=None,
 ) -> dict:
     """Run one ODIN procedure and return its RunResult as a JSON-friendly dict
     ({basename, exit_code, passed, metrics, outputs}).
@@ -308,12 +541,22 @@ def run_procedure(
     backend: a odin_runner.Backend instance, or 'mock'/'bench' (bench needs channel).
     on_event(kind, payload) streams 'trace'/'metric' events and a final 'done'/'error'.
     time_scale defaults to real timings on the bench, instant otherwise.
+
+    cid_values seeds the CID data-value store before the run -- what the bus cannot
+    tell us (e.g. GUI_isFused for cid.IsFused).
+
+    on_engine(engine) is called once with the live Engine before it starts, so a
+    caller on another thread can stop it (engine.request_cancel).
     """
     bundle = _resolve_bundle(bundle)
     be, owns = _resolve_backend(backend, scenario=scenario, channel=channel, interface=interface)
+    for key, value in (cid_values or {}).items():
+        be.cid_set(key, value)
     if time_scale is None:
         time_scale = 1.0 if isinstance(be, odin_runner.BenchBackend) else 0.0
     eng = odin_runner.Engine(be, bundle, verbose=verbose, time_scale=time_scale, on_event=on_event)
+    if on_engine is not None:
+        on_engine(eng)          # hand the caller a cancel handle for this run
     try:
         result = eng.run_procedure(basename)
     except Exception as e:  # noqa: BLE001  (surface the failure to a streaming caller)

@@ -14,6 +14,7 @@ dlc verbatim. Payloads are skeleton (all-zero). Bus defaults to vehicle.
 from __future__ import annotations
 
 from sim_core import Node, SimFrame, zeros
+from tesla_frames import DI_BRAKE_SWITCH_BIT, DI_BRAKE_SWITCH_ID, pack_le
 
 # name, arbitration id, period (s), dlc  -- originNode=di, send_type=Cyclic
 _FRAMES = [
@@ -37,8 +38,31 @@ _FRAMES = [
 class Di(Node):
     name = "DI"
 
+    def __init__(self, ctx=None) -> None:
+        super().__init__(ctx)
+        # The DI's own hardwired brake switch. Broadcast on 0x1D6 bit33; peers
+        # mirror it into the brake vote (see tesla_frames.di_brake_switch_pressed). On a bench
+        # with a real DIR/PMR the real unit sources 0x1D6 -- this models the virtual-car case.
+        self.brake_switch_pressed = False
+
     def frames(self) -> list[SimFrame]:
-        return [SimFrame(n, i, p, zeros(d)) for n, i, p, d in _FRAMES]
+        fr = [SimFrame(n, i, p, zeros(d)) for n, i, p, d in _FRAMES]
+        fr.append(SimFrame("DI_brakeSwitch", DI_BRAKE_SWITCH_ID, 0.100, self._brake_switch_line))
+        return fr
+
+    def _brake_switch_line(self) -> bytearray:  # 0x1D6, bit33 = wired brake switch (1=pressed)
+        return pack_le([(DI_BRAKE_SWITCH_BIT, 1, int(self.brake_switch_pressed))], 8)
+
+    def set_brake_switch(self, on: bool) -> bool:
+        """Driver externality: the DI's hardwired brake switch (broadcast on 0x1D6 bit33)."""
+        self.brake_switch_pressed = bool(on)
+        return self.brake_switch_pressed
+
+    def configure(self, **s) -> None:  # brake_switch_pressed
+        bs = s.pop("brake_switch_pressed", None)
+        if bs is not None:
+            self.set_brake_switch(bs)
+        super().configure(**s)
 
 
 # DI_systemStatus (0x118) decode. Enum labels + bit overlay for signals Tesla stripped from
@@ -63,13 +87,5 @@ DI_SYS_LABELS = {
     5: "ENABLE",
 }
 DI_HVIL_LABELS = {0: "DISABLED", 1: "STG1", 2: "CLOSED", 3: "SNA"}
-
-# name -> (start_bit, width). LITTLE-endian, start=LSB. DI_accelPedalPos scale 0.4 %, 255=SNA.
-_DI_0X118_RECOVERED = {
-    "DI_systemState": (16, 3),
-    "DI_immobilizerState": (27, 3),
-    "DI_accelPedalPos": (32, 8),
-}
-
 
 NODE = Di

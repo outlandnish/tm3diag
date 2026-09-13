@@ -20,6 +20,7 @@ import collections
 from pathlib import Path
 
 import odin_runner
+import odin_script_api
 
 # structural types handled outside the _ctrl_/_data_ dispatch, or non-executable
 _STRUCTURAL = {"networks.Enter", "comments.TaskInfo", "networks.Output"}
@@ -28,6 +29,7 @@ _SUBNET_TYPES = {
     "networks.ReferencedSubnetwork",
     "networks.DynamicallyReferencedSubnetwork",
     "scripts.RunScriptTest",
+    "scripts.ScriptTest",
 }
 # networks.Subnetwork is an INLINE subgraph: its inner nodes live under non-reserved
 # keys of the node dict (not as a separate file). These keys are structural, not nodes.
@@ -41,8 +43,9 @@ _INTEROP_MODS = {"uds", "odx", "cid", "can", "vehiclecontrols", "lin", "isotp",
 
 
 def handled_types() -> set[str]:
-    """Node types odin_runner.Engine can currently execute."""
-    out = set(_STRUCTURAL)
+    """Node types odin_runner.Engine can currently execute, plus the `api.*`
+    capabilities odin_script_api gives a native script."""
+    out = set(_STRUCTURAL) | odin_script_api.supported()
     for attr in dir(odin_runner.Engine):
         for pre in ("_ctrl_", "_data_"):
             if attr.startswith(pre):
@@ -67,12 +70,108 @@ def _basename(node: dict) -> str | None:
     return None
 
 
+# A connection can still be statically knowable: these node types compute from
+# their own fields, so following one back yields a value. Anything else -- a loop
+# item, a graph variable set at run time -- stays DYNAMIC, which is what keeps a
+# static readout an honest lower bound instead of a guess.
+DYNAMIC = object()
+_RESOLVE_DEPTH = 8
+
+
+def resolve_field(graph: dict, field, inputs: dict, depth: int = 0):
+    """Best static value of a node input field, following connections.
+
+    The shared libs are written once and parameterised: DI_RESOLVER_LEARNING's
+    UDS node_name is `{'connection': 'node_name.value', 'value': 'DIR'}` and its
+    CAN signal_name is a strings.Concat of that input with '_axleSpeed'. Read
+    field-locally, the front task reports the REAR unit (the lib's declared
+    default). Following the connection through the caller's binding gives DIF.
+    """
+    if depth > _RESOLVE_DEPTH:
+        return DYNAMIC
+    if not isinstance(field, dict):
+        return field
+    if "connection" in field:
+        target, _, _port = field["connection"].partition(".")
+        node = graph.get(target)
+        v = _resolve_node(graph, node, inputs, depth + 1) if isinstance(node, dict) \
+            else DYNAMIC
+        # A field carrying BOTH is a connection with a declared default: prefer
+        # what the connection actually resolves to, fall back to the default.
+        if v is DYNAMIC and "value" in field:
+            return field["value"]
+        return v
+    if "value" in field:
+        return field["value"]
+    return None
+
+
+def _resolve_node(graph: dict, node: dict, inputs: dict, depth: int):
+    t = node.get("type")
+    if t == "constant.Constant":
+        return resolve_field(graph, node.get("value"), inputs, depth)
+    if t == "networks.Input":
+        # ODIN binds an input by its NODE NAME, and a None binding means "unset"
+        # -> the declared default (matching Engine._data_networks_Input).
+        for name, other in graph.items():
+            if other is node:
+                bound = inputs.get(name)
+                if bound is not None:
+                    return bound
+                break
+        return resolve_field(graph, node.get("default"), inputs, depth)
+    if t == "strings.Concat":
+        a = resolve_field(graph, node.get("a"), inputs, depth)
+        b = resolve_field(graph, node.get("b"), inputs, depth)
+        if DYNAMIC in (a, b) or a is None or b is None:
+            return DYNAMIC
+        return f"{a}{b}"
+    return DYNAMIC
+
+
+def _static_inputs(node: dict, graph: dict | None = None,
+                   inputs: dict | None = None) -> dict:
+    """What a subnet-call node binds to its child's inputs, as far as it is
+    statically knowable.
+
+    ODIN writes a bound literal either wrapped ({'value': 'DIF'}) or bare
+    ('DIF'); PROC_DIF_X_RESOLVER-LEARN uses the bare form, so both count. A
+    connection is followed through the CALLER's own bindings, which is what
+    carries a value across a pass-through lib -- Gen3/lib/FIRMWARE_DOWNLOAD is
+    nine Inputs relayed straight into UPDATE_MODULE, so without this the
+    component list UPDATE_PMR binds would be invisible one hop later.
+    """
+    out = {}
+    for key, fld in (node.get("inputs") or {}).items():
+        if not isinstance(fld, dict):
+            if fld is not None:
+                out[key] = fld
+            continue
+        if "value" in fld and "connection" not in fld:
+            out[key] = fld["value"]
+            continue
+        if graph is not None:
+            v = resolve_field(graph, fld, inputs or {})
+            if v is not DYNAMIC and v is not None:
+                out[key] = v
+    return out
+
+
 def collect(bundle: Path, relbase: str, visited: set, types: collections.Counter,
-            missing_files: set, dynamic: list, *, visit=None) -> None:
+            missing_files: set, dynamic: list, *, visit=None, script_visit=None,
+            inputs: dict | None = None) -> None:
     """Union node types of a graph and everything it (statically) references.
 
-    `visit`, if given, is called `visit(name, node, relbase)` for every node reached by
-    the transitive walk (including INLINE-subnetwork inner nodes).
+    `visit`, if given, is called `visit(name, node, relbase, graph, inputs)` for
+    every node reached by the transitive walk (including INLINE-subnetwork inner
+    nodes), so a caller can gather per-node facts (e.g. CAN reads) over the same
+    descent the coverage counter uses -- no parallel walker needed. `graph` is the
+    node's own graph and `inputs` the literals its CALLER bound, which together
+    let a visitor resolve a connection-sourced field statically.
+
+    `script_visit(source, relbase, inputs)` is the same hook for a NATIVE SCRIPT
+    reached by the walk, which has no nodes for `visit` to see; `inputs` are the
+    literals its caller bound (the task wrapper's nodeName='DIR', say).
     """
     if relbase in visited:
         return
@@ -88,15 +187,28 @@ def collect(bundle: Path, relbase: str, visited: set, types: collections.Counter
         dynamic.append((relbase, f"parse-error: {e}"))
         return
     net = ns.get("network", {})
+    if isinstance(net, str):
+        # A NATIVE SCRIPT: no nodes, so its "types" are the api.* calls it makes.
+        # They are counted alongside node types, and odin_script_api.supported()
+        # joins handled_types(), so a script needing api.http.* reports blocked
+        # the same way a graph needing an unimplemented node type does.
+        types.update(odin_script_api.required(net))
+        if script_visit is not None:
+            script_visit(net, relbase, inputs or {})
+        for base in sorted(odin_script_api.referenced(net)):
+            collect(bundle, base, visited, types, missing_files, dynamic,
+                    visit=visit, script_visit=script_visit)
+        return
     if not isinstance(net, dict):
         dynamic.append((relbase, f"network-not-dict: {type(net).__name__}"))
         return
-    _walk_nodes(net, bundle, relbase, visited, types, missing_files, dynamic, visit=visit)
+    _walk_nodes(net, bundle, relbase, visited, types, missing_files, dynamic,
+                visit=visit, script_visit=script_visit, inputs=inputs)
 
 
 def _walk_nodes(nodes: dict, bundle: Path, relbase: str, visited: set,
                 types: collections.Counter, missing_files: set, dynamic: list,
-                *, visit=None) -> None:
+                *, visit=None, script_visit=None, inputs: dict | None = None) -> None:
     """Count node types, recursing into referenced files (subnet basenames) and into
     INLINE networks.Subnetwork inner nodes (which live under the node's own keys)."""
     for name, node in nodes.items():
@@ -105,19 +217,24 @@ def _walk_nodes(nodes: dict, bundle: Path, relbase: str, visited: set,
         t = node["type"]
         types[t] += 1
         if visit is not None:
-            visit(name, node, relbase)
+            visit(name, node, relbase, nodes, inputs or {})
         if t in _SUBNET_TYPES:
             base = _basename(node)
             if base is None:
                 dynamic.append((relbase, name))
             else:
-                collect(bundle, base, visited, types, missing_files, dynamic, visit=visit)
+                collect(bundle, base, visited, types, missing_files, dynamic,
+                        visit=visit, script_visit=script_visit,
+                        inputs=_static_inputs(node, nodes, inputs))
         elif t == _INLINE_SUBNET_TYPE:
             inner = {k: v for k, v in node.items()
                      if k not in _RESERVED_SUBNET_KEYS
                      and isinstance(v, dict) and "type" in v}
-            _walk_nodes(inner, bundle, relbase, visited, types,
-                        missing_files, dynamic, visit=visit)
+            # An inline subnet's inner nodes see the same bindings the outer graph
+            # does -- they are lifted out of this node, not a separate file.
+            _walk_nodes(inner, bundle, relbase, visited, types, missing_files,
+                        dynamic, visit=visit, script_visit=script_visit,
+                        inputs=inputs)
 
 
 def main() -> int:

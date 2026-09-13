@@ -33,6 +33,65 @@ _DATA_DIR  = _ROOT / "opt/odin/data" / PRODUCT if _ROOT else None
 _DEJ_DIR   = _DATA_DIR / "dej" if _DATA_DIR else None
 
 
+# Extraction-dir suffixes stripped when deriving a revision from TM3_ROOT.
+_ROOT_SUFFIXES = (".ice.extracted", ".extracted", ".ice", ".model3", ".modely")
+
+
+def rev_from_root(root: Path | None) -> str | None:
+    """Firmware revision token for an extraction dir, e.g. ``2022.45.15``.
+
+    The extraction suffix is stripped, so
+    ``.../2026.8.3.ice.extracted`` -> ``2026.8.3``. This names the generated
+    DBC (``<PRODUCT>_ETH.<rev>.dbc``), which is how a firmware root and its
+    signal database stay paired without a second env var.
+    """
+    if root is None:
+        return None
+    name = Path(root).name
+    for suf in _ROOT_SUFFIXES:
+        if name.endswith(suf):
+            name = name[:-len(suf)]
+            break
+    return name or None
+
+
+# The MCU's own CAN decoder and signal catalog ship side by side here.
+_UI_LIB_REL = "usr/tesla/UI/lib"
+
+
+def _real_lib(lib_dir: Path, stem: str) -> Path | None:
+    """The file actually holding ``stem``'s bytes, e.g. ``libFoo.so.1.0.0``.
+
+    Firmware ships the usual symlink chain (.so -> .so.1 -> .so.1.0.0). Either
+    end reads the same, but an extraction unpacked on a filesystem without
+    symlinks leaves the short names dangling, so prefer the regular file and
+    only fall back to whatever else is readable.
+    """
+    cands = sorted(lib_dir.glob(f"{stem}.so*"), key=lambda p: len(p.name), reverse=True)
+    for p in cands:
+        if p.is_file() and not p.is_symlink():
+            return p
+    return next((p for p in cands if p.is_file()), None)
+
+
+def vapi_libs(root: Path | None = None) -> tuple[Path, Path] | None:
+    """``(libQtCarVAPI, libQtCarCANData)`` under a firmware root, else None.
+
+    The pair the VAPI shim needs: the decoder to run, and the catalog that names
+    the signal keys it stores. Both or nothing -- one without the other decodes
+    into anonymous integers.
+    """
+    root = _ROOT if root is None else root
+    if root is None:
+        return None
+    lib_dir = Path(root) / _UI_LIB_REL
+    if not lib_dir.is_dir():
+        return None
+    vapi = _real_lib(lib_dir, "libQtCarVAPI")
+    candata = _real_lib(lib_dir, "libQtCarCANData")
+    return (vapi, candata) if vapi and candata else None
+
+
 def _prefer_decrypted(path: Path) -> Path:
     """Prefer a .compact.json over its .bin twin (Model3_ETH.compact.json.bin) when present."""
     bin_twin = path.with_name(path.name + ".bin")
@@ -143,6 +202,10 @@ ODJ_DIR:       Path | None = _DATA_DIR / "odj" if _DATA_DIR else None
 ARTIFACTS_DIR: Path | None = _ROOT / "deploy/seed_artifacts_v2" if _ROOT else None
 # ODIN graph bundle (networks/ dir) — derived from TM3_ROOT, or TM3_ODIN_BUNDLE.
 ODIN_BUNDLE:   Path | None = resolve_odin_bundle(_ROOT, os.environ.get("TM3_ODIN_BUNDLE"))
+# Where cid.StartHRL writes its high-rate bus captures. On a car the gateway logs
+# these and ships them to Tesla; a bench has nowhere to ship to, so they land here
+# as ordinary CAN logs (python-can picks the writer from the suffix).
+HRL_DIR:       Path = _resolve("TM3_HRL_DIR", _PROJECT_DIR / "hrl")
 
 # All compact DBs for the selected product, keyed by bus token (ETH, VCRIGHTV, ...).
 COMPACT_DBS: dict[str, Path] = compact_dbs()
@@ -162,6 +225,51 @@ CAN_CHANNELS: dict[str, str | None] = {
 
 # Target firmware revision for message layouts. None => newest authored set.
 FW_VERSION: str | None = os.environ.get("TM3_FW")
+
+
+def _resolve_eth_dbc() -> Path | None:
+    """The generated rich DBC for this revision, if the user has built one.
+
+    This is the PREFERRED signal source. ``Model3_ETH.compact.json`` carries only
+    the subset Tesla ships to the diagnostic tool -- 2022.45.15 has 140 messages
+    / 347 signals -- while the DBC built by ``candata_to_dbc`` covers the whole
+    catalog the MCU itself knows (446 / 26227), with the bit-layout recovered
+    from that SAME firmware's decoder rather than borrowed from another release.
+
+    Build one with::
+
+        python candata_to_dbc.py dbc <fw>/usr/tesla/UI/lib/libQtCarCANData.so.1.0.0
+
+    which writes ``<PRODUCT>_ETH.<rev>.dbc`` here. Override with TM3_ETH_DBC.
+    """
+    explicit = os.environ.get("TM3_ETH_DBC")
+    if explicit:
+        p = Path(explicit).expanduser()
+        return p if p.exists() else None
+    # TM3_ROOT first: it is where nodes.json, the ODJ tree and compact.json all
+    # come from, so the DBC built from that root's .so is the matching one.
+    # TM3_FW is the revision vehicle_sim TRANSMITS, which may deliberately be an
+    # older one -- a useful fallback, but it must not repoint the whole database.
+    for rev in (rev_from_root(_ROOT), FW_VERSION):
+        if rev:
+            p = _PROJECT_DIR / f"{PRODUCT}_ETH.{rev}.dbc"
+            if p.exists():
+                return p
+    return None
+
+
+# Generated same-revision DBC covering the full catalog; None until built.
+ETH_DBC: Path | None = _resolve_eth_dbc()
+
+# VAPI shim: decode by RUNNING the MCU's own decoder (libQtCarVAPI) instead of
+# from the bit layouts statically recovered from it. Preferred when the firmware
+# libs are present and unicorn is installed -- see vapi_emu. TM3_VAPI=0 forces
+# the layout path, which is how you A/B the two.
+VAPI_ENABLED: bool = os.environ.get("TM3_VAPI", "1").strip().lower() not in (
+    "0", "false", "no", "off")
+# Emulator worker processes. Threads scale NEGATIVELY here (the emulator calls
+# back into Python on every PLT hit), so parallelism has to be processes.
+VAPI_WORKERS: int = max(1, int(os.environ.get("TM3_VAPI_WORKERS", "4")))
 
 # ODIN/Tesla bus tokens -> our bus keys.
 _BUS_ALIASES = {

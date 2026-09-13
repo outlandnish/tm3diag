@@ -9,8 +9,11 @@ from pathlib import Path
 
 import can
 import odin_runner
+import pytest
 from odin_runner import BenchBackend, Engine, _CanRxCache, _OdxAdapter, _UdsAdapter
 
+import config
+from config import can_channel as _cfg_can_channel
 from uds_local.client import UdsSession
 from uds_local.node_config import NodeConfig
 from uds_local.odj import FieldSpec, OdjEntry, RoutineEntry, SubSpec
@@ -186,6 +189,39 @@ class TestOdxAdapter:
             "RESOLVER_LEARNING", "RUNNING", [True], 1, time_scale=0.0)
         assert not any(c[0] in ("diagnostic_session", "security_access") for c in s.calls)
 
+    def test_start_routine_decodes_the_start_response_not_results(self):
+        # START_ROUTINE_RESULTS lives in the StartRoutine (0x31 01) response, not
+        # RequestRoutineResults (0x31 03) -- the two records carry different fields
+        # (see the real DIR ODJ: ROTOR_LEARNING start.output has START_ROUTINE_RESULTS,
+        # results.output has ROUTINE_STATUS). start_routine must decode the START
+        # response and must NOT issue a separate 0x03 read.
+        rotor = RoutineEntry(
+            name="ROTOR_LEARNING", hex_id=0x0406, stop=None,
+            start=SubSpec(security_level=0, input_size=1, output_size=1,
+                          input={"LEARN_SELECT": _fs(8, 0, enum={"ROTOR_OFFSET": 1})},
+                          output={"START_ROUTINE_RESULTS": _fs(
+                              8, 0, enum={"STARTED": 0, "FAILED_INCORRECT_CONDITIONS": 1})}),
+            results=SubSpec(security_level=0, input={}, input_size=0, output_size=1,
+                            output={"ROUTINE_STATUS": _fs(8, 0, enum={"RUNNING": 0})}))
+        cfg = NodeConfig(name="DIR", request_can_id=1, response_can_id=2,
+                         security_algorithm="tesla_hash", security_buffer_size=16,
+                         security_kw={}, routines={"ROTOR_LEARNING": rotor})
+
+        class _Sess(FakeSession):
+            def routine_control(self, rid, arg=b"", subtype=0x01):
+                self.calls.append(("routine_control", rid, bytes(arg), subtype))
+                if rid == 0x0406 and subtype == 0x01:
+                    return bytes([1])  # START_ROUTINE_RESULTS = FAILED_INCORRECT_CONDITIONS
+                return b""
+
+        s = _Sess()
+        out = _OdxAdapter(s, cfg).start_routine(
+            "ROTOR_LEARNING", {"LEARN_SELECT": "ROTOR_OFFSET"})
+        assert out["START_ROUTINE_RESULTS"] == "FAILED_INCORRECT_CONDITIONS"
+        # exactly the start went out (subtype 01); no separate results read (03)
+        subtypes = [c[3] for c in s.calls if c[0] == "routine_control"]
+        assert subtypes == [0x01]
+
 
 # Engine handlers end-to-end (mini-graphs through a BenchBackend + fake sessions)
 def _bench(**nodes):
@@ -267,6 +303,110 @@ class TestLiveCanCache:
         cache.on_message_received(
             can.Message(arbitration_id=0x999, data=b"\x00", is_extended_id=False))
         assert cache.get("SIG_A") is None
+
+
+class _FrameDb:
+    """Minimal CanDatabase shape: `messages` (for the signal index) + decode_frame."""
+
+    messages = {
+        0x118: {"name": "DI_systemStatus",
+                "signals": {"DI_gear": {}, "DI_tractionControlMode": {}}},
+        0x108: {"name": "DIR_torque", "signals": {"DIR_axleSpeed": {}}},
+    }
+
+    def decode_frame(self, mid, data):
+        if mid == 0x118:
+            return [{"signal": "DI_gear", "value": data[0]},
+                    {"signal": "DI_tractionControlMode", "value": data[1]}]
+        if mid == 0x108:
+            return [{"signal": "DIR_axleSpeed",
+                     "value": int.from_bytes(data[:2], "little")}]
+        return []
+
+
+# can_read maps the ETH bus token through TM3_VEHICLE_CHANNEL, so the frames have
+# to be filed under that same channel or every lookup misses. Hardcoding "can0"
+# meant these passed only on a host wired that way -- the bench runs the vehicle
+# bus on can1, where all six read None. The literal below only stands in for
+# "nothing configured"; it is used on both sides, so the test stays
+# self-consistent either way.
+_VEH = _cfg_can_channel("ETH") or "vcan0"
+
+
+def _frame_bench(frames_by_channel):
+    """BenchBackend reading a host's retained frames ({channel: {id: (data, ts)}})."""
+    return BenchBackend(_VEH, frame_source=frames_by_channel.get, db=_FrameDb())
+
+
+class TestFrameSourceReads:
+    """A host already on the bus (tm3web) hands over retained frames; ODIN decodes
+    ANY signal it has seen, on demand, without opening a second socket."""
+
+    def test_reads_a_signal_from_a_retained_frame(self):
+        bb = _frame_bench({_VEH: {0x118: (bytes([4, 5, 0, 0, 0, 0, 0, 0]), 1.0)}})
+        assert bb.can_read("DI_gear", bus="ETH") == 4
+        assert bb.can_read("DI_tractionControlMode", bus="ETH") == 5
+
+    def test_reads_a_signal_the_hud_never_decodes(self):
+        # DIR_axleSpeed (0x108) is outside tm3web's _DASH_IDS -- the case that
+        # ruled out reusing dash_sig as the source.
+        bb = _frame_bench({_VEH: {0x108: (bytes([0x30, 0x02, 0, 0, 0, 0, 0, 0]), 1.0)}})
+        assert bb.can_read("DIR_axleSpeed", bus="ETH") == 560
+
+    def test_unseen_id_reads_as_absent(self):
+        bb = _frame_bench({_VEH: {0x118: (bytes(8), 1.0)}})
+        assert bb.can_read("DIR_axleSpeed", bus="ETH") is None
+
+    def test_unknown_signal_name_reads_as_absent(self):
+        bb = _frame_bench({_VEH: {0x118: (bytes(8), 1.0)}})
+        assert bb.can_read("NOT_A_SIGNAL", bus="ETH") is None
+
+    def test_channel_with_no_frames_reads_as_absent(self):
+        assert _frame_bench({}).can_read("DI_gear", bus="ETH") is None
+
+    def test_never_opens_its_own_socket(self):
+        bb = _frame_bench({_VEH: {0x118: (bytes([4, 5, 0, 0, 0, 0, 0, 0]), 1.0)}})
+
+        def boom(channel):
+            raise AssertionError("opened a second socket despite a frame source")
+
+        bb._can_cache = boom
+        assert bb.can_read("DI_gear", bus="ETH") == 4
+        assert bb.can_read("DIR_axleSpeed", bus="ETH") is None   # absent, still no socket
+
+    def test_bus_token_selects_the_right_channel(self):
+        import config as _cfg
+        veh, party = _cfg.can_channel("ETH"), _cfg.can_channel("PARTY")
+        if not party or party == veh:
+            pytest.skip("no distinct party channel configured")
+        bb = _frame_bench({
+            veh: {0x118: (bytes([4, 0, 0, 0, 0, 0, 0, 0]), 1.0)},
+            party: {0x118: (bytes([3, 0, 0, 0, 0, 0, 0, 0]), 1.0)},
+        })
+        assert bb.can_read("DI_gear", bus="ETH") == 4
+        assert bb.can_read("DI_gear", bus="PARTY") == 3
+
+    def test_injected_db_is_used_verbatim(self):
+        # The default ETH_COMPACT (2022) has no DI_tractionControlMode at all, so a
+        # host's DB must win -- otherwise the dyno gate silently reads nothing.
+        bb = _frame_bench({_VEH: {0x118: (bytes([4, 5, 0, 0, 0, 0, 0, 0]), 1.0)}})
+        assert bb._db() is not None
+        assert bb.can_read("DI_tractionControlMode", bus="ETH") == 5
+
+    def test_cid_derive_runs_off_the_retained_frames(self):
+        bb = _frame_bench({_VEH: {0x118: (bytes([4, 5, 0, 0, 0, 0, 0, 0]), 1.0)}})
+        assert bb.cid_get("GUI_tractionControlModeRequest") == "Dyno"
+
+    def test_cid_derive_reports_a_non_dyno_bus(self):
+        bb = _frame_bench({_VEH: {0x118: (bytes([1, 0, 0, 0, 0, 0, 0, 0]), 1.0)}})
+        assert bb.cid_get("GUI_tractionControlModeRequest") == "Normal"
+
+    # VAPI_* aliases come from the firmware's VAPI table, so they need the MCU libs.
+    @pytest.mark.skipif(config.vapi_libs() is None, reason="needs the MCU firmware libs")
+    @pytest.mark.parametrize("gear,shift", [(4, "D"), (1, "P")])
+    def test_cid_derive_resolves_vapi_aliases(self, gear, shift):
+        bb = _frame_bench({_VEH: {0x118: (bytes([gear, 0, 0, 0, 0, 0, 0, 0]), 1.0)}})
+        assert bb.cid_get("VAPI_shiftState") == shift
 
 
 class TestProtoReadFile:
@@ -385,3 +525,121 @@ class TestEnsureApplicationState:
         bb.ensure_application_state("PMR", "APPLICATION")    # already app (untracked)
         assert not any(c[0] in ("ecu_reset_no_wait", "wait_for_bootloader")
                        for c in sess.calls)
+
+
+class TestVehicleConditions:
+    """Which firmware row applies is decided by the car's configuration, and
+    every condition key is a GTW_carConfig signal named GTW_<key>."""
+
+    @staticmethod
+    def _bb(signals):
+        bb = BenchBackend("chan")
+        bb.can_read = lambda name, bus=None: signals.get(name)
+        return bb
+
+    def test_conditions_come_off_gtw_carconfig(self):
+        bb = self._bb({"GTW_chassisType": 2, "GTW_drivetrainType": 0,
+                       "GTW_vdcType": 1})
+        assert bb.vehicle_conditions() == {"chassisType": "2",
+                                           "drivetrainType": "0", "vdcType": "1"}
+
+    def test_a_key_the_bus_never_carried_is_absent_not_guessed(self):
+        # find_firmware reads an absent key as "no constraint"; inventing a
+        # default would silently pick somebody else's firmware.
+        assert self._bb({"GTW_chassisType": 2}).vehicle_conditions() == {
+            "chassisType": "2"}
+
+    def test_a_declared_value_wins_over_the_bus(self):
+        # On a drive-unit bench vehicle_sim is the thing transmitting 0x7FF, so
+        # reading it back is reading our own assertion; the operator's is the
+        # deliberate one.
+        bb = self._bb({"GTW_vdcType": 0})
+        assert bb.vehicle_conditions({"vdcType": "1"})["vdcType"] == "1"
+
+    def test_blank_declarations_are_ignored(self):
+        bb = self._bb({"GTW_vdcType": 0})
+        assert bb.vehicle_conditions({"vdcType": "", "other": None}) == {
+            "vdcType": "0"}
+
+    def test_declared_values_are_stringified(self):
+        assert self._bb({}).vehicle_conditions({"vdcType": 1}) == {"vdcType": "1"}
+
+
+class TestFlashArming:
+    def test_flashing_is_disarmed_by_default(self):
+        res = BenchBackend("chan").flash_module(update=("pmr",))
+        assert res["exit_status"] == 1
+        assert "not armed" in res["stderr"]
+
+    def test_an_armed_backend_with_no_artifacts_says_so(self, tmp_path):
+        bb = BenchBackend("chan", allow_flash=True, artifacts_dir=tmp_path / "nope")
+        res = bb.flash_module(update=("pmr",), hwidacq=("pmr",))
+        assert res["exit_status"] == 1
+        assert "artifacts" in res["stderr"]
+
+    def test_no_components_is_refused_not_reported_as_a_pass(self):
+        res = BenchBackend("chan", allow_flash=True).flash_module(update=())
+        assert res["exit_status"] == 1
+
+
+class _FakeNotifier:
+    """Stands in for the can.Notifier the RX cache already owns."""
+
+    def __init__(self):
+        self.listeners = []
+
+    def add_listener(self, listener):
+        self.listeners.append(listener)
+
+    def remove_listener(self, listener):
+        self.listeners.remove(listener)
+
+
+class TestHighRateLogging:
+    """cid.StartHRL writes a real CAN log. On a car the gateway records the trace
+    and ships it to Tesla; here it lands on disk and the upload step says where."""
+
+    @staticmethod
+    def _bb(tmp_path, notifier):
+        bb = BenchBackend("vcan0", hrl_dir=tmp_path)
+        # Pretend the RX cache already opened this channel, so hrl_start attaches
+        # to the existing notifier instead of opening a second socket.
+        bb._can["vcan0"] = (object(), notifier, object())
+        return bb
+
+    def test_capture_writes_a_log_and_rides_the_existing_notifier(self, tmp_path):
+        notifier = _FakeNotifier()
+        bb = self._bb(tmp_path, notifier)
+
+        path = bb.hrl_start(timeout=300)
+
+        assert path.parent == tmp_path
+        assert path.name.startswith("hrl-vcan0-") and path.suffix == ".asc"
+        assert len(notifier.listeners) == 1        # the logger, on the SAME notifier
+        logger = notifier.listeners[0]
+        logger.on_message_received(
+            can.Message(arbitration_id=0x118, data=b"\x04\x00", is_extended_id=False))
+
+        assert bb.hrl_stop() == path
+        assert notifier.listeners == []            # detached again
+        assert "118" in path.read_text()           # the frame really got written
+
+    def test_a_second_start_does_not_open_a_second_capture(self, tmp_path):
+        notifier = _FakeNotifier()
+        bb = self._bb(tmp_path, notifier)
+        first = bb.hrl_start()
+        assert bb.hrl_start() == first
+        assert len(notifier.listeners) == 1
+        bb.hrl_stop()
+
+    def test_upload_reports_the_path_and_does_not_claim_an_upload(self, tmp_path):
+        notifier = _FakeNotifier()
+        bb = self._bb(tmp_path, notifier)
+        path = bb.hrl_start()
+
+        res = bb.hrl_upload(hrl_type="gtw")
+
+        assert res == {"path": str(path), "uploaded": False, "hrl_type": "gtw"}
+
+    def test_stop_without_a_capture_is_not_an_error(self, tmp_path):
+        assert self._bb(tmp_path, _FakeNotifier()).hrl_stop() is None

@@ -2,8 +2,12 @@
 """odin_web.py -- aiohttp route glue exposing the ODIN runner + DID read/write over
 HTTP + WebSocket, for the tm3web.
 
-tm3web wires it in with a single setup_routes(app, ...) call, exposing:
-  * GET  /api/odin/procedures[?all=1]  -> the runnable (or full) procedure list
+All the logic lives here; tm3web wires it in with a single setup_routes(app, ...)
+call, so the interface gets:
+  * GET  /api/odin/vehicles            -> the cars this bundle covers + the default
+  * GET  /api/odin/procedures[?all=1][&vehicle=Model3]
+                                       -> the runnable (or full) procedure list for
+                                          one car: its own tree plus Gen3/Common
   * GET  /api/odin/requirements?procedure=<basename>
                                        -> what the proc expects on the bus (CAN signals
                                           read, alert buses, UDS target nodes,
@@ -44,6 +48,35 @@ def _json(obj, status: int = 200) -> web.Response:
     return web.json_response(obj, status=status, dumps=lambda o: json.dumps(o, default=str))
 
 
+# Facts about the unit on the bench that no bus reading can establish, so the
+# OPERATOR declares them and procedures gate on them. Most map to a CID data
+# value the runner's cid.* nodes read (BENCH_STATE_CID); `allow_flash` is not a
+# vehicle fact but an arming switch -- the 55 UPDATE_* procedures flash an ECU
+# with no confirmation of their own, so it stays off until asked for.
+# `include_bootloaders` defaults ON: a -WITH-BOOTLOADER procedure names its bu/bl
+# by hand, so defaulting it off would silently downgrade the run the operator
+# picked. The preflight dialog is where it is confirmed or turned off.
+DEFAULT_BENCH_STATE: dict = {"is_fused": True, "allow_flash": False,
+                             "include_bootloaders": True, "ramapps": "include"}
+# Keys that take one of a fixed set of values rather than a flag. `ramapps` needs
+# three states because "just the RAM app, without rewriting the app it rides on"
+# is a real request a checkbox cannot express.
+BENCH_STATE_ENUMS: dict = {"ramapps": ("include", "skip", "only")}
+BENCH_STATE_CID: dict = {"is_fused": "GUI_isFused"}
+# Car config the firmware rows are keyed on. Read off GTW_carConfig where the
+# bus carries it; what the operator declares here wins, because on a drive-unit
+# bench vehicle_sim is the thing transmitting 0x7FF in the first place.
+BENCH_STATE_DICTS: tuple = ("conditions",)
+
+
+def _bench_state_cid(state: dict) -> dict:
+    """Bench state -> the CID data values it sets ('true'/'false' strings, the
+    CID wire type). Keys with no CID mapping (allow_flash) are backend settings,
+    applied in _run instead."""
+    return {cid: ("true" if state.get(key) else "false")
+            for key, cid in BENCH_STATE_CID.items() if key in state}
+
+
 class OdinWeb:
     """Holds the run lock, the /ws/odin client set, and the injected backend/node
     sources; one instance per aiohttp app (stored at app['odin_web'])."""
@@ -52,32 +85,63 @@ class OdinWeb:
         self.bundle = bundle
         self._backend_factory = backend_factory  # () -> Backend | 'mock'/'bench'
         self._node_provider = node_provider  # (node) -> (NodeConfig, session)
-        self._proc_cache: list | None = None
+        self._proc_cache: dict[str, list] = {}  # vehicle -> procedures
+        self._default_vehicle: str | None = None
         self._req_cache: dict[str, dict] = {}  # basename -> procedure_requirements (static)
         self._run_lock = asyncio.Lock()  # one ODIN run at a time
         self.clients: set[web.WebSocketResponse] = set()
+        self.bench_state: dict = {**DEFAULT_BENCH_STATE,
+                                  **{k: {} for k in BENCH_STATE_DICTS}}
+        self._engine = None  # the live Engine while a run is in flight (cancel handle)
 
     # -- ODIN: discovery ---------------------------------------------------------
-    async def list_procedures(self, *, runnable_only: bool = True) -> list:
-        # list_procedures walks the whole bundle (blocking) -> executor + cache.
-        if self._proc_cache is None:
+    async def list_procedures(self, *, runnable_only: bool = True,
+                              vehicle: str | None = None) -> list:
+        # Walks several trees (blocking) -> executor + per-vehicle cache. A
+        # procedure's basename already includes its tree (Gen3/tasks/PROC_...),
+        # so requirements and run need no vehicle of their own.
+        if vehicle is None:
+            vehicle = await self.default_vehicle()
+        if vehicle not in self._proc_cache:
             loop = asyncio.get_running_loop()
-            self._proc_cache = await loop.run_in_executor(
+            self._proc_cache[vehicle] = await loop.run_in_executor(
                 None,
                 functools.partial(
-                    odin_service.list_procedures, bundle=self.bundle, runnable_only=False
+                    odin_service.list_procedures_for, vehicle, bundle=self.bundle,
+                    runnable_only=False
                 ),
             )
+        procs = self._proc_cache[vehicle]
         if runnable_only:
-            return [p for p in self._proc_cache if p["runnable"]]
-        return self._proc_cache
+            return [p for p in procs if p["runnable"]]
+        return procs
+
+    async def default_vehicle(self) -> str:
+        if self._default_vehicle is None:
+            loop = asyncio.get_running_loop()
+            self._default_vehicle = await loop.run_in_executor(
+                None, functools.partial(odin_service.default_vehicle, bundle=self.bundle))
+        return self._default_vehicle
+
+    async def _h_vehicles(self, request: web.Request) -> web.Response:
+        """The cars this bundle covers, and which to show first."""
+        try:
+            loop = asyncio.get_running_loop()
+            found = await loop.run_in_executor(
+                None, functools.partial(odin_service.list_vehicles, bundle=self.bundle))
+            return _json({"vehicles": found, "default": await self.default_vehicle()})
+        except ValueError as e:  # no bundle configured
+            return _json({"error": str(e)}, status=503)
 
     async def _h_procedures(self, request: web.Request) -> web.Response:
         runnable = request.query.get("all", "") not in ("1", "true", "yes")
         try:
-            procs = await self.list_procedures(runnable_only=runnable)
+            procs = await self.list_procedures(
+                runnable_only=runnable, vehicle=request.query.get("vehicle") or None)
         except ValueError as e:  # no bundle configured
             return _json({"error": str(e)}, status=503)
+        except (FileNotFoundError, NotADirectoryError):
+            return _json({"error": "no such vehicle in this bundle"}, status=404)
         return _json(procs)
 
     async def requirements(self, basename: str) -> dict:
@@ -103,6 +167,94 @@ class OdinWeb:
         except ValueError as e:  # no bundle configured
             return _json({"error": str(e)}, status=503)
 
+    # -- ODIN: operator-declared bench state -------------------------------------
+    async def _h_bench_state(self, request: web.Request) -> web.Response:
+        """GET the declared state; POST a partial update (only known keys)."""
+        if request.method == "POST":
+            try:
+                body = await request.json()
+            except Exception:  # noqa: BLE001
+                return _json({"error": "invalid JSON"}, status=400)
+            if not isinstance(body, dict):
+                return _json({"error": "expected an object"}, status=400)
+            known = set(DEFAULT_BENCH_STATE) | set(BENCH_STATE_DICTS)
+            unknown = sorted(set(body) - known)
+            if unknown:
+                return _json({"error": f"unknown bench state: {', '.join(unknown)}"},
+                             status=400)
+            for key, value in body.items():
+                if key in BENCH_STATE_DICTS:
+                    if not isinstance(value, dict):
+                        return _json({"error": f"{key} must be an object"}, status=400)
+                    # str-valued: a condition compares against the metadata's
+                    # text, so 0 and "0" must not be different answers.
+                    self.bench_state[key] = {str(k): str(v) for k, v in value.items()
+                                             if v is not None and v != ""}
+                elif key in BENCH_STATE_ENUMS:
+                    allowed = BENCH_STATE_ENUMS[key]
+                    if str(value) not in allowed:
+                        return _json({"error": f"{key} must be one of "
+                                               f"{', '.join(allowed)}"}, status=400)
+                    self.bench_state[key] = str(value)
+                else:
+                    self.bench_state[key] = bool(value)
+        return _json({"state": self.bench_state,
+                      "cid_values": _bench_state_cid(self.bench_state)})
+
+    def _apply_bench_state(self, backend):
+        """Put the operator's declaration onto a freshly built backend.
+
+        Arming is per-run and explicit: a backend built armed by its factory
+        still honours an operator who has since turned flashing off. Preflight
+        and the run MUST agree -- when only the run applied this, preflight
+        reported an unarmed bench for an armed one and the confirm button was
+        never enabled.
+        """
+        if hasattr(backend, "allow_flash"):
+            backend.allow_flash = bool(self.bench_state.get("allow_flash"))
+        if hasattr(backend, "conditions"):
+            backend.conditions = dict(self.bench_state.get("conditions") or {})
+        if hasattr(backend, "include_bootloaders"):
+            backend.include_bootloaders = bool(
+                self.bench_state.get("include_bootloaders", True))
+        if hasattr(backend, "ramapps"):
+            backend.ramapps = str(self.bench_state.get("ramapps", "include"))
+        return backend
+
+    async def _h_flash_preflight(self, request: web.Request) -> web.Response:
+        """What a procedure would flash, resolved but not written.
+
+        The UI calls this before a run so the operator confirms the actual
+        images -- and can correct the car config that chose them -- at the point
+        of decision, instead of watching the first one already go down the wire.
+        `flashes: false` means nothing to confirm; run it straight.
+        """
+        try:
+            body = await request.json()
+        except Exception:  # noqa: BLE001
+            body = {}
+        proc = body.get("procedure") or request.query.get("procedure")
+        if not proc:
+            return _json({"error": "missing 'procedure'"}, status=400)
+        if self._run_lock.locked():
+            return _json({"error": "a run is already in progress"}, status=409)
+        backend = self._apply_bench_state(
+            self._backend_factory() if self._backend_factory else "mock")
+        loop = asyncio.get_running_loop()
+        try:
+            return _json(await loop.run_in_executor(None, functools.partial(
+                odin_service.flash_preflight, proc, backend=backend,
+                bundle=self.bundle,
+                allow_flash=bool(self.bench_state.get("allow_flash")),
+                include_bootloaders=bool(
+                    self.bench_state.get("include_bootloaders", True)),
+                ramapps=str(self.bench_state.get("ramapps", "include")),
+                conditions=self.bench_state.get("conditions") or {})))
+        except FileNotFoundError as e:
+            return _json({"error": str(e)}, status=404)
+        except ValueError as e:
+            return _json({"error": str(e)}, status=503)
+
     # -- ODIN: run + progress ----------------------------------------------------
     async def _h_run(self, request: web.Request) -> web.Response:
         try:
@@ -119,12 +271,37 @@ class OdinWeb:
                 result = await self._run(proc)
             except Exception as e:  # noqa: BLE001  (surface a run failure as 500)
                 return _json({"error": str(e), "procedure": proc}, status=500)
+            finally:
+                self._engine = None
         return _json(result)
+
+    def _track_engine(self, engine) -> None:
+        """Hold the running Engine so /api/odin/cancel can reach it."""
+        self._engine = engine
+
+    async def _h_cancel(self, request: web.Request) -> web.Response:
+        """Ask the in-flight run to stop at its next check.
+
+        This ends a WAIT -- a CID poll, a routine's result poll, a timeout loop --
+        which is what a procedure spends its time in. It does NOT interrupt an
+        operation already in flight, and a flash deliberately does not check it:
+        stopping a transfer mid-write is how an ECU gets bricked. The response
+        says which of those the caller is getting.
+        """
+        engine = self._engine
+        if engine is None or not self._run_lock.locked():
+            return _json({"error": "no run in progress"}, status=409)
+        engine.request_cancel()
+        return _json({"cancelling": True,
+                      "note": "stops at the next wait; a flash in progress "
+                              "finishes its current image"})
 
     async def _run(self, proc: str) -> dict:
         loop = asyncio.get_running_loop()
-        # Build the backend before starting the pump so a factory error leaks nothing.
-        backend = self._backend_factory() if self._backend_factory else "mock"
+        # Build the backend FIRST: if backend_factory raises (e.g. no CAN channel),
+        # fail before the pump task starts so nothing leaks.
+        backend = self._apply_bench_state(
+            self._backend_factory() if self._backend_factory else "mock")
         q: asyncio.Queue = asyncio.Queue()
 
         def emit(kind, payload):  # called from the executor thread
@@ -140,6 +317,10 @@ class OdinWeb:
                     backend=backend,
                     bundle=self.bundle,
                     on_event=emit,
+                    # What the operator declared about the unit (cid.IsFused, …),
+                    # seeded into the CID store before the procedure reads it.
+                    cid_values=_bench_state_cid(self.bench_state),
+                    on_engine=self._track_engine,
                 ),
             )
         finally:
@@ -404,7 +585,7 @@ def _list_uds_nodes() -> list[dict]:
 
         _uds_node_cache = [
             {"node": name, "tx": f"0x{tx:03X}", "rx": f"0x{rx:03X}"}
-            for name, tx, rx in sorted(load_all_nodes(_cfg.NODES_JSON, _cfg.ETH_COMPACT))
+            for name, tx, rx in sorted(load_all_nodes(_cfg.NODES_JSON, _cfg.ETH_DBC or _cfg.ETH_COMPACT))
         ]
     return _uds_node_cache
 
@@ -525,9 +706,14 @@ def setup_routes(
     """Register the ODIN + DID routes on `app` and return the OdinWeb instance."""
     svc = OdinWeb(bundle=bundle, backend_factory=backend_factory, node_provider=node_provider)
     app[ODIN_WEB] = svc
+    app.router.add_get(prefix + "/api/odin/vehicles", svc._h_vehicles)
     app.router.add_get(prefix + "/api/odin/procedures", svc._h_procedures)
     app.router.add_get(prefix + "/api/odin/requirements", svc._h_requirements)
+    app.router.add_get(prefix + "/api/odin/bench-state", svc._h_bench_state)
+    app.router.add_post(prefix + "/api/odin/bench-state", svc._h_bench_state)
     app.router.add_post(prefix + "/api/odin/run", svc._h_run)
+    app.router.add_post(prefix + "/api/odin/cancel", svc._h_cancel)
+    app.router.add_post(prefix + "/api/odin/flash-preflight", svc._h_flash_preflight)
     app.router.add_get(prefix + "/ws/odin", svc._h_ws)
     app.router.add_get(prefix + "/api/did/{node}", svc._h_did_list)
     app.router.add_post(prefix + "/api/did/read", svc._h_did_read)

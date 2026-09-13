@@ -892,3 +892,304 @@ class TestIsotpSend:
 
     def test_default_backend_reports_success(self):
         assert Backend().isotp_send(0x480, 953, b"\x01") is True
+
+
+# ---------------------------------------------------------------------------
+# The node types the native-script work also needed on the GRAPH side:
+# reporting.ServiceOutput (the wired twin of a script's returned verdict),
+# scripts.ScriptTest, cid.IsFused/SetFactoryMode/GetPlatform/SetVehicleConfig,
+# cid.Start/StopHRL (a real bus capture), misc.WhitelistDict, enum.EnumInput,
+# control.ConcurrentSplit, testing.PingOutcome, reporting.FileOutput.
+# ---------------------------------------------------------------------------
+
+class TestServiceOutputNode:
+    @staticmethod
+    def _graph(reason):
+        return {
+            "enter": {"type": "networks.Enter", "start": conn("so.run")},
+            "reason": {"type": "reporting.ServiceOutputExitReason"},
+            "so": {"type": "reporting.ServiceOutput",
+                   "user_facing_msg": lit("data already present"),
+                   "exit_code": conn(f"reason.{reason}"),
+                   "data": {"Detail": lit({"k": 1})}},
+        }
+
+    def test_terminal_node_ends_the_graph_with_its_reason(self):
+        res = run(self._graph("INVALID_INPUT"))
+        assert res.exit_code == odin_runner.odin_script_api.ExitReason.INVALID_INPUT
+        assert res.exit_code != 0
+        assert res.outputs["service_output"]["user_facing_msg"] == "data already present"
+        assert res.outputs["service_output"]["data"] == [
+            {"name": "Detail", "type": None, "data": {"k": 1}}]
+
+    def test_a_pass_verdict_is_exit_code_zero(self):
+        assert run(self._graph("PASS")).exit_code == 0
+
+    def test_an_unknown_member_reads_as_unknown(self):
+        assert pull({"type": "reporting.ServiceOutputExitReason"}, port="NOPE") == \
+            odin_runner.odin_script_api.ExitReason.UNKNOWN
+
+
+class _FusedBackend(Backend):
+    """A CID store just deep enough for the is-fused / factory-mode pair."""
+
+    def __init__(self, **values):
+        self.values = dict(values)
+
+    def cid_get(self, name):
+        return self.values.get(name)
+
+    def cid_set(self, name, value):
+        self.values[name] = value
+
+    def cid_vitals(self):
+        return {"info_hw": "infoz", "info_sw": "2022.45.15"}
+
+
+class TestOperatorDeclaredCidState:
+    def test_is_fused_reads_the_declared_value(self):
+        # No bus reading establishes this, so the operator declares it (the web
+        # UI's bench-state toggle writes GUI_isFused).
+        for declared, expected in (("true", True), ("false", False)):
+            e = Engine(_FusedBackend(GUI_isFused=declared), Path("."))
+            frame = Frame(graph={"n": {"type": "cid.IsFused"}}, inputs={}, depth=0)
+            assert e._pull(frame, conn("n.is_fused")) is expected
+
+    def test_set_factory_mode_writes_the_cid_value(self):
+        backend = _FusedBackend()
+        Engine(backend, Path(".")).run_graph({
+            "enter": {"type": "networks.Enter", "start": conn("fm.run")},
+            "fm": {"type": "cid.SetFactoryMode", "factory_mode_state": lit(True),
+                   "done": conn("exit.exit")},
+            "exit": {"type": "networks.Exit", "exit_code": lit(0)},
+        }, {})
+        assert backend.values["GUI_factoryMode"] == "true"
+
+    def test_get_platform_comes_from_vitals(self):
+        e = Engine(_FusedBackend(), Path("."))
+        frame = Frame(graph={"n": {"type": "cid.GetPlatform"}}, inputs={}, depth=0)
+        assert e._pull(frame, conn("n.info"))["info_hw"] == "infoz"
+
+    def test_set_vehicle_config_records_the_write(self):
+        backend = _FusedBackend()
+        Engine(backend, Path(".")).run_graph({
+            "enter": {"type": "networks.Enter", "start": conn("cfg.run")},
+            "cfg": {"type": "cid.SetVehicleConfig", "configid": lit(15),
+                    "data": lit("on"), "done": conn("exit.exit")},
+            "exit": {"type": "networks.Exit", "exit_code": lit(0)},
+        }, {})
+        assert backend.values["config_15"] == "on"
+
+
+class _HrlBackend(Backend):
+    """Records the high-rate-logging calls and hands back a canned path."""
+
+    def __init__(self):
+        self.calls = []
+
+    def hrl_start(self, timeout=None, path=None):
+        self.calls.append(("start", timeout))
+        return "/tmp/hrl-vcan0.asc"
+
+    def hrl_stop(self):
+        self.calls.append(("stop", None))
+        return "/tmp/hrl-vcan0.asc"
+
+    def hrl_upload(self, hrl_type=None):
+        self.calls.append(("upload", hrl_type))
+        return {"path": "/tmp/hrl-vcan0.asc", "uploaded": False}
+
+
+class TestHighRateLogging:
+    def test_start_stop_upload_capture_to_a_file_and_report_the_path(self):
+        backend = _HrlBackend()
+        res = Engine(backend, Path(".")).run_graph({
+            "enter": {"type": "networks.Enter", "start": conn("start.run")},
+            "start": {"type": "cid.StartHRL", "timeout": lit(300),
+                      "done": conn("stop.run")},
+            "stop": {"type": "cid.StopHRL", "done": conn("up.run")},
+            "up": {"type": "cid.StartHrlUploadService", "hrl_type": lit("gtw"),
+                   "done": conn("exit.exit")},
+            "exit": {"type": "networks.Exit", "exit_code": lit(0)},
+        }, {})
+        assert backend.calls == [("start", 300), ("stop", None), ("upload", "gtw")]
+        # The capture is a real local file, so the run says where it landed
+        # rather than claiming an upload that has nowhere to go.
+        assert res.outputs["hrl_logs"] == ["/tmp/hrl-vcan0.asc"]
+
+    def test_default_backend_has_nothing_to_capture(self):
+        assert Backend().hrl_start() is None
+        assert Backend().hrl_stop() is None
+        assert Backend().hrl_upload() == {"path": None, "uploaded": False}
+
+
+class TestSmashclicker:
+    """The MCU's ECU flasher, which all 55 UPDATE_* procedures reach through
+    Gen3/scripts/UPDATE_MODULE. Its answer is parsed by the procedure itself, so
+    the shape matters as much as the verdict."""
+
+    ARGS = ["-h", "pmr", "-u", "pmr,dir", "-t", "+^=", "-j", "1234"]
+
+    def test_args_are_parsed_the_way_update_module_writes_them(self):
+        assert odin_runner._parse_smashclicker(self.ARGS) == {
+            "update": ("pmr", "dir"), "hwidacq": ("pmr",),
+            "job_id": "1234", "can_quiet": True,
+        }
+
+    def test_the_quiet_flag_is_optional(self):
+        parsed = odin_runner._parse_smashclicker(["-h", "pcs", "-u", "pcs,pcscpu2",
+                                                  "-j", "7"])
+        assert parsed["can_quiet"] is False
+        assert parsed["update"] == ("pcs", "pcscpu2")
+
+    def test_only_the_flasher_path_is_intercepted(self):
+        backend = Backend()
+        # An ordinary shell-out keeps the canned success it always had.
+        assert backend.cid_execute(path="/bin/ping", args=["-c", "1"])["exit_status"] == 0
+        # The flasher does not.
+        assert backend.cid_execute(path="/sbin/smashclicker",
+                                   args=self.ARGS)["exit_status"] == 1
+
+    def test_a_backend_that_cannot_flash_refuses_instead_of_faking_a_pass(self):
+        # This is the bug the seam exists for: cid_execute's canned success made
+        # every UPDATE_* procedure report a flash that never happened.
+        res = Backend().flash_module(update=("pmr", "dir"))
+        assert res["exit_status"] == 1
+        assert "no flasher" in res["stderr"]
+
+    def test_result_lines_are_shaped_for_the_procedures_own_parser(self):
+        # UPDATE_MODULE.parse_log splits on '"': [1] is the module, and a later
+        # piece holding 'code 1'/'code 2' is that module's pass.
+        res = odin_runner._smashclicker_result(["pmr", "dir"])
+        assert res["exit_status"] == 0
+        for line, component in zip(res["stdout"].split("\r\n"), ("pmr", "dir"),
+                                   strict=True):
+            parts = line.split('"')
+            assert parts[1] == component
+            assert any("code 1" in p for p in parts)
+
+    def test_a_failure_carries_its_reason_where_the_parser_looks(self):
+        res = odin_runner._smashclicker_result(
+            ["pmr"], [("dir", "no firmware for this ECU identity")])
+        assert res["exit_status"] == 1          # a partial flash is not a pass
+        fail = [x for x in res["stdout"].split("\r\n") if "dir" in x][0]
+        code_piece = [p for p in fail.split('"') if "code" in p][0]
+        assert "code 1" not in code_piece and "code 2" not in code_piece
+        assert "no firmware" in code_piece
+
+    def test_a_reason_cannot_smuggle_a_pass_code(self):
+        # parse_log looks for the literal 'code 1' anywhere in the piece, so a
+        # reason mentioning one would flip a failure into a pass.
+        res = odin_runner._smashclicker_result([], [("dir", "rejected code 1x")])
+        assert "code 1x" not in res["stdout"]
+        assert res["exit_status"] == 1
+
+    def test_nothing_flashed_is_not_a_pass(self):
+        assert odin_runner._smashclicker_result([])["exit_status"] == 1
+
+
+class _FlashBackend(Backend):
+    """Records what the flasher was asked for and reports every image flashed."""
+
+    def __init__(self):
+        self.calls = []
+
+    def flash_module(self, update=(), hwidacq=(), job_id="", can_quiet=False,
+                     timeout=None):
+        self.calls.append({"update": tuple(update), "hwidacq": tuple(hwidacq),
+                           "job_id": job_id, "can_quiet": can_quiet})
+        return odin_runner._smashclicker_result(list(update))
+
+
+class TestRunCancel:
+    def test_a_run_cancel_reaches_a_nested_frames_poll_loop(self):
+        # The stop flag is shared by every frame of the run, so it ends a wait in
+        # a subnetwork too -- not just the top-level graph.
+        e = Engine(MockBackend("success"), Path("."))
+        frame = Frame(graph={}, inputs={}, depth=0, run_cancel=e._cancel)
+        assert frame.stopping() is False
+        e.request_cancel()
+        assert e.cancelled() is True
+        assert frame.stopping() is True
+        assert frame.wait(0.01) is True
+
+    def test_a_finished_graph_does_not_stop_the_rest_of_the_run(self):
+        # run_graph sets the FRAME's cancel in its finally (to join Split
+        # branches). If that were the run flag, the first graph to finish would
+        # kill everything after it.
+        e = Engine(MockBackend("success"), Path("."))
+        frame = Frame(graph={}, inputs={}, depth=0, run_cancel=e._cancel)
+        frame.cancel.set()
+        assert frame.stopping() is True
+        assert e.cancelled() is False
+
+
+class TestRemainingNodeTypes:
+    def test_extend_multi_concatenates_an_indexed_list_map(self):
+        assert pull({"type": "lists.ExtendMulti", "lists": {
+            "2": {**lit(["c"]), "index": 1},
+            "1": {**lit(["a", "b"]), "index": 0},
+            "3": {**lit("bare"), "index": 2},   # a non-list entry is itself
+        }}) == ["a", "b", "c", "bare"]
+
+    def test_whitelist_dict_keeps_only_permitted_keys(self):
+        assert pull({"type": "misc.WhitelistDict",
+                     "input_data": lit({"a": 1, "b": 2, "c": 3}),
+                     "whitelist": lit(["a", "c"])}) == {"a": 1, "c": 3}
+
+    def test_enum_input_binds_like_an_input_with_a_default(self):
+        graph = {"band": {"type": "enum.EnumInput", "default": lit("fm"),
+                          "options": ["am", "fm"]}}
+        e = _engine()
+        bound = Frame(graph=graph, inputs={"band": "am"}, depth=0)
+        unbound = Frame(graph=graph, inputs={}, depth=0)
+        assert e._pull(bound, conn("band.value")) == "am"
+        assert e._pull(unbound, conn("band.value")) == "fm"
+        assert e._pull(unbound, conn("band.options")) == ["am", "fm"]
+
+    def test_concurrent_split_runs_every_branch(self):
+        res = run({
+            "enter": {"type": "networks.Enter", "start": conn("cs.run")},
+            "cs": {"type": "control.ConcurrentSplit", "branches": {
+                "Master": {**conn("a.capture"), "index": 0},
+                "Slave": {**conn("b.capture"), "index": 1}}},
+            "a": _cap("master", lit(1)),
+            "b": _cap("slave", lit(2)),
+        })
+        assert {m["metric"] for m in res.metrics} == {"master", "slave"}
+
+    def test_ping_outcome_records_the_verdict(self):
+        res = run({
+            "enter": {"type": "networks.Enter", "start": conn("po.run")},
+            "po": {"type": "testing.PingOutcome", "outcome": lit(True)},
+        })
+        assert res.metrics == [{"metric": "PingOutcome", "value": True,
+                                "result_code": 0, "expected": True}]
+
+    def test_file_output_attaches_the_blob_and_names_it(self):
+        backend = _FusedBackend()
+        res = Engine(backend, Path(".")).run_graph({
+            "enter": {"type": "networks.Enter", "start": conn("fo.run")},
+            "fo": {"type": "reporting.FileOutput", "file_name": lit("logs.gz"),
+                   "data": lit("BLOB"), "mime_type": lit("application/gzip"),
+                   "encoding": lit("Base64"), "finished": conn("exit.exit")},
+            "exit": {"type": "networks.Exit", "exit_code": lit(0)},
+        }, {})
+        assert res.outputs["files"] == [{"file_name": "logs.gz",
+                                         "mime_type": "application/gzip",
+                                         "encoding": "Base64"}]
+
+    def test_script_test_is_the_same_node_as_run_script_test(self, tmp_path):
+        # scripts.ScriptTest is the older name for the same node. In 2022.45.15 it
+        # is always INLINE in a wired graph (continuing via `done`), never a bare
+        # task-wrapper entry -- so that is the shape tested here.
+        _bundle(tmp_path, myscript=_SCRIPT, parent='''
+network = {
+    "enter": {"type": "networks.Enter", "start": {"connection": "st.run"}},
+    "st": {"type": "scripts.ScriptTest", "script_name": "myscript",
+           "inputs": {}, "done": {"connection": "exit.exit"}},
+    "exit": {"type": "networks.Exit", "exit_code": {"value": 0}},
+}
+''')
+        res = Engine(MockBackend("success"), tmp_path).run_procedure("parent")
+        assert any(m["metric"] == "scripted" for m in res.metrics)

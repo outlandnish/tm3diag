@@ -41,6 +41,18 @@ class StatusDisplay:
         if self._lines < 2:
             self._lines = 2
 
+    def set_progress(self, current: int, total: int, label: str = "") -> None:
+        """How far through the current step — rendered here as the moving bar.
+
+        Separate from set_detail because a step and its progress are different
+        things: the terminal overwrites one line either way, but a NON-terminal
+        driver (odin_runner flashing on ODIN's behalf) needs the numbers, and
+        collecting one log line per transfer block -- which is what calling
+        set_detail per block produced -- buries the actual steps in hundreds of
+        redraws of the same bar.
+        """
+        self.set_detail(f"Transfer {_bar(current, total)}  {label}")
+
     def finalize(self) -> None:
         """Stop tracking — subsequent output starts on new lines below."""
         self._lines = 0

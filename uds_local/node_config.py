@@ -9,6 +9,23 @@ from decode_bin import load_json as _load_json  # type: ignore[import-untyped]
 from .odj import IoControlEntry, OdjEntry, RoutineEntry, load_odj
 
 
+def _message_ids(path: Path | str) -> dict[str, dict]:
+    """``{message name: {"message_id": id}}`` from a compact.json OR a DBC.
+
+    All this needs is the name -> CAN id map for a node's UDS request/response
+    pair, and the generated DBC carries the WHOLE catalog (2022.45.15: 446
+    messages) where compact.json carries the shipped subset (140). A node whose
+    UDS messages were stripped from compact.json therefore resolves off the DBC
+    but raises KeyError off the JSON.
+    """
+    p = Path(path)
+    if p.suffix.lower() == ".dbc":
+        import cantools
+        db = cantools.database.load_file(str(p))
+        return {m.name: {"message_id": m.frame_id} for m in db.messages}
+    return _load_json(p)["messages"]
+
+
 @dataclass
 class NodeConfig:
     name: str
@@ -29,7 +46,7 @@ def load_node_config(
     odj_dir: Path | str,
 ) -> NodeConfig:
     nodes = _load_json(Path(nodes_json_path))
-    eth = _load_json(Path(eth_compact_path))
+    messages = _message_ids(eth_compact_path)
     odj_dir = Path(odj_dir)
 
     # Match node names case-insensitively.
@@ -40,7 +57,6 @@ def load_node_config(
     node_name = canonical
 
     node_cfg = nodes[node_name]
-    messages = eth["messages"]
 
     req_name = node_cfg["request_message_name"]
     resp_name = node_cfg["response_message_name"]
@@ -86,8 +102,7 @@ def load_all_nodes(
 ) -> list[tuple[str, int, int]]:
     """Return (node_name, request_can_id, response_can_id) for every node in nodes.json."""
     nodes = _load_json(Path(nodes_json_path))
-    eth = _load_json(Path(eth_compact_path))
-    messages = eth["messages"]
+    messages = _message_ids(eth_compact_path)
 
     result = []
     for name, cfg in nodes.items():

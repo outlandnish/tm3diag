@@ -176,6 +176,55 @@ class TestProcedures:
         asyncio.run(body())
 
 
+class TestVehicles:
+    """The picker's backing endpoints. Only Model3/tasks used to be reachable, so
+    the Gen3 procedures a Model 3 actually runs were invisible."""
+
+    def _multi(self, tmp_path):
+        _bundle(tmp_path)                                  # Model3: CAP, BLOCKED
+        _write(tmp_path, "Gen3/tasks/GEN3CAP", _CAP)
+        _write(tmp_path, "ModelY/tasks/YCAP", _CAP)
+        return tmp_path
+
+    def test_lists_cars_and_a_default(self, tmp_path):
+        async def body():
+            async with _client(bundle=self._multi(tmp_path)) as client:
+                data = await (await client.get("/api/odin/vehicles")).json()
+                assert data["vehicles"] == ["Model3", "ModelY"]   # Gen3 is shared
+                assert data["default"] == "Model3"
+        asyncio.run(body())
+
+    def test_a_car_gets_its_own_plus_the_shared_procedures(self, tmp_path):
+        async def body():
+            async with _client(bundle=self._multi(tmp_path)) as client:
+                r = await client.get("/api/odin/procedures?vehicle=Model3")
+                assert {p["name"] for p in await r.json()} == {"CAP", "GEN3CAP"}
+        asyncio.run(body())
+
+    def test_each_car_is_cached_separately(self, tmp_path):
+        # One cache for all cars would have served Model3's list for ModelY.
+        async def body():
+            async with _client(bundle=self._multi(tmp_path)) as client:
+                await client.get("/api/odin/procedures?vehicle=Model3")
+                r = await client.get("/api/odin/procedures?vehicle=ModelY")
+                assert {p["name"] for p in await r.json()} == {"YCAP", "GEN3CAP"}
+        asyncio.run(body())
+
+    def test_an_unknown_car_is_404_not_an_empty_list(self, tmp_path):
+        async def body():
+            async with _client(bundle=self._multi(tmp_path)) as client:
+                r = await client.get("/api/odin/procedures?vehicle=ModelZ")
+                assert r.status == 404
+        asyncio.run(body())
+
+    def test_no_car_falls_back_to_the_default(self, tmp_path):
+        async def body():
+            async with _client(bundle=self._multi(tmp_path)) as client:
+                r = await client.get("/api/odin/procedures")
+                assert {p["name"] for p in await r.json()} == {"CAP", "GEN3CAP"}
+        asyncio.run(body())
+
+
 class TestRequirements:
     def test_returns_signals_grouped_by_bus(self, tmp_path):
         async def body():
@@ -434,4 +483,234 @@ class TestLowLevelUds:
                     "node": "DI", "op": "read_did_raw", "args": {"did": "F190"}})
                 assert r.status == 400
                 assert "securityAccessDenied" in (await r.json())["error"]
+        asyncio.run(body())
+
+
+class TestCancel:
+    """A long procedure needs a way out. Cancel ends the next WAIT -- it does not
+    interrupt an operation in flight, and the response says so."""
+
+    def test_cancel_with_no_run_is_a_conflict_not_a_silent_ok(self):
+        async def body():
+            async with _client() as client:
+                r = await client.post("/api/odin/cancel", json={})
+                assert r.status == 409
+                assert "no run in progress" in (await r.json())["error"]
+        asyncio.run(body())
+
+    def test_cancel_sets_the_running_engines_flag(self, tmp_path):
+        async def body():
+            svc = None
+            engines = []
+
+            async with _client(bundle=_bundle(tmp_path),
+                               backend_factory=_mock_factory) as client:
+                svc = client.app[odin_web.ODIN_WEB]
+                # Stand in for a run in flight: hold the lock and register an
+                # engine, exactly as _run does.
+                import odin_runner
+                eng = odin_runner.Engine(MockBackend("success"), _bundle(tmp_path))
+                engines.append(eng)
+                async with svc._run_lock:
+                    svc._track_engine(eng)
+                    r = await client.post("/api/odin/cancel", json={})
+                    assert r.status == 200
+                    data = await r.json()
+                    assert data["cancelling"] is True
+                    assert "next wait" in data["note"]
+                svc._engine = None
+
+            assert engines[0].cancelled() is True
+        asyncio.run(body())
+
+
+class TestBenchState:
+    """Facts about the unit that no bus reading establishes, so the operator
+    declares them and the runner seeds them into the CID store (cid.IsFused)."""
+
+    def test_defaults_are_reported(self):
+        async def body():
+            async with _client() as client:
+                r = await client.get("/api/odin/bench-state")
+                assert r.status == 200
+                body_ = await r.json()
+                # Flashing is destructive and an UPDATE_* procedure asks for one
+                # with no confirmation of its own, so it starts DISARMED.
+                # ...while bootloader updates default ON: a -WITH-BOOTLOADER
+                # procedure names its bu/bl by hand, so defaulting them off
+                # would silently downgrade the run the operator picked.
+                assert body_["state"] == {"is_fused": True, "allow_flash": False,
+                                          "include_bootloaders": True,
+                                          "ramapps": "include",
+                                          "conditions": {}}
+                assert body_["cid_values"] == {"GUI_isFused": "true"}
+        asyncio.run(body())
+
+    def test_arming_flashing_is_not_a_cid_value(self):
+        async def body():
+            async with _client() as client:
+                r = await client.post("/api/odin/bench-state", json={"allow_flash": True})
+                data = await r.json()
+                assert data["state"]["allow_flash"] is True
+                # It is a backend setting, not something a procedure reads.
+                assert "allow_flash" not in data["cid_values"]
+        asyncio.run(body())
+
+    def test_a_run_arms_the_backend_from_the_declared_state(self, tmp_path):
+        async def body():
+            backend = MockBackend("success")
+            backend.allow_flash = False
+            async with _client(bundle=_bundle(tmp_path),
+                               backend_factory=lambda: backend) as client:
+                await client.post("/api/odin/bench-state", json={"allow_flash": True})
+                await client.post("/api/odin/run", json={"procedure": "Model3/tasks/CAP"})
+                assert backend.allow_flash is True
+                # ...and turning it back off disarms the next run.
+                await client.post("/api/odin/bench-state", json={"allow_flash": False})
+                await client.post("/api/odin/run", json={"procedure": "Model3/tasks/CAP"})
+                assert backend.allow_flash is False
+        asyncio.run(body())
+
+    def test_preflight_arms_the_backend_the_same_way_a_run_does(self, tmp_path):
+        # Preflight builds its own backend from the factory, which starts
+        # disarmed. When only the run applied the declared state, the modal
+        # reported "flashing is not armed" for an armed bench and Confirm was
+        # never enabled -- the two paths have to answer alike.
+        async def body():
+            backend = MockBackend("success")
+            backend.allow_flash = False
+            async with _client(bundle=_bundle(tmp_path),
+                               backend_factory=lambda: backend) as client:
+                await client.post("/api/odin/bench-state", json={"allow_flash": True})
+                await client.post("/api/odin/flash-preflight",
+                                  json={"procedure": "Model3/tasks/CAP"})
+                assert backend.allow_flash is True
+        asyncio.run(body())
+
+    def test_declining_bootloaders_reaches_both_preflight_and_the_run(self, tmp_path):
+        # Excluding them is a per-flash decision made in the dialog, so the
+        # preview and the write it confirms must agree about it.
+        async def body():
+            backend = MockBackend("success")
+            backend.include_bootloaders = True
+            async with _client(bundle=_bundle(tmp_path),
+                               backend_factory=lambda: backend) as client:
+                r = await client.post("/api/odin/bench-state",
+                                      json={"include_bootloaders": False})
+                assert (await r.json())["state"]["include_bootloaders"] is False
+                await client.post("/api/odin/flash-preflight",
+                                  json={"procedure": "Model3/tasks/CAP"})
+                assert backend.include_bootloaders is False
+                await client.post("/api/odin/run", json={"procedure": "Model3/tasks/CAP"})
+                assert backend.include_bootloaders is False
+        asyncio.run(body())
+
+    def test_the_ramapp_mode_is_one_of_three_named_states(self):
+        # A checkbox cannot express "only", so this key is an enum, not a flag --
+        # and an unknown value has to be rejected rather than coerced to a bool.
+        async def body():
+            async with _client() as client:
+                r = await client.post("/api/odin/bench-state", json={"ramapps": "only"})
+                assert (await r.json())["state"]["ramapps"] == "only"
+                r = await client.post("/api/odin/bench-state", json={"ramapps": "yes"})
+                assert r.status == 400
+                r = await client.get("/api/odin/bench-state")
+                assert (await r.json())["state"]["ramapps"] == "only"   # unchanged
+        asyncio.run(body())
+
+    def test_the_ramapp_mode_reaches_preflight_and_the_run(self, tmp_path):
+        async def body():
+            backend = MockBackend("success")
+            backend.ramapps = "include"
+            async with _client(bundle=_bundle(tmp_path),
+                               backend_factory=lambda: backend) as client:
+                await client.post("/api/odin/bench-state", json={"ramapps": "only"})
+                await client.post("/api/odin/flash-preflight",
+                                  json={"procedure": "Model3/tasks/CAP"})
+                assert backend.ramapps == "only"
+                backend.ramapps = "include"
+                await client.post("/api/odin/run", json={"procedure": "Model3/tasks/CAP"})
+                assert backend.ramapps == "only"
+        asyncio.run(body())
+
+    def test_preflight_hands_over_the_declared_car_config_too(self, tmp_path):
+        async def body():
+            backend = MockBackend("success")
+            backend.conditions = {}
+            async with _client(bundle=_bundle(tmp_path),
+                               backend_factory=lambda: backend) as client:
+                await client.post("/api/odin/bench-state",
+                                  json={"conditions": {"vdcType": "1"}})
+                await client.post("/api/odin/flash-preflight",
+                                  json={"procedure": "Model3/tasks/CAP"})
+                assert backend.conditions == {"vdcType": "1"}
+        asyncio.run(body())
+
+    def test_a_post_updates_it_and_maps_it_to_a_cid_value(self):
+        async def body():
+            async with _client() as client:
+                r = await client.post("/api/odin/bench-state", json={"is_fused": False})
+                assert r.status == 200
+                assert (await r.json())["cid_values"] == {"GUI_isFused": "false"}
+                # ...and it sticks for the next reader, leaving the rest alone.
+                r = await client.get("/api/odin/bench-state")
+                assert (await r.json())["state"] == {"is_fused": False,
+                                                     "allow_flash": False,
+                                                     "include_bootloaders": True,
+                                                     "ramapps": "include",
+                                                     "conditions": {}}
+        asyncio.run(body())
+
+    def test_declared_car_config_is_kept_as_strings(self):
+        # A condition compares against the metadata's text, so 0 and "0" must
+        # not be two different answers.
+        async def body():
+            async with _client() as client:
+                r = await client.post("/api/odin/bench-state",
+                                      json={"conditions": {"vdcType": 1,
+                                                           "drivetrainType": "0",
+                                                           "blank": ""}})
+                assert r.status == 200
+                assert (await r.json())["state"]["conditions"] == {
+                    "vdcType": "1", "drivetrainType": "0"}
+        asyncio.run(body())
+
+    def test_car_config_must_be_an_object(self):
+        async def body():
+            async with _client() as client:
+                r = await client.post("/api/odin/bench-state",
+                                      json={"conditions": "vdcType=1"})
+                assert r.status == 400
+        asyncio.run(body())
+
+    def test_a_run_hands_the_declared_car_config_to_the_backend(self, tmp_path):
+        async def body():
+            backend = MockBackend("success")
+            backend.conditions = {}
+            async with _client(bundle=_bundle(tmp_path),
+                               backend_factory=lambda: backend) as client:
+                await client.post("/api/odin/bench-state",
+                                  json={"conditions": {"vdcType": "1"}})
+                await client.post("/api/odin/run", json={"procedure": "Model3/tasks/CAP"})
+                assert backend.conditions == {"vdcType": "1"}
+        asyncio.run(body())
+
+    def test_an_unknown_key_is_rejected_rather_than_silently_ignored(self):
+        async def body():
+            async with _client() as client:
+                r = await client.post("/api/odin/bench-state", json={"is_frobbed": True})
+                assert r.status == 400
+                assert "is_frobbed" in (await r.json())["error"]
+        asyncio.run(body())
+
+    def test_a_run_seeds_the_declared_state_into_the_cid_store(self, tmp_path):
+        async def body():
+            backend = MockBackend("success")
+            async with _client(bundle=_bundle(tmp_path),
+                               backend_factory=lambda: backend) as client:
+                await client.post("/api/odin/bench-state", json={"is_fused": False})
+                r = await client.post("/api/odin/run", json={"procedure":
+                                                             "Model3/tasks/CAP"})
+                assert r.status == 200
+            assert backend.cid_get("GUI_isFused") == "false"
         asyncio.run(body())

@@ -23,10 +23,12 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import asyncio
 import base64
 import contextlib
 import datetime
 import hashlib
+import inspect
 import json
 import os
 import re
@@ -40,18 +42,54 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+import odin_script_api  # noqa: E402  (needs the sys.path line above)
+
 DEFAULT_PROC = "Model3/tasks/PROC_DI_X_RESOLVER-LEARN"
 
 
 # graph loading
-def load_graph(bundle: Path, relbase: str) -> dict:
-    """Load a bundle graph by its basename (e.g. 'Model3/lib/DI_RESOLVER_LEARNING')."""
+def load_graph(bundle: Path, relbase: str) -> dict | str:
+    """Load a bundle graph by its basename (e.g. 'Model3/lib/DI_RESOLVER_LEARNING').
+
+    Returns the file's `network`, which is EITHER a dict of wired nodes (1,801 of
+    1,955 files on 2022.45.15) or a Python source string defining an
+    `async def odin_script_test(api, ...)` -- a native script test, run by
+    Engine._run_script via odin_script_api. Callers must handle both.
+    """
     path = bundle / (relbase + ".py")
     ns: dict = {}
     exec(compile(path.read_text(encoding="utf-8"), str(path), "exec"), ns)  # noqa: S102
     if "network" not in ns:
         raise ValueError(f"{path} has no top-level `network` dict")
     return ns["network"]
+
+
+def run_coroutine(coro):
+    """Run `coro` to completion from synchronous code, loop or no loop.
+
+    A native script is a coroutine, but a script may reach another script through
+    a WIRED graph in between (script -> subnetwork -> task wrapper -> script), and
+    that middle hop is synchronous. Re-entering asyncio.run on a thread that
+    already has a running loop is an error, so the nested case gets its own loop
+    on a worker thread; the outer loop blocks on it, which is what the
+    synchronous graph engine expects anyway.
+    """
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return asyncio.run(coro)
+    box: dict = {}
+    def _run():
+        try:
+            box["value"] = asyncio.run(coro)
+        except BaseException as e:  # noqa: BLE001  (re-raised on the caller's thread)
+            box["error"] = e
+    t = threading.Thread(target=_run, daemon=True)
+    t.start()
+    t.join()
+    if "error" in box:
+        raise box["error"]
+    return box["value"]
 
 
 class GraphExit(Exception):
@@ -80,7 +118,28 @@ class Frame:
     scratch: dict = field(default_factory=dict)
     outputs: dict = field(default_factory=dict)  # this graph's named outputs (SetOutput / networks.Output)
     threads: list = field(default_factory=list)
+    # `cancel` ends THIS graph's background branches when it finishes (run_graph
+    # sets it in its finally, then joins). `run_cancel` is the whole RUN's stop
+    # flag, shared by every frame, set by an operator asking to stop. They are
+    # separate because one graph completing must not stop the others -- check
+    # both through stopping()/wait().
     cancel: threading.Event = field(default_factory=threading.Event)
+    run_cancel: threading.Event = field(default_factory=threading.Event)
+
+    def stopping(self) -> bool:
+        """This frame is done, or the operator stopped the run."""
+        return self.cancel.is_set() or self.run_cancel.is_set()
+
+    def is_set(self) -> bool:
+        # Event-shaped, so a frame can be handed to a backend adapter as its
+        # `cancel` (odx start_and_wait) and cover both flags.
+        return self.stopping()
+
+    def wait(self, timeout: float | None = None) -> bool:
+        """Sleep up to `timeout`, returning early (True) if either flag is set."""
+        if self.cancel.wait(timeout):
+            return True
+        return self.run_cancel.is_set()
 
 
 @dataclass
@@ -97,6 +156,9 @@ _CID_DEFAULTS = {
     "GUI_factoryMode": "false", "GUI_developerMode": "false",
     "GUI_diagnosticMode": "false", "GUI_tdsMode": "false",
     "GUI_serviceMode": "false", "GUI_isDelivered": "true",
+    # Operator-declared on a bench (cid.IsFused); the web UI's bench-state toggle
+    # writes it. Default: a production, fused gateway.
+    "GUI_isFused": "true",
     "VAPI_isLocked": "false", "VAPI_driverPresent": "true",
     "VAPI_countryCode": "US", "VAPI_europeVehicle": "false",
     "VAPI_odometer": "0", "VAPI_doorState": "closed",
@@ -205,8 +267,83 @@ class CidFilesystem:
 
 
 # backends (the hardware-interop seam)
+# /sbin/smashclicker -- the MCU's per-ECU flasher, which every UPDATE_* procedure
+# reaches through Gen3/scripts/UPDATE_MODULE:
+#
+#     /sbin/smashclicker -h <hwidacq list> -u <update list> -j <job id> [-t '+^=']
+#
+# `-h` names the ECU whose identity is read, `-u` the images to write:
+# UPDATE_PMR is `-h pmr -u pmr,dir`. UPDATE_MODULE reads exit_status and scrapes
+# stdout for `garage-log` lines -- a quoted module name plus a `code`, where code
+# 1 or 2 is a pass -- so a substitute has to answer in that shape or the
+# procedure's user-facing message comes out empty.
+_SMASHCLICKER = "/sbin/smashclicker"
+
+
+def _is_smashclicker(path) -> bool:
+    return bool(path) and str(path).strip().endswith("smashclicker")
+
+
+def _parse_smashclicker(args) -> dict:
+    """The flag pairs UPDATE_MODULE passes, as keywords. Lists are comma-joined
+    by the caller; `-t` is the updater-mode string, present only when can_quiet."""
+    argv = [str(a) for a in (args or [])]
+    out = {"update": (), "hwidacq": (), "job_id": "", "can_quiet": False}
+    flags = {"-u": "update", "-h": "hwidacq", "-j": "job_id"}
+    i = 0
+    while i < len(argv):
+        key = flags.get(argv[i])
+        if key and i + 1 < len(argv):
+            value = argv[i + 1]
+            out[key] = value if key == "job_id" else tuple(
+                p for p in value.split(",") if p)
+            i += 2
+            continue
+        if argv[i] == "-t":
+            out["can_quiet"] = True
+            i += 2
+            continue
+        i += 1
+    return out
+
+
+def _scrub_reason(reason) -> str:
+    """parse_log decides pass/fail by looking for the literal 'code 1'/'code 2'
+    inside the quoted piece, so a failure reason must not contain one."""
+    return str(reason).replace("code ", "cd ")
+
+
+def _smashclicker_result(passed, failed=(), error=None, log=()) -> dict:
+    """A smashclicker-shaped result UPDATE_MODULE's parse_log can read.
+
+    parse_log splits each `garage-log` line on '"': element [1] is the module and
+    a later element carrying 'code 1'/'code 2' means that module passed, while
+    any other 'code ...' is a failure whose text becomes the user-facing reason.
+    So both verdicts carry their module name AND their code inside quotes.
+    """
+    lines = [f'garage-log "{c}" update finished "code 1"' for c in passed]
+    lines += [f'garage-log "{c}" update aborted "code 99 {_scrub_reason(r)}"'
+              for c, r in failed]
+    if error:
+        lines.append(
+            f'garage-log "smashclicker" update aborted "code 99 {_scrub_reason(error)}"')
+    ok = bool(passed) and not failed and not error
+    return {"stdout": "\r\n".join([*log, *lines]),
+            "stderr": "" if ok else (error or "flash failed"),
+            "exit_status": 0 if ok else 1}
+
+
 class Backend:
     """Interface the interop node handlers call. One impl per environment."""
+
+    # Set by Engine.__init__ to its own _emit, so a long-running backend
+    # operation (a flash, a bus capture) can report progress on the same stream
+    # the node trace goes out on instead of going quiet for minutes.
+    on_event = None
+
+    def procedure_session(self):
+        """Context held around one whole procedure run (see BenchBackend)."""
+        return contextlib.nullcontext()
 
     def uds(self, node_name: str):
         raise NotImplementedError
@@ -271,12 +408,59 @@ class Backend:
         return {}
 
     def cid_execute(self, **kwargs):
-        # Stubbed shell exec (ExecuteApplication / CidCommand / ExecuteScript): canned success.
+        # Stubbed shell execution (ExecuteApplication / CidCommand / ExecuteScript):
+        # the firmware dump's binaries can't be run, so return canned success --
+        # EXCEPT the ECU flasher, which must never fabricate a successful flash.
+        if _is_smashclicker(kwargs.get("path")):
+            return self.flash_module(**_parse_smashclicker(kwargs.get("args")))
         return {"stdout": "", "stderr": "", "exit_status": 0}
+
+    def flash_preview(self, update=(), hwidacq=()) -> dict:
+        """What flash_module WOULD write, resolved but not written.
+
+        Lets an operator see the images and the car config that chose them
+        before starting the run, instead of after the first one is on the wire.
+        A backend that cannot flash says so here too, rather than letting the
+        operator find out at the point of no return.
+        """
+        return {"plan": [], "conditions": {}, "choices": [],
+                "blocked": [str(c) for c in update],
+                "error": "this backend cannot flash"}
+
+    def flash_module(self, update=(), hwidacq=(), job_id="", can_quiet=False,
+                     timeout=None):
+        """Flash ECU firmware in place of the MCU's /sbin/smashclicker.
+
+        The 55 UPDATE_* procedures reach the drive unit, PCS, VCSEC and the rest
+        through that one binary. A Backend that cannot flash must NOT answer it
+        with cid_execute's canned success: UPDATE_MODULE reads exit_status and
+        scrapes stdout, so a stub makes every one of them report a flash that
+        never happened. Refuse instead; BenchBackend overrides with the real one.
+        """
+        return _smashclicker_result(
+            [], error="no flasher wired to /sbin/smashclicker on this backend")
 
     def cid_read_file(self, path, mode="r"):
         # proto.ReadFile: served from the firmware dump on a bench (None otherwise).
         return None
+
+    # -- high-rate gateway logging (cid.StartHRL / StopHRL / StartHrlUploadService).
+    # On a car the gateway records a high-rate bus trace and the upload service
+    # ships it to Tesla. A bench has no gateway and nowhere to ship to, so the
+    # capture is written locally and `hrl_upload` reports where it landed rather
+    # than pretending an upload happened. (A user-specified upload endpoint is the
+    # natural next step; nothing here assumes the file is the end of the road.)
+    def hrl_start(self, timeout=None, path=None):
+        """Begin a capture; returns its path, or None with no bus to capture."""
+        return None
+
+    def hrl_stop(self):
+        """End the capture; returns its path, or None if none was running."""
+        return None
+
+    def hrl_upload(self, hrl_type=None):
+        """Hand off the finished capture. Returns {'path': ..., 'uploaded': bool}."""
+        return {"path": None, "uploaded": False}
 
 
 class MockBackend(Backend):
@@ -365,7 +549,7 @@ class _MockOdx:
             return {"LEARN_RESULT": self.backend.learn, "RUNNING": False, "RMSERROR": 0.5}
         return {}
 
-    def start_routine(self, *_a, **_k): return b""
+    def start_routine(self, *_a, **_k): return {}
     def stop_routine(self, *_a, **_k): return b""
     def request_results(self, *_a, **_k): return {}
     def read_data(self, *_a, **_k): return {}
@@ -419,24 +603,82 @@ class BenchBackend(Backend):
     """Real bench: uds/odx map to one uds_local.UdsSession per ECU node (cached, with a
     TesterPresent keep-alive), driven off the ODJ (NodeConfig) + odj_codec. uds('ESP')/
     odx('ESP') return no-op stubs (no ESP module on a conversion). can_read decodes a
-    live-bus RX cache; the CID store is read-your-writes; the CID filesystem is read-only.
+    live-bus RX cache; the CID store is read-your-writes over a live-bus derive
+    (`_derive_cid`); the CID filesystem is read-only.
     """
 
+    # CID data-values the drive-unit graphs gate on are published by the MCU, which
+    # a bench does not have -- so answer them from the same CAN the MCU reads and
+    # fall back to the store when the bus is quiet. Simple aliases of one signal
+    # (VAPI_shiftState <- DI_gear, and ~300 more) come from the firmware's OWN
+    # registration table -- see vapi_registry, consulted in _derive_cid. Only the
+    # values the MCU COMPUTES in code are reproduced by hand here:
+    #   * VAPI_{drive,acc,hvac}RailOn from VCFRONT_vehiclePowerState (0x221)
+    #   * GUI_tractionControlModeRequest from DI_tractionControlMode (a bench proxy;
+    #     the real one is a touchscreen request the MCU owns, not a CAN signal)
+    # (Rear unit: the aliases resolve DI_*/DIR_* off 0x118 etc.)
+    # The MCU sets each rail on from VCFRONT_vehiclePowerState: off=0 conditioning=1
+    # accessory=2 drive=3, each state powering every rail below it.
+    _RAIL_MIN_POWER_STATE = {"VAPI_hvacRailOn": 1, "VAPI_accRailOn": 2,
+                             "VAPI_driveRailOn": 3}
+
     def __init__(self, channel: str, interface: str = "socketcan",
-                 cid_values: dict | None = None, firmware_root=None, datastore=None):
+                 cid_values: dict | None = None, firmware_root=None, datastore=None,
+                 frame_source=None, db=None, hrl_dir=None, allow_flash=False,
+                 artifacts_dir=None, conditions=None, include_bootloaders=True,
+                 ramapps="include", sim_url=None, vapi_registry=None):
         self.channel = channel
         self.interface = interface
+        # vehicle_sim's control server (tm3web --sim-url), for procedure_session;
+        # None => no service mode on the bus.
+        self.sim_url = sim_url
+        # Where cid.StartHRL writes its capture (default config.HRL_DIR).
+        self._hrl_dir = hrl_dir
+        # Flashing is destructive and a UPDATE_* procedure asks for it with no
+        # further confirmation, so it is ARMED explicitly (the web UI's bench
+        # state, or allow_flash=True here) rather than on by default.
+        self.allow_flash = bool(allow_flash)
+        self._artifacts_dir = artifacts_dir
+        # Operator-declared car config, overlaid on GTW_carConfig; see
+        # vehicle_conditions. Mutable so the web UI can update it per run.
+        self.conditions: dict = dict(conditions or {})
+        # Whether a procedure's bu/bl entries are written. Default True: a
+        # -WITH-BOOTLOADER procedure asked for them by name, and quietly
+        # downgrading it to an app update would be a silent no-op. The preflight
+        # dialog is where it gets confirmed. See flash_scripts.bootloader_choice.
+        self.include_bootloaders = bool(include_bootloaders)
+        # 'include' (as the procedure names) / 'skip' / 'only'. A RAM app is not
+        # part of a normal app update, so pushing one WITHOUT rewriting the app
+        # it rides on is a real request -- hence three states, not a checkbox.
+        self.ramapps = ramapps
+        self._hrl = None         # (logger, path, channel) while a capture is running
+        self._hrl_last = None    # path of the most recent finished capture
         self._nodes: dict = {}   # NODE (upper) -> (NodeConfig, UdsSession)
         self._can: dict = {}     # channel -> (bus, notifier, _CanRxCache), lazy
         self._isotp: dict = {}   # (channel, tx, rx) -> (bus, notifier, transport), lazy
+        # (channel) -> {can_id: (data, ts)} of a host's latest retained frames, or
+        # None to listen on our own. See can_read.
+        self._frame_source = frame_source
+        # CanDatabase for can_read, lazy. A host that hands over frames should hand
+        # over ITS database too: the default ETH_COMPACT is a 2022 compact.json whose
+        # 0x118 carries only DI_gear/DI_brakePedalState, so decoding a viewer's frames
+        # with it would silently lose signals the viewer itself displays.
+        self._db_cache = db
+        self._sig_index = None   # signal name -> can id, lazy
         self._datastore = datastore  # interop DataStore for stored outputs (lazy)
         self._bootloader: set = set()  # NODES currently held in their bootloader
         # firmware_root defaults to TM3_ROOT (config.ROOT); None => FS ops stub empty.
-        self._cid = CidStore(seed=cid_values)
+        self._cid = CidStore(seed=cid_values, derive=self._derive_cid)
         if firmware_root is None:
             import config as _cfg
             firmware_root = _cfg.ROOT
         self._fs = CidFilesystem(firmware_root)
+        # The firmware's VAPI alias table (VAPI_shiftState <- DI_gear, ...). A given
+        # Registry is used as-is (tests inject one); None builds it lazily from the
+        # firmware under `firmware_root` on first use, and an empty one derives no
+        # aliases -- so a bench without the MCU libs simply falls back to seeds.
+        self._firmware_root = firmware_root
+        self._vapi_reg = vapi_registry
 
     def _node(self, node_name):
         key = node_name.upper()
@@ -467,12 +709,110 @@ class BenchBackend(Backend):
         cfg, sess = self._node(node_name)
         return _OdxAdapter(sess, cfg)
 
-    # -- cid data-value store (read-your-writes) --
+    # -- cid data-value store (live-bus derive, else read-your-writes) --
+    def _derive_cid(self, name):
+        """Live values for the MCU-published CID names the drive-unit graphs gate on.
+
+        Returns None for every other name, and for a signal the bus has not carried
+        yet -- CidStore then falls back to its stored/seeded value, so a cid_set (or
+        a `cid_values` seed) still works when nothing is transmitting.
+        """
+        if name == "GUI_tractionControlModeRequest":
+            # Only the 'Dyno' string is load-bearing (DI_RESOLVER_LEARNING compares
+            # against it verbatim); the other modes just have to not equal it.
+            tcm = self._can_signal_int("DI_tractionControlMode")
+            return None if tcm is None else ("Dyno" if tcm == 5 else "Normal")
+        if name in self._RAIL_MIN_POWER_STATE:
+            vps = self._can_signal_int("VCFRONT_vehiclePowerState")
+            if vps is None:
+                return None
+            return "true" if vps >= self._RAIL_MIN_POWER_STATE[name] else "false"
+        # Everything else the drive-unit graphs read is a plain alias of one CAN
+        # signal, rendered the way the MCU renders it (an enum to its label, a bool
+        # to "true"/"false"): let the firmware's own table answer. None => not an
+        # alias, or its source is off the bus -- the store/seed then serves it.
+        return self._registry().value(name, self._can_signal)
+
+    def _registry(self):
+        """The firmware's VAPI alias table (lazily built from `firmware_root`, then
+        cached beside the DBC). An empty table when the MCU libs are absent."""
+        if self._vapi_reg is None:
+            import config as _cfg
+            import vapi_registry
+            libs = _cfg.vapi_libs(self._firmware_root)
+            cache = (_cfg.ETH_DBC.with_name(_cfg.ETH_DBC.stem + ".vapi_registry.json")
+                     if _cfg.ETH_DBC else None)
+            self._vapi_reg = vapi_registry.load_or_build(libs[0] if libs else None, cache)
+        return self._vapi_reg
+
+    def _can_signal(self, signal):
+        """Latest value of `signal` off the vehicle bus as a float, or None if it is
+        absent/unparseable (see _can_signal_int)."""
+        return self._coerce_signal(signal, float)
+
+    def _can_signal_int(self, signal):
+        """Latest value of `signal` off the vehicle bus as an int, or None if it is
+        absent/unparseable. Never raises: a bus that will not open just reads as
+        absent, so CID lookups keep working without CAN."""
+        return self._coerce_signal(signal, int)
+
+    def _coerce_signal(self, signal, cast):
+        try:
+            v = self.can_read(signal, bus="ETH")
+        except Exception:
+            return None
+        try:
+            return cast(v)
+        except (TypeError, ValueError):
+            return None
+
     def cid_get(self, name):
         return self._cid.get(name)
 
     def cid_set(self, name, value):
         self._cid.set(name, value)
+
+    # -- the ODIN session's MCU state, held on the bus for a whole run --
+    @contextlib.contextmanager
+    def procedure_session(self):
+        """A tech runs ODIN with the car in service mode, and the DI refuses
+        ROTOR/RESOLVER_LEARNING without UI_serviceMode on 0x284 -- which the MCU
+        sends and a bench does not have. So turn vehicle_sim's service mode on for
+        the run and restore it after. Never fails the run: without it the DI's own
+        refusal says what is missing, and the status line says why."""
+        restore = False
+        try:
+            if not self.sim_url:
+                raise RuntimeError("no vehicle_sim control URL (tm3web --control)")
+            if not self._sim_request("/state")["ui"]["service_mode"]:
+                self._set_sim_service_mode(1)
+                restore = True
+                self._status("vehicle_sim: service mode on for this run")
+        except Exception as e:  # noqa: BLE001
+            self._status(f"UI_serviceMode not on the bus: {e}")
+        try:
+            yield
+        finally:
+            if restore:
+                with contextlib.suppress(Exception):
+                    self._set_sim_service_mode(0)
+
+    def _set_sim_service_mode(self, value):
+        self._sim_request("/cmd", {"type": "ui", "field": "service_mode", "value": value})
+
+    def _sim_request(self, path, payload=None):
+        """JSON request to vehicle_sim's control server: GET, or POST `payload`."""
+        import urllib.request
+        data = None if payload is None else json.dumps(payload).encode()
+        req = urllib.request.Request(self.sim_url.rstrip("/") + path, data=data,
+                                     headers={"Content-Type": "application/json"})
+        with urllib.request.urlopen(req, timeout=1.5) as r:
+            return json.loads(r.read() or b"{}")
+
+    def _status(self, message):
+        if self.on_event is not None:
+            with contextlib.suppress(Exception):
+                self.on_event("status", {"status": message})
 
     def cid_list_values(self, names):
         return self._cid.list(names)
@@ -507,20 +847,217 @@ class BenchBackend(Backend):
     def cid_read_file(self, path, mode="r"):
         return self._fs.read_bytes(path) if "b" in str(mode) else self._fs.read_text(path)
 
-    # -- live CAN: one RX cache per channel; can_read routes bus -> channel --
+    # -- live CAN: can_read routes bus -> channel, then reads either a host's
+    # retained frames (frame_source) or this backend's own RX cache --
+    def _db(self):
+        if self._db_cache is None:
+            from can_decoder import default_db
+            self._db_cache = default_db()
+        return self._db_cache
+
     def _can_cache(self, channel):
         if channel not in self._can:
             import can
-
-            import config as _cfg
-            from can_decoder import CanDatabase
-            db = CanDatabase(str(_cfg.ETH_COMPACT)) if _cfg.ETH_COMPACT else CanDatabase()
             bus = can.Bus(interface=self.interface, channel=channel)
             notifier = can.Notifier(bus, [])
-            cache = _CanRxCache(db)
+            cache = _CanRxCache(self._db())
             notifier.add_listener(cache)
             self._can[channel] = (bus, notifier, cache)
         return self._can[channel][2]
+
+    # Which firmware row applies is decided by the car's own configuration --
+    # the signed metadata carries a row per condition combination
+    # (chassisType/drivetrainType/vdcType/…). Every condition key is a signal on
+    # GTW_carConfig (0x7FF), named GTW_<key>, so the gateway's broadcast IS the
+    # answer where there is one. On a drive-unit bench there is no gateway (and
+    # vehicle_sim is the thing transmitting 0x7FF), so the operator declares it
+    # instead; declared values win, since they are the deliberate statement.
+    _CONDITION_KEYS = (
+        "chassisType", "drivetrainType", "vdcType", "packEnergy",
+        "performancePackage", "packPerformanceDeviation", "brakeHWType",
+        "steeringColumnUJointType", "rcmLocation", "headlamps",
+        "cabinPTCHeaterType", "espValveType", "twelveVBatteryType",
+        "restraintsHardwareType", "lumbarECUType", "numberHVILNodes",
+        "blowerMotorType", "towPackage", "rightHandDrive",
+    )
+
+    def vehicle_conditions(self, declared=None) -> dict:
+        """The car config the firmware rows are keyed on: {key: '<int>'}.
+
+        Read off GTW_carConfig where the bus carries it, overlaid with whatever
+        the operator declared. A key neither source provides is simply absent,
+        which find_firmware treats as "no constraint" -- an honest unknown rather
+        than a guessed default.
+        """
+        out = {}
+        for key in self._CONDITION_KEYS:
+            v = self._can_signal_int(f"GTW_{key}")
+            if v is not None:
+                out[key] = str(v)
+        for key, value in (declared or {}).items():
+            if value is not None and value != "":
+                out[str(key)] = str(value)
+        return out
+
+    def _flash_setup(self, update, hwidacq):
+        """(artifacts_dir, ecu, node, conditions) or an error string."""
+        import config as _cfg
+        artifacts = Path(self._artifacts_dir or _cfg.ARTIFACTS_DIR or "")
+        if not artifacts.is_dir():
+            return (f"no firmware artifacts directory ({artifacts or 'unset'}); "
+                    "set TM3_ROOT or pass artifacts_dir")
+        ecu = (list(hwidacq) or list(update))[0]
+        return (artifacts, ecu,
+                __import__("flash_scripts").uds_node_for(update[0], default=ecu.upper()),
+                self.vehicle_conditions(self.conditions))
+
+    def flash_preview(self, update=(), hwidacq=()) -> dict:
+        """Resolve the flash without writing -- see Backend.flash_preview."""
+        import flash_scripts
+
+        if not update:
+            return {"plan": [], "conditions": self.vehicle_conditions(self.conditions),
+                    "blocked": [], "error": "no components requested"}
+        setup = self._flash_setup(update, hwidacq)
+        if isinstance(setup, str):
+            return {"plan": [], "conditions": {}, "blocked": list(update),
+                    "error": setup}
+        artifacts, ecu, node, conditions = setup
+        try:
+            import config as _cfg
+            from uds_local.condition_labels import load_condition_labels
+            _cfg_node, sess = self._node(node)
+            res = flash_scripts.flash_components(
+                sess, artifacts, ecu, update, conditions=conditions, dry_run=True,
+                label_map=load_condition_labels(_cfg.ETH_COMPACT, _cfg.ETH_DBC),
+                include_bootloaders=self.include_bootloaders,
+                ramapps=self.ramapps)
+        except Exception as e:  # noqa: BLE001  (a preview must not raise at the UI)
+            return {"plan": [], "conditions": conditions, "choices": [],
+                    "blocked": list(update), "error": f"{type(e).__name__}: {e}"}
+        return {"plan": res["plan"], "conditions": res["conditions"],
+                "choices": res["choices"], "identity": res["identity"],
+                "blocked": res["unplaced"] + res["ambiguous"] + res["no_script"],
+                "excluded": res["excluded"], "bootloaders": res["bootloaders"],
+                "ramapps": res["ramapps"],
+                "armed": self.allow_flash,
+                "error": None if res["ok"] else "not every component resolved"}
+
+    # -- /sbin/smashclicker's job, done with dfu's flash scripts --
+    def flash_module(self, update=(), hwidacq=(), job_id="", can_quiet=False,
+                     timeout=None):
+        """Flash the requested components, the way UPDATE_MODULE asks the MCU to.
+
+        `hwidacq` names the ECU whose identity picks the firmware and `update`
+        the images to write (UPDATE_PMR: hwidacq=('pmr',), update=('pmr','dir')),
+        which are FirmwareEntry.component names -- so dfu's signed-metadata
+        selection takes them directly. The UDS node is the one the component is
+        flashed THROUGH: a bootloader image goes via its parent app's node, a
+        subcomponent via the ECU that gateways it (lumbarl -> VCLEFT).
+        """
+        import flash_scripts
+
+        if not self.allow_flash:
+            return _smashclicker_result([], error=(
+                "flashing is not armed on this bench (set allow_flash / the "
+                "web UI's 'allow ECU flashing')"))
+        if not update:
+            return _smashclicker_result([], error="no components requested")
+
+        setup = self._flash_setup(update, hwidacq)
+        if isinstance(setup, str):
+            return _smashclicker_result([], error=setup)
+        artifacts, ecu, node, conditions = setup
+        try:
+            _cfg_node, sess = self._node(node)
+            res = flash_scripts.flash_components(
+                sess, artifacts, ecu, update,
+                channel=self.channel, interface=self.interface,
+                on_event=self.on_event, conditions=conditions,
+                include_bootloaders=self.include_bootloaders,
+                ramapps=self.ramapps)
+        except Exception as e:  # noqa: BLE001  (a flash failure is the procedure's)
+            return _smashclicker_result([], error=f"{type(e).__name__}: {e}")
+
+        failed = [(c, "no firmware for this ECU identity") for c in res["unplaced"]]
+        failed += [(c, "more than one image matches; pick it with dfu.py")
+                   for c in res.get("ambiguous", ())]
+        failed += [(c, "no validated flash sequence") for c in res["no_script"]]
+        # An excluded bootloader is a narrowing the operator chose, not a
+        # failure -- but the run's record has to say the procedure did less than
+        # its name promises, or nothing ever shows that it was skipped.
+        log = list(res["log"])
+        if res.get("excluded"):
+            log.append(f"  excluded by the operator: {', '.join(res['excluded'])}")
+        return _smashclicker_result(res["flashed"], failed, log=log)
+
+    # -- high-rate logging: attach a python-can Logger to the vehicle channel's
+    # EXISTING notifier, so the capture rides the socket can_read already has open
+    # instead of contending for a second one. --
+    def hrl_start(self, timeout=None, path=None):
+        if self._hrl is not None:
+            return self._hrl[1]          # already capturing; one at a time
+        import can
+        if path is None:
+            import config as _cfg
+            stamp = datetime.datetime.now(datetime.UTC).strftime("%Y%m%dT%H%M%SZ")
+            directory = Path(self._hrl_dir) if self._hrl_dir else _cfg.HRL_DIR
+            directory.mkdir(parents=True, exist_ok=True)
+            path = directory / f"hrl-{self.channel}-{stamp}.asc"
+        path = Path(path)
+        self._can_cache(self.channel)    # ensure the bus+notifier exist
+        _bus, notifier, _cache = self._can[self.channel]
+        logger = can.Logger(str(path))
+        notifier.add_listener(logger)
+        self._hrl = (logger, path, self.channel)
+        return path
+
+    def hrl_stop(self):
+        if self._hrl is None:
+            return None
+        logger, path, channel = self._hrl
+        self._hrl = None
+        entry = self._can.get(channel)
+        if entry is not None:
+            with contextlib.suppress(Exception):
+                entry[1].remove_listener(logger)
+        with contextlib.suppress(Exception):
+            logger.stop()
+        self._hrl_last = path
+        return path
+
+    def hrl_upload(self, hrl_type=None):
+        # No Tesla service network from a bench: the capture stays on disk and the
+        # caller is told where, rather than being handed a fabricated upload id.
+        path = self.hrl_stop() or self._hrl_last
+        return {"path": str(path) if path else None, "uploaded": False,
+                "hrl_type": hrl_type}
+
+    def _msg_id_for(self, signal):
+        """Message id carrying `signal`, or None. Built once from the DB; a name in
+        several messages resolves to the first, which is deterministic (the private
+        RX cache instead let the last frame to arrive win)."""
+        if self._sig_index is None:
+            self._sig_index = {}
+            for mid, m in self._db().messages.items():
+                for sname in m["signals"]:
+                    self._sig_index.setdefault(sname, mid)
+        return self._sig_index.get(signal)
+
+    def _read_retained(self, channel, signal):
+        """Decode `signal` out of the host's latest retained frame for `channel`.
+        None when the host has not seen that id -- i.e. it is not on the bus."""
+        frames = self._frame_source(channel)
+        if not frames:
+            return None
+        mid = self._msg_id_for(signal)
+        cell = frames.get(mid) if mid is not None else None
+        if cell is None:
+            return None
+        for s in self._db().decode_frame(mid, cell[0]) or []:
+            if s["signal"] == signal:
+                return s["value"]
+        return None
 
     def can_read(self, signal, bus=None):
         # Resolve ODIN bus_name (ETH/VEH/PARTY/CH) to a channel; unconfigured -> this backend's channel.
@@ -528,6 +1065,11 @@ class BenchBackend(Backend):
         channel = _cfg.can_channel(bus) or self.channel
         if channel is None:
             return None
+        # A host already listening on this bus (tm3web) hands over its retained
+        # frames, so ODIN reads anything the host has seen without opening a second
+        # socket. Standalone, fall back to this backend's own listener.
+        if self._frame_source is not None:
+            return self._read_retained(channel, signal)
         return self._can_cache(channel).get(signal)
 
     # -- raw ISO-TP send (isotp.Send): own transport per (channel, tx, rx), explicit tx/rx CAN IDs --
@@ -652,7 +1194,7 @@ class _StubUds:
 
 class _StubOdx:
     """No-op odx node (ESP)."""
-    def start_routine(self, *_a, **_k): return b""
+    def start_routine(self, *_a, **_k): return {}
     def stop_routine(self, *_a, **_k): return b""
     def request_results(self, *_a, **_k): return {}
     def start_and_wait(self, *_a, **_k): return {}
@@ -761,11 +1303,17 @@ class _OdxAdapter:
             self.sess.security_access(seed_level=level)
 
     def start_routine(self, routine, params=None):
-        from uds_local.odj_codec import encode_request
+        from uds_local.odj_codec import decode_response, encode_request
         rt = self._routine(routine)
         self._auth(rt.start)
-        return self.sess.routine_control(
+        raw = self.sess.routine_control(
             rt.hex_id, arg=encode_request(rt.start, params or {}), subtype=0x01)
+        # The StartRoutine positive response carries the routineStatusRecord the
+        # scripts branch on -- ROTOR/RESOLVER_LEARNING put START_ROUTINE_RESULTS /
+        # START_RESULTS_REASON here. Decode it per the START subspec's OUTPUT
+        # fields; it is NOT the RequestRoutineResults (0x31 03) record, which has
+        # different fields (ROUTINE_STATUS / LEARN_RESULT).
+        return decode_response(rt.start, raw, parsed=True)
 
     def stop_routine(self, routine, params=None):
         from uds_local.odj_codec import encode_request
@@ -839,48 +1387,76 @@ class _OdxAdapter:
 class Engine:
     def __init__(self, backend: Backend, bundle: Path, verbose: bool = False,
                  time_scale: float = 0.0, loop_pause: float = 0.01, max_loops: int = 50,
-                 on_event=None):
+                 on_event=None, principals=odin_script_api.DEFAULT_PRINCIPALS):
         self.backend = backend
         self.bundle = bundle
         self.verbose = verbose
+        # Who a native script sees as the caller (api.odin.get_caller_principals);
+        # some procedures gate their inputs on it. Bench default: tbx-internal.
+        self.principals = tuple(principals)
         self._time_scale = time_scale   # 0 => don't actually sleep (fast mock)
         self._loop_pause = loop_pause
         self._max_loops = max_loops
         # Optional run-progress listener: on_event(kind, payload) fires for 'trace' and
         # 'metric'. See scripts/odin_service.py.
         self._on_event = on_event
+        # Let the backend report on that same stream -- a flash takes minutes and
+        # must not go quiet while it runs.
+        with contextlib.suppress(AttributeError):
+            backend.on_event = self._emit
+        # One cancel flag for the whole RUN, shared by every frame it creates, so
+        # an operator's "stop" reaches the poll loops in a nested subnetwork too.
+        # It is checked between operations -- what it can end is a wait (a CID
+        # poll, a routine's result poll, a timeout loop), not an operation already
+        # in flight. A flash in particular does not check it: interrupting a
+        # transfer mid-write is how an ECU gets bricked.
+        self._cancel = threading.Event()
+
+    def request_cancel(self) -> None:
+        """Ask the run to stop at its next check. Safe to call from any thread."""
+        self._cancel.set()
+
+    def cancelled(self) -> bool:
+        return self._cancel.is_set()
 
     # Bare task-wrapper entry types (no networks.Enter): a single subnet-call node.
     _WRAPPER_ENTRY_TYPES = (
         "networks.RunReferencedSubnetwork",
         "scripts.RunScriptTest",
+        "scripts.ScriptTest",     # same node, older name (always inline in 2022.45.15)
         "networks.DynamicallyReferencedSubnetwork",
     )
 
     def run_procedure(self, relbase: str) -> RunResult:
-        result = self._run_child_graph(load_graph(self.bundle, relbase), {}, depth=0)
+        session = getattr(self.backend, "procedure_session", contextlib.nullcontext)
+        with session():
+            result = self._run_child_graph(load_graph(self.bundle, relbase), {}, depth=0)
         with contextlib.suppress(Exception):
             self.backend.store_outputs(result.outputs)  # persist keyed by board id
         return result
 
-    def _run_child_graph(self, graph: dict, inputs: dict, depth: int) -> RunResult:
-        """Run a loaded graph regardless of form: a wired graph (has networks.Enter)
-        runs directly; a bare task-wrapper (a single RunReferencedSubnetwork /
-        RunScriptTest / DynamicallyReferencedSubnetwork node, no Enter) invokes its
-        subnet in a wrapper frame so `<Input>.value` connections resolve."""
+    def _run_child_graph(self, graph: dict | str, inputs: dict, depth: int) -> RunResult:
+        """Run a loaded graph regardless of form: a NATIVE SCRIPT (`network` is a
+        Python source string) runs as a coroutine; a wired graph (has
+        networks.Enter) runs directly; a bare task-wrapper (a single
+        RunReferencedSubnetwork / RunScriptTest / DynamicallyReferencedSubnetwork
+        node, no Enter) invokes its subnet in a wrapper frame so `<Input>.value`
+        connections resolve."""
+        if isinstance(graph, str):
+            return run_coroutine(self._script_coro(graph, inputs, depth))
         if self._has(graph, "networks.Enter"):
             return self.run_graph(graph, inputs, depth=depth)
         tname = next((self._find_opt(graph, t) for t in self._WRAPPER_ENTRY_TYPES
                       if self._find_opt(graph, t)), None)
         if tname is None:
             return self.run_graph(graph, inputs, depth=depth)  # no Enter -> clear error
-        frame = Frame(graph=graph, inputs=inputs, depth=depth)
+        frame = Frame(graph=graph, inputs=inputs, depth=depth, run_cancel=self._cancel)
         node = graph[tname]
         self._log(depth, f"task {tname} -> {self._resolve_basename(frame, node)}")
         return self._invoke_subnet(frame, tname, node)
 
     def run_graph(self, graph: dict, inputs: dict, depth: int = 0) -> RunResult:
-        frame = Frame(graph=graph, inputs=inputs, depth=depth)
+        frame = Frame(graph=graph, inputs=inputs, depth=depth, run_cancel=self._cancel)
         code = 1
         try:
             self._fire(frame, self._graph_start(graph))
@@ -941,9 +1517,81 @@ class Engine:
                 break
         return self._pull(frame, b) if isinstance(b, dict) else b
 
-    # networks.Subnetwork: an inline-nested subgraph. The node's own dict IS the child
-    # graph (non-reserved keys are inner nodes; inner connections are prefixed
-    # `<subnet>.<inner>.<port>`). Lift inner nodes, strip the prefix, run as a subnet.
+    # -- native script tests: `network` is a Python SOURCE STRING defining
+    # `async def odin_script_test(api, ...)`. Same interop as the graph form, but
+    # awaited on a facade instead of wired through ports. See odin_script_api.
+    async def _script_coro(self, source: str, inputs: dict, depth: int) -> RunResult:
+        frame = Frame(graph={}, inputs=inputs, depth=depth, run_cancel=self._cancel)
+        api = odin_script_api.ScriptApi(self, frame, self.principals)
+        fn = odin_script_api.compile_script(source, api.clock)
+        bound = self._bind_script_inputs(fn, inputs, depth)
+        self._log(depth, f"script {fn.__name__}({', '.join(sorted(bound))})")
+        try:
+            returned = await fn(api, **bound)
+        except GraphExit as ge:                     # a script may exit the run
+            returned = ge.code
+        finally:
+            frame.cancel.set()
+        code, extra = self._script_result(returned)
+        return RunResult(code, frame.metrics, {**frame.outputs, **extra})
+
+    def _bind_script_inputs(self, fn, inputs: dict, depth: int = 0) -> dict:
+        """Bind a caller's inputs onto the script's declared parameters.
+
+        A parameter the caller left unset -- absent, or bound to None, which is
+        how a task wrapper spells "unset" (see _data_networks_Input) -- falls back
+        to its declared default. A parameter with NEITHER is passed as None, which
+        is what ODIN itself does: an unbound networks.Input reads as None too, and
+        the scripts are written for it (UPDATE_MODULE takes a `job_id: str` with
+        no default and normalises a non-numeric one to ''). Rejecting it here
+        would refuse procedures the real tool runs, so it is logged instead.
+        """
+        params = list(inspect.signature(fn).parameters.values())[1:]  # [0] is `api`
+        bound, unset = {}, []
+        for p in params:
+            v = inputs.get(p.name)
+            if v is not None:
+                bound[p.name] = v
+            elif p.default is inspect.Parameter.empty:
+                bound[p.name] = None
+                unset.append(p.name)
+        if unset:
+            self._log(depth, f"     unbound script inputs -> None: {', '.join(unset)}")
+        return bound
+
+    @staticmethod
+    def _script_result(returned) -> tuple[object, dict]:
+        """A script's return -> (exit_code, extra outputs).
+
+        Scripts end either with a ServiceOutput (the documented form: a verdict
+        plus a user-facing message) or a bare int exit code; both reduce to the
+        integer RunResult.exit_code that odin_service reports `passed` from.
+        """
+        if isinstance(returned, odin_script_api.ServiceOutput):
+            return int(returned.exit_code), {"service_output": returned.as_dict()}
+        if returned is None:
+            return 0, {}
+        if isinstance(returned, int):
+            return int(returned), {}
+        return 0, {"result": returned}
+
+    async def _run_child_async(self, basename: str, inputs: dict,
+                               depth: int) -> RunResult:
+        """Run another bundle graph from inside a running script (the awaited
+        api.subnetwork.run_reference / api.scripts.script_test). A script child is
+        awaited directly; a wired child runs synchronously on this thread, as it
+        does everywhere else in the engine."""
+        child = load_graph(self.bundle, basename)
+        self._log(depth - 1, f"call -> {basename} inputs={inputs}")
+        if isinstance(child, str):
+            return await self._script_coro(child, inputs, depth)
+        return self._run_child_graph(child, inputs, depth)
+
+    # -- networks.Subnetwork: an INLINE-nested subgraph. Unlike ReferencedSubnetwork
+    # (which loads another file), the node's own dict IS the child graph: every non-
+    # reserved key is an inner node, and inner connections are prefixed with this node's
+    # name (`<subnet>.<inner>.<port>`). Lift the inner nodes into a child graph, strip
+    # the prefix, and reuse the same execution path as a referenced subnetwork.
     _RESERVED_SUBNET_KEYS = frozenset(
         {"type", "position", "slots", "signals", "inputs", "outputs", "comment"})
 
@@ -1121,6 +1769,11 @@ class Engine:
         self._fire(frame, node.get("done"))
 
     _data_scripts_RunScriptTest = _data_networks_ReferencedSubnetwork
+    # scripts.ScriptTest is the same node under its older name (script_name +
+    # inputs + done); PROC_DIR_X_RESTORE-DATA-APP and the immobilizer/odometer
+    # pairing task both use it.
+    _ctrl_scripts_ScriptTest = _ctrl_scripts_RunScriptTest
+    _data_scripts_ScriptTest = _data_networks_ReferencedSubnetwork
 
     # networks.DynamicallyReferencedSubnetwork: basename resolved at run time from `name`; continues via `done`.
     def _ctrl_networks_DynamicallyReferencedSubnetwork(self, frame, name, node, in_port):
@@ -1141,6 +1794,20 @@ class Engine:
         frame.threads.append(t)
         t.start()
         self._fire(frame, node.get("b"))
+
+    def _ctrl_control_ConcurrentSplit(self, frame, name, node, in_port):
+        # N named branches instead of Split's two. Every branch but the last runs
+        # on its own thread (joined by run_graph's finally); the last runs inline,
+        # so a single-branch node behaves like a plain call.
+        branches = [b for _k, b in sorted((node.get("branches") or {}).items(),
+                                          key=lambda kv: kv[1].get("index", 0)
+                                          if isinstance(kv[1], dict) else 0)]
+        for branch in branches[:-1]:
+            t = threading.Thread(target=self._branch, args=(frame, branch), daemon=True)
+            frame.threads.append(t)
+            t.start()
+        if branches:
+            self._fire(frame, branches[-1])
 
     def _branch(self, frame, ctrl_field):
         try:
@@ -1166,7 +1833,7 @@ class Engine:
     def _ctrl_control_WhileLoop(self, frame, name, node, in_port):
         cond = node.get("condition", {}).get("value", "True")
         i = 0
-        while not frame.cancel.is_set():
+        while not frame.stopping():
             if cond != "True" and not self._pull(frame, node["condition"]):
                 break
             if self._run_body(frame, node.get("run_body")):
@@ -1174,7 +1841,7 @@ class Engine:
             i += 1
             if self._max_loops and i >= self._max_loops:
                 break
-            if frame.cancel.wait(self._loop_pause):
+            if frame.wait(self._loop_pause):
                 break
 
     def _ctrl_control_TryExceptAll(self, frame, name, node, in_port):
@@ -1246,6 +1913,58 @@ class Engine:
         self._emit("metric", metric)
         self._fire(frame, node.get("done"))
 
+    # -- reporting.ServiceOutput: the graph-form twin of a native script's returned
+    # ServiceOutput -- a user-facing message, an exit reason and optional named data
+    # blocks. It is TERMINAL (no `done` on any of the 9 instances in the bundle), so
+    # it ends its graph the way networks.Exit does, carrying its verdict out as the
+    # RunResult exit code. In a lib/ subnetwork that stops the child only, which is
+    # what its callers read back via <node>.outputs / exit_code.
+    def _ctrl_reporting_ServiceOutput(self, frame, name, node, in_port):
+        out = odin_script_api.ServiceOutput(
+            self._pull(frame, node.get("user_facing_msg")) or "",
+            self._pull(frame, node.get("exit_code")))
+        for block, fld in (node.get("data") or {}).items():
+            out.add_data(name=block, data_type=None, data=self._pull(frame, fld))
+        frame.outputs["service_output"] = out.as_dict()
+        self._log(frame.depth, f"     service_output {out.exit_code!r}: "
+                               f"{out.user_facing_msg!r}")
+        code = out.exit_code
+        with contextlib.suppress(TypeError, ValueError):
+            code = int(code)
+        raise GraphExit(code)
+
+    def _data_reporting_ServiceOutputExitReason(self, frame, name, node, port):
+        # Read as <node>.<MEMBER> (e.g. ServiceOutputExitReason.INVALID_INPUT).
+        try:
+            return odin_script_api.ExitReason[port]
+        except KeyError:
+            return odin_script_api.ExitReason.UNKNOWN
+
+    def _ctrl_reporting_FileOutput(self, frame, name, node, in_port):
+        # Attach a file to the run report. There is no report service on a bench,
+        # so the blob goes to the CID store under its file name and the run's
+        # `files` output records what was attached.
+        fname = self._pull(frame, node.get("file_name"))
+        self.backend.cid_save(fname, self._pull(frame, node.get("data")))
+        frame.outputs.setdefault("files", []).append({
+            "file_name": fname,
+            "mime_type": self._pull(frame, node.get("mime_type")),
+            "encoding": self._pull(frame, node.get("encoding")),
+        })
+        self._log(frame.depth, f"     file output {fname!r}")
+        self._fire(frame, node.get("finished"))
+
+    def _ctrl_testing_PingOutcome(self, frame, name, node, in_port):
+        # Terminal node of the PING tasks: the outcome IS the procedure's verdict.
+        outcome = self._pull(frame, node.get("outcome"))
+        frame.metrics.append({"metric": "PingOutcome", "value": outcome,
+                              "result_code": 0 if outcome else 1, "expected": True})
+        self._emit("metric", frame.metrics[-1])
+        self._fire(frame, node.get("done"))
+
+    def _data_testing_PingOutcome(self, frame, name, node, port):
+        return self._pull(frame, node.get("outcome"))
+
     def _ctrl_reporting_CaptureConnectorInfoLookup(self, frame, name, node, in_port):
         # Ties a connector-info file to the exit_code; records it as a metric (no connector DB on a bench).
         code = self._pull(frame, node.get("exit_code"))
@@ -1273,7 +1992,7 @@ class Engine:
             if self._cmp(op, v, want):
                 self._log(frame.depth, f"     cid {dn}={v!r} == {want!r} -> passed")
                 return self._fire(frame, node.get("passed"))
-            if frame.cancel.is_set():
+            if frame.stopping():
                 break
             self._sleep(poll)
         self._log(frame.depth, f"     cid {dn}={v!r} != {want!r} -> timed_out")
@@ -1347,6 +2066,108 @@ class Engine:
     def _ctrl_cid_EmitRebootGateway(self, frame, name, node, in_port):
         self._fire(frame, node.get("done"))
 
+    # High-rate gateway logging. On a car the gateway records the bus and the
+    # upload service ships the trace to Tesla; here the capture is written to a
+    # local CAN log (config.HRL_DIR) and the upload step reports the path instead
+    # of claiming an upload. The path is exposed as an output so a caller can pick
+    # the file up -- and, later, POST it somewhere the operator chooses.
+    def _ctrl_cid_StartHRL(self, frame, name, node, in_port):
+        path = self.backend.hrl_start(self._pull(frame, node.get("timeout")))
+        frame.scratch[name] = {"path": str(path) if path else None}
+        self._log(frame.depth, f"     hrl start -> {path}")
+        self._fire(frame, node.get("done"))
+
+    def _data_cid_StartHRL(self, frame, name, node, port):
+        return frame.scratch.get(name, {}).get("path")
+
+    def _ctrl_cid_StopHRL(self, frame, name, node, in_port):
+        path = self.backend.hrl_stop()
+        frame.scratch[name] = {"path": str(path) if path else None}
+        self._log(frame.depth, f"     hrl stop -> {path}")
+        self._fire(frame, node.get("done"))
+
+    def _data_cid_StopHRL(self, frame, name, node, port):
+        return frame.scratch.get(name, {}).get("path")
+
+    def _ctrl_cid_StartHrlUploadService(self, frame, name, node, in_port):
+        res = self.backend.hrl_upload(self._pull(frame, node.get("hrl_type"))) or {}
+        frame.scratch[name] = res
+        if res.get("path"):
+            frame.outputs.setdefault("hrl_logs", []).append(res["path"])
+        self._log(frame.depth,
+                  f"     hrl upload -> {res.get('path')} (uploaded={res.get('uploaded')})")
+        self._fire(frame, node.get("done"))
+
+    def _data_cid_StartHrlUploadService(self, frame, name, node, port):
+        res = frame.scratch.get(name, {})
+        return res.get(port, res)
+
+    def _ctrl_cid_SetVehicleConfig(self, frame, name, node, in_port):
+        # A gateway vehicle-config write. No gateway on a bench: record it in the
+        # CID store (read-your-writes) so a later read sees what was set.
+        cid = self._pull(frame, node.get("configid"))
+        self.backend.cid_set(f"config_{cid}", self._pull(frame, node.get("data")))
+        frame.scratch[name] = {"success": True}
+        self._fire(frame, node.get("done"))
+
+    def _data_cid_SetVehicleConfig(self, frame, name, node, port):
+        return frame.scratch.get(name, {}).get("success", True)
+
+    # cid.IsFused: whether the gateway is fused (a production car) or unfused (a
+    # factory/service unit). Several graphs gate factory-mode writes on it, so it
+    # is an OPERATOR-DECLARED fact on a bench, not something to infer: it lives in
+    # the CID store as GUI_isFused, which the web UI's bench-state toggle sets.
+    def _cid_is_fused(self) -> bool:
+        return str(self.backend.cid_get("GUI_isFused")).lower() == "true"
+
+    def _ctrl_cid_IsFused(self, frame, name, node, in_port):
+        frame.scratch[name] = {"is_fused": self._cid_is_fused()}
+        self._fire(frame, node.get("done"))
+
+    def _data_cid_IsFused(self, frame, name, node, port):
+        return self._cid_is_fused()
+
+    def _ctrl_cid_SetFactoryMode(self, frame, name, node, in_port):
+        state = self._pull(frame, node.get("factory_mode_state"))
+        self.backend.cid_set("GUI_factoryMode",
+                             "true" if state in (True, "true", 1, "1") else "false")
+        self._fire(frame, node.get("done"))
+
+    def _ctrl_cid_GetPlatform(self, frame, name, node, in_port):
+        frame.scratch[name] = self._cid_platform()
+        self._fire(frame, node.get("done"))
+
+    def _data_cid_GetPlatform(self, frame, name, node, port):
+        info = frame.scratch.get(name) or self._cid_platform()
+        return info.get(port) if port in info else info
+
+    def _cid_platform(self) -> dict:
+        """The MCU generation graphs/scripts branch on ('infoz', …), from vitals."""
+        vitals = self.backend.cid_vitals() or {}
+        return {"info": {"info_hw": vitals.get("info_hw"),
+                         "info_sw": vitals.get("info_sw")}}
+
+    def _ctrl_cidupdater_Command(self, frame, name, node, in_port):
+        # The CID's updater daemon (handshake / schedule-update / …). Nothing to
+        # drive on a bench; reported like cid.SvCommand so control flow advances.
+        self._log(frame.depth,
+                  f"     cidupdater {self._pull(frame, node.get('command'))!r} (no-op)")
+        frame.scratch[name] = {"stdout": "", "stderr": "", "exit_status": 0}
+        self._fire(frame, node.get("done"))
+
+    def _data_cidupdater_Command(self, frame, name, node, port):
+        res = frame.scratch.get(name, {"stdout": "", "stderr": "", "exit_status": 0})
+        return res.get(port, res)
+
+    def _ctrl_odin_GetMetadataPath(self, frame, name, node, in_port):
+        self._fire(frame, node.get("done"))
+
+    def _data_odin_GetMetadataPath(self, frame, name, node, port):
+        # Where ODIN keeps a run's metadata on the MCU. The graphs concatenate a
+        # filename onto it and hand the result to cid.SaveData/LoadData, whose
+        # bench store is keyed by that string -- so it only has to be consistent.
+        return "/home/odin/metadata"
+
     def _ctrl_cid_SaveAuthoredPopup(self, frame, name, node, in_port):
         # Persist an authored popup blob keyed by identifier; record success.
         self.backend.cid_save(self._pull(frame, node.get("identifier")),
@@ -1357,18 +2178,64 @@ class Engine:
     def _data_cid_SaveAuthoredPopup(self, frame, name, node, port):
         return frame.scratch.get(name, {}).get("success", True)
 
+    def _ctrl_cid_ShowAuthoredPopup(self, frame, name, node, in_port):
+        # Display a saved popup on the MCU screen. There is no screen on a bench,
+        # so record which one was shown and continue.
+        ident = self._pull(frame, node.get("identifier"))
+        frame.scratch[name] = {"success": True}
+        self._log(frame.depth, f"     popup {ident!r} (no screen on a bench)")
+        self._fire(frame, node.get("done"))
+
+    def _data_cid_ShowAuthoredPopup(self, frame, name, node, port):
+        return frame.scratch.get(name, {}).get("success", True)
+
+    def _ctrl_cid_GetGatewayFile(self, frame, name, node, in_port):
+        # Pull a file off the gateway. No gateway on a bench, but the firmware
+        # dump's read-only FS view serves the static ones (CidFilesystem); a path
+        # it does not carry reads as absent, which is what a fresh unit has.
+        src = self._pull(frame, node.get("source"))
+        frame.scratch[name] = {"contents": self.backend.cid_read_file(src, "r"),
+                               "source": src}
+        self._fire(frame, node.get("done"))
+
+    def _data_cid_GetGatewayFile(self, frame, name, node, port):
+        res = frame.scratch.get(name, {})
+        return res.get(port, res.get("contents"))
+
+    def _ctrl_apupdater_ClearCache(self, frame, name, node, in_port):
+        # Clear the Autopilot updater's download cache on the MCU. Nothing to
+        # clear on a bench; continue so the surrounding procedure still runs.
+        self._fire(frame, node.get("done"))
+
     # ---- messages.* (ODIN framework UI/IPC messages; bench = non-blocking) ----
+    # ODIN procedures narrate themselves through these two. On the MCU they drive
+    # the service UI; here they go out on the run's event stream so a caller can
+    # show the same thing -- a percentage where the procedure gives one, the step
+    # name where it does not.
     def _ctrl_messages_ProgressUpdate(self, frame, name, node, in_port):
-        self._log(frame.depth, f"     progress {self._pull(frame, node.get('value'))}%")
+        value = self._pull(frame, node.get("value"))
+        self._log(frame.depth, f"     progress {value}%")
+        self._emit("progress", {"value": value, "total": 100, "current": value,
+                                "units": "percent", "source": "procedure"})
         self._fire(frame, node.get("done"))
 
     def _ctrl_messages_StatusUpdate(self, frame, name, node, in_port):
-        self._log(frame.depth, f"     status: {self._pull(frame, node.get('status'))!r}")
+        status = self._pull(frame, node.get("status"))
+        self._log(frame.depth, f"     status: {status!r}")
+        self._emit("status", {"status": status, "source": "procedure"})
         self._fire(frame, node.get("done"))
 
     def _ctrl_messages_Listen(self, frame, name, node, in_port):
         # No message framework on a bench -> fire done (or timed_out if no done port).
         self._fire(frame, node.get("done") or node.get("timed_out"))
+
+    def _ctrl_messages_Broadcast(self, frame, name, node, in_port):
+        # Publish to a Hermes topic (Tesla's manufacturing message bus). No bus on
+        # a bench -> fire-and-forget, logged so the choreography is still visible.
+        self._log(frame.depth,
+                  f"     msg.broadcast [{self._pull(frame, node.get('message_type'))}] "
+                  f"-> {self._pull(frame, node.get('hermes_topic'))!r}")
+        self._fire(frame, node.get("done"))
 
     def _ctrl_messages_Send(self, frame, name, node, in_port):
         # Publish to the ODIN message bus; no such bus on a bench -> fire-and-forget, continue via `done`.
@@ -1399,7 +2266,7 @@ class Engine:
             frame.scratch[name] = {"current": v}
             if v is not None and v != initial:
                 return self._fire(frame, node.get("value_changed"))
-            if frame.cancel.is_set():
+            if frame.stopping():
                 break
             self._sleep(0.05)
         self._fire(frame, node.get("timed_out") or node.get("done"))
@@ -1419,7 +2286,7 @@ class Engine:
             if self._cmp(comp, v, target):
                 self._log(frame.depth, f"     can {sig}={v} (cmp {comp} {target}) -> true")
                 return self._fire(frame, node.get("true"))
-            if frame.cancel.is_set():
+            if frame.stopping():
                 break
             self._sleep(0.05)
         self._log(frame.depth, f"     can {sig}={v} (cmp {comp} {target}) -> false")
@@ -1452,7 +2319,7 @@ class Engine:
             self._pull(frame, node.get("timeout")) or 1,
             input_parameters=self._pull(frame, node.get("input_parameters")),
             stop_routine=self._pull(frame, node.get("stop_routine")) or False,
-            cancel=frame.cancel, time_scale=self._time_scale)
+            cancel=frame, time_scale=self._time_scale)
         frame.scratch.setdefault(name, {})["results"] = results
         self._log(frame.depth, f"     odx {routine}@{nn} -> {results}")
         self._fire(frame, node.get("done"))
@@ -1473,7 +2340,7 @@ class Engine:
                 routine, status_param, in_prog,
                 self._pull(frame, node.get("max_runtime")) or 1,
                 stop_routine=self._pull(frame, node.get("should_stop")) or False,
-                cancel=frame.cancel, time_scale=self._time_scale)
+                cancel=frame, time_scale=self._time_scale)
             final = results.get(status_param) if status_param else None
             ok = final not in in_prog  # left the in-progress set -> completed
         except Exception as e:  # noqa: BLE001  (a routine/transport error is a fail)
@@ -1617,6 +2484,14 @@ class Engine:
         if v is not None:
             return v
         return self._pull(frame, node.get("default"))
+
+    def _data_enum_EnumInput(self, frame, name, node, port):
+        # A networks.Input restricted to `options`. Same None->default rule; the
+        # options list itself is readable as <node>.options.
+        if port == "options":
+            return list(node.get("options") or [])
+        v = frame.inputs.get(name)
+        return v if v is not None else self._pull(frame, node.get("default"))
 
     def _data_networks_Get(self, frame, name, node, port):
         var = self._pull(frame, node["variable"])
@@ -1851,6 +2726,21 @@ class Engine:
         return [*(self._pull(frame, node["a"]) or []),
                 *(self._pull(frame, node["b"]) or [])]
 
+    def _data_lists_ExtendMulti(self, frame, name, node, port):
+        # Extend, but over an indexed `lists` map instead of a fixed a/b pair.
+        # A non-list entry contributes itself (the sole instance in the bundle
+        # feeds it a single string).
+        out: list = []
+        for _k, fld in sorted((node.get("lists") or {}).items(),
+                              key=lambda kv: kv[1].get("index", 0)
+                              if isinstance(kv[1], dict) else 0):
+            v = self._pull(frame, fld)
+            if isinstance(v, (list, tuple)):
+                out.extend(v)
+            elif v is not None:
+                out.append(v)
+        return out
+
     def _data_lists_Any(self, frame, name, node, port):
         return any(self._pull(frame, node["items"]) or [])
 
@@ -1923,7 +2813,7 @@ class Engine:
 
     def _ctrl_control_ForEach(self, frame, name, node, in_port):
         for item in self._pull(frame, node.get("items")) or []:
-            if frame.cancel.is_set():
+            if frame.stopping():
                 break
             frame.scratch[name] = {"item": item}
             if self._run_body(frame, node.get("run_each")):
@@ -1936,7 +2826,7 @@ class Engine:
     def _ctrl_control_ForEachEntry(self, frame, name, node, in_port):
         data = self._pull(frame, node.get("data"))
         for key, value in (data.items() if isinstance(data, dict) else []):
-            if frame.cancel.is_set():
+            if frame.stopping():
                 break
             frame.scratch[name] = {"key": key, "value": value}
             if self._run_body(frame, node.get("run_each")):
@@ -1950,7 +2840,7 @@ class Engine:
         start = int(self._pull(frame, node.get("start")) or 0)
         end = int(self._pull(frame, node.get("end")) or 0)
         for i in range(start, end):
-            if frame.cancel.is_set():
+            if frame.stopping():
                 break
             frame.scratch[name] = {"i": i}
             if self._run_body(frame, node.get("run_each")):
@@ -1972,7 +2862,7 @@ class Engine:
             if "condition" in node and self._pull(frame, node["condition"]):
                 self._fire(frame, node.get("passed") or node.get("done"))
                 return
-            if frame.cancel.is_set():
+            if frame.stopping():
                 break
             self._sleep(poll / 1000.0)
         self._fire(frame, node.get("timed_out") or node.get("done"))
@@ -2115,6 +3005,25 @@ class Engine:
             return text
         raise ValueError(
             self._pull(frame, node.get("value_error_message")) or "invalid string")
+
+    # misc.WhitelistDict: keep only the keys a whitelist permits. Both a control
+    # node (continues via `done`) and the data source for the filtered dict.
+    def _whitelisted(self, frame, node) -> dict:
+        data = self._pull(frame, node.get("input_data"))
+        allowed = self._pull(frame, node.get("whitelist"))
+        if not isinstance(data, dict):
+            return {}
+        keys = set(allowed if isinstance(allowed, (list, tuple, set, dict)) else ())
+        return {k: v for k, v in data.items() if k in keys}
+
+    def _ctrl_misc_WhitelistDict(self, frame, name, node, in_port):
+        frame.scratch[name] = self._whitelisted(frame, node)
+        self._fire(frame, node.get("done"))
+
+    def _data_misc_WhitelistDict(self, frame, name, node, port):
+        if name in frame.scratch:
+            return frame.scratch[name]
+        return self._whitelisted(frame, node)
 
     def _data_types_VariantToNumber(self, frame, name, node, port):
         v = self._pull(frame, node["value"])

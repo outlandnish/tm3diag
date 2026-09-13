@@ -23,6 +23,58 @@ def _test_db() -> CanDatabase:
     return CanDatabase.from_dbc(_MINI_DBC)
 
 
+class TestDecodeBatch:
+    """One decode round trip per flush tick, whichever database is loaded.
+
+    The VAPI shim decodes in worker processes, so the flusher hands it the whole
+    tick at once and awaits; a layout-decoding CanDatabase has no async batch
+    method and is called inline. Both must produce the same map, or the flusher
+    would show different signals depending on which database was resolved.
+    """
+
+    class _Layout:
+        """A plain CanDatabase shape: one frame at a time, no batch method."""
+
+        def __init__(self):
+            self.calls = []
+
+        def decode_frame(self, mid, data):
+            self.calls.append((mid, data))
+            return [{"signal": f"S{mid}", "value": data[0]}]
+
+    class _Shim(_Layout):
+        def __init__(self):
+            super().__init__()
+            self.batches = []
+
+        async def decode_frames_async(self, items):
+            self.batches.append(list(items))
+            return [self.decode_frame(*i) for i in items]
+
+    def test_a_layout_database_is_called_per_frame(self):
+        db = self._Layout()
+        got = asyncio.run(tm3web._decode_batch(db, [(1, b"\x07"), (2, b"\x09")]))
+        assert got == {(1, b"\x07"): [{"signal": "S1", "value": 7}],
+                       (2, b"\x09"): [{"signal": "S2", "value": 9}]}
+
+    def test_the_shim_gets_the_whole_tick_in_one_call(self):
+        db = self._Shim()
+        items = [(1, b"\x07"), (2, b"\x09"), (3, b"\x01")]
+        got = asyncio.run(tm3web._decode_batch(db, items))
+        assert db.batches == [items]
+        assert [got[i][0]["signal"] for i in items] == ["S1", "S2", "S3"]
+
+    def test_both_paths_agree(self):
+        items = [(5, b"\x02"), (6, b"\x03")]
+        assert asyncio.run(tm3web._decode_batch(self._Shim(), items)) == \
+            asyncio.run(tm3web._decode_batch(self._Layout(), items))
+
+    def test_an_empty_tick_touches_nothing(self):
+        db = self._Shim()
+        assert asyncio.run(tm3web._decode_batch(db, [])) == {}
+        assert db.batches == [] and db.calls == []
+
+
 @contextlib.asynccontextmanager
 async def _client(seen_msg, msg_signals):
     app = web.Application()
@@ -104,7 +156,9 @@ async def _flush_once(frames, *, show_unknown=True, node=""):
         "hubs": [_OneShotHub("vcan0", frames)],
         "flush_interval": 0.01,
         "dash_sig": {}, "faults": {}, "alert_ids": {}, "seen_msg": {},
-        # alertLog capture off: these tests cover frame forwarding only.
+        "last_frame": {},
+        # alertLog capture off: these tests are about frame forwarding, and the
+        # decoder would need the MCU firmware libs.
         "alert_log": {}, "alert_decoder": None, "alertlog_ids": frozenset(),
         "show_unknown": show_unknown,
         "clients": {chan}, "raw_clients": set(),
@@ -234,7 +288,7 @@ class TestAlertLogCapture:
     """
 
     class _Dec:
-        def decode(self, can_id, data):
+        def decode(self, can_id, data, signals=None):
             from alert_log import AlertLogDecode
             return AlertLogDecode(can_id=can_id, node="DIR", alert_code=data[0],
                                   alert=f"DIR_a{data[0]:03d}_stub")

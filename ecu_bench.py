@@ -35,7 +35,7 @@ from typing import Any
 
 import can
 
-from can_decoder import CanDatabase
+from can_decoder import CanDatabase, default_db
 
 
 @dataclass
@@ -279,7 +279,7 @@ def run(spec: BenchSpec, channel: str, interface: str = "socketcan",
         *, interactive: bool = True) -> None:
     """Open the bus, start the scheduler + immobilizer, then drop into a shell."""
     db_path = spec.db_path
-    db = CanDatabase(db_path) if db_path else CanDatabase()
+    db = CanDatabase(db_path) if db_path else default_db()
     bus = can.Bus(interface=interface, channel=channel)
     notifier = can.Notifier(bus, [])
     state = BenchState(bus, db)

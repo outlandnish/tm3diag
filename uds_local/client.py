@@ -250,7 +250,13 @@ class UdsSession:
         self._frame_notifier.add_listener(listener)
 
     def start_tester_present(self) -> None:
-        """Send TesterPresent (3E 80, suppress positive response) at 2 Hz."""
+        """Send TesterPresent (3E 80, suppress positive response) at 2 Hz.
+
+        Idempotent: a no-op if the keep-alive thread is already running, so callers
+        can start it defensively even after `wait_for_bootloader` already did.
+        """
+        if self._tp_thread is not None and self._tp_thread.is_alive():
+            return
         self._tp_stop.clear()
         self._tp_thread = threading.Thread(target=self._tp_loop, daemon=True)
         self._tp_thread.start()
@@ -494,6 +500,10 @@ class UdsSession:
         self._check_positive(resp, _SID_RTE)
 
     def ecu_reset(self, reset_type: int = 0x01) -> None:
+        # A running keep-alive would feed the resident bootloader and fight the reset
+        # (hold it in the bl / delay the app boot). Stop it; wait_for_bootloader restarts
+        # the keep-alive when we deliberately want to hold the bl.
+        self.stop_tester_present()
         resp = self._send_raw([_SID_ER, reset_type])
         self._check_positive(resp, _SID_ER)
 
@@ -502,6 +512,7 @@ class UdsSession:
 
         Frame is `11 (reset_type | 0x80)`
         """
+        self.stop_tester_present()  # see ecu_reset: don't let the keep-alive fight the reset
         msg = UdsMessage(
             payload=bytearray([_SID_ER, reset_type | 0x80]),
             addressing_type=AddressingType.PHYSICAL,
@@ -594,6 +605,13 @@ class UdsSession:
                 time.sleep(confirm_p2_ms / 1000.0)
                 continue
             if resp and resp[0] == 0x7E:
+                # Signed resident bootloaders (e.g. pmrbl 2026.8.3) auto-hand-off to the
+                # app on a timer the older permissive bl never had: ~50 ms from a bare
+                # reset, bumped to ~2 s on every UDS request. The flood only covers
+                # wait_for_bootloader itself, so start the 2 Hz keep-alive now to hold the
+                # window open — otherwise a bootloader-context read (0xF180 identity, a
+                # slow erase, etc.) issued >2 s later silently lands in the app instead.
+                self.start_tester_present()
                 return
             if resp and resp[0] == 0x7F:
                 nrc_count += 1

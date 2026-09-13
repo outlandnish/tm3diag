@@ -3,7 +3,9 @@
 Wire convention:
   * Byte-aligned multi-byte fields (``bit_position == 0`` and ``bit_length`` a
     multiple of 8) are **big-endian**. ``int`` is signed, ``uint`` unsigned,
-    ``ascii``/``bytes`` returned as text/raw.
+    ``ascii``/``bytes`` returned as text/raw. A negative value handed to a ``uint``
+    field is wrapped to two's complement on encode, so a signed °C like -40 packs as
+    the ECU expects.
   * Sub-byte fields are **LSB-relative bit fields** within the byte at
     ``byte_position`` (e.g. ``RUNNING`` = bit 4 of byte 186).
 
@@ -98,7 +100,14 @@ def encode_fields(fields: dict[str, FieldSpec], values: dict,
             elif fs.data_type == "bytes":
                 raw = bytes(value)[:n].ljust(n, b"\x00")
             else:
-                raw = int(value).to_bytes(n, "big", signed=(fs.data_type == "int"))
+                iv = int(value)
+                # A negative value on a field the ODJ types unsigned (e.g.
+                # ROTOR_LEARNING's ROTOR_TEMPERATURE, degC, sent as -40): the ECU
+                # reads it as two's complement, so wrap it into the field width
+                # rather than refusing it. Signed ('int') fields already round-trip.
+                if iv < 0 and fs.data_type != "int":
+                    iv &= (1 << (8 * n)) - 1
+                raw = iv.to_bytes(n, "big", signed=(fs.data_type == "int"))
             _ensure(fs.byte_position + n)
             buf[fs.byte_position:fs.byte_position + n] = raw
         elif fs.bit_length < 8 and fs.bit_position + fs.bit_length <= 8:

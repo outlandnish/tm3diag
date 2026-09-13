@@ -203,6 +203,15 @@
   </div>
 
   <div class="panel mt">
+    <h2>Brake pedal <span id="brake-cur" style="color:var(--dim);font-weight:400"></span></h2>
+    <button class="lv-btn" id="brake-btn" style="max-width:220px">Brake</button>
+    <label class="field" style="margin-top:12px">
+      <span>Pressure <span id="brake-press-val" style="color:var(--dim)">0%</span></span>
+      <input type="range" id="brake-press" min="0" max="100" step="1" value="0">
+    </label>
+  </div>
+
+  <div class="panel mt">
     <h2>Telltales</h2>
     <div class="tells" id="tells"></div>
   </div>
@@ -286,6 +295,17 @@ GEARS.forEach(g => {
   gearsEl.appendChild(b);
 });
 
+// ---- brake pedal toggle + pressure ----
+const brakeBtn = $("#brake-btn"), brakePress = $("#brake-press"), brakePressVal = $("#brake-press-val");
+function sendBrake(pressed){
+  const pressure = Number(brakePress.value);
+  post("/api/brake", {pressed, pressure})
+    .then(r => r && toast("Brake → " + (pressed ? pressure + "%" : "released")));
+}
+brakeBtn.onclick = () => sendBrake(!brakeBtn.classList.contains("on"));
+brakePress.oninput = () => { brakePressVal.textContent = brakePress.value + "%"; };
+brakePress.onchange = () => { if(brakeBtn.classList.contains("on")) sendBrake(true); };
+
 // ---- drive settings (built once from ui_schema) ----
 function buildSettings(schema, values){
   const box = $("#settings"); box.innerHTML = "";
@@ -357,6 +377,20 @@ function render(s){
     b.classList.toggle("on", b.dataset.st === s.lv_state);
     b.disabled = !s.control;
   });
+
+  // brake pedal toggle + pressure
+  const bp = s.brake_pressed;
+  brakeBtn.classList.toggle("on", bp === true);
+  brakeBtn.textContent = bp === true ? "Brake pressed" : "Brake released";
+  brakeBtn.disabled = !s.control || !s.brake_controllable;
+  brakePress.disabled = !s.control || !s.brake_controllable;
+  // reflect server pressure unless the user is actively dragging the slider
+  if(document.activeElement !== brakePress && s.brake_pressure != null){
+    brakePress.value = s.brake_pressure;
+    brakePressVal.textContent = Math.round(s.brake_pressure) + "%";
+  }
+  $("#brake-cur").textContent = bp == null ? ""
+    : "· " + (bp ? (Math.round(s.brake_pressure ?? 0) + "%") : "released");
 
   // telltales
   const tells = $("#tells");

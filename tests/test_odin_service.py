@@ -37,7 +37,12 @@ network = {
              "inputs": {"n": {"value": 5}},
              "outputs": {"exit_code": {"index": 0}, "doubled": {"index": 1}}},
     "info": {"type": "comments.TaskInfo", "title": {"value": "Double It"},
-             "valid_states": ["StandStill|Parked"], "principals": ["tbx-internal"]},
+             "valid_states": ["StandStill|Parked"], "principals": ["tbx-internal"],
+             "description": "Double the input. - 1. Shift to D. 2. Coast to stop.",
+             "user_facing_impact": "Wheels will physically rotate.",
+             "additional_info": "Returns pass if the input is even.",
+             "gtw_diag_level": ["Service"], "cancelable": True,
+             "post_fusing_allowed": False},
 }
 '''
 
@@ -68,6 +73,96 @@ def _make_bundle(tmp_path: Path) -> Path:
     return tmp_path
 
 
+class TestVehicles:
+    """A car's procedures are its own tree PLUS the shared ones it layers on.
+
+    Only Model3/tasks was ever scanned, so the Gen3 tree -- where the DIR/DIF
+    resolver-learn procs live, 625 entries to Model3's 569 on 2022.45.15 -- was
+    invisible. Model3's own tasks reference Gen3/ 432 times and Common/ 84, so
+    the trees are layered, not alternatives.
+    """
+
+    def _multi(self, tmp_path):
+        _make_bundle(tmp_path)                             # Model3/tasks x3
+        _write(tmp_path, "Gen3/tasks/GEN3-TASK", _RUNNABLE)
+        _write(tmp_path, "Gen3/tasks/RUNNABLE-TASK", _BLOCKED)   # same NAME as Model3's
+        _write(tmp_path, "Gen3/lib/dbl", _CHILD)
+        _write(tmp_path, "Common/tasks/COMMON-TASK", _RUNNABLE)
+        _write(tmp_path, "Common/lib/dbl", _CHILD)
+        _write(tmp_path, "ModelY/tasks/Y-TASK", _RUNNABLE)
+        _write(tmp_path, "Tutorials/tasks/DEMO", _RUNNABLE)
+        _write(tmp_path, "Shared/lib/only", _CHILD)        # lib only, no entries
+        return tmp_path
+
+    def test_lists_only_the_cars(self, tmp_path):
+        # Gen3 and Common carry entries but are not cars -- they are what a car
+        # layers on. (Both DO have tasks/ in the real bundle: 625 and 212.)
+        # Tutorials has entries too and is neither, so it is not offered as a car.
+        assert odin_service.list_vehicles(bundle=self._multi(tmp_path)) == [
+            "Model3", "ModelY"]
+
+    def test_a_tutorials_tree_is_not_layered_onto_a_car(self, tmp_path):
+        assert "Tutorials" not in odin_service.trees_for(
+            "Model3", bundle=self._multi(tmp_path))
+
+    def test_a_library_only_tree_is_not_a_tree(self, tmp_path):
+        # No tasks/ -> pulled in by reference, never an entry point.
+        assert "Shared" not in odin_service.list_trees(bundle=self._multi(tmp_path))
+
+    def test_a_car_draws_from_its_own_tree_then_the_shared_ones(self, tmp_path):
+        assert odin_service.trees_for("Model3", bundle=self._multi(tmp_path)) == [
+            "Model3", "Gen3", "Common"]
+
+    def test_procedures_union_the_cars_tree_with_the_shared_ones(self, tmp_path):
+        procs = odin_service.list_procedures_for(
+            "Model3", bundle=self._multi(tmp_path), runnable_only=False)
+        assert {p["name"] for p in procs} == {
+            "RUNNABLE-TASK", "BLOCKED-TASK", "NOINFO-TASK",   # Model3
+            "GEN3-TASK",                                      # Gen3
+            "COMMON-TASK",                                    # Common
+        }
+
+    def test_the_cars_own_version_wins_a_shared_name(self, tmp_path):
+        # Model3 and Gen3 share 217 task names on 2022.45.15 and 172 DIFFER, so
+        # this is not cosmetic: the car's own file is the one that must run.
+        procs = {p["name"]: p for p in odin_service.list_procedures_for(
+            "Model3", bundle=self._multi(tmp_path), runnable_only=False)}
+        assert procs["RUNNABLE-TASK"]["tree"] == "Model3"
+        assert procs["RUNNABLE-TASK"]["basename"] == "Model3/tasks/RUNNABLE-TASK"
+        assert procs["RUNNABLE-TASK"]["runnable"] is True
+
+    def test_runnability_is_filtered_after_the_tree_choice(self, tmp_path):
+        # Model3's RUNNABLE-TASK is runnable and Gen3's namesake is blocked. The
+        # reverse case is the trap: filtering first would let a blocked proc fall
+        # through to another tree's version of the same name.
+        names = {p["name"] for p in odin_service.list_procedures_for(
+            "Model3", bundle=self._multi(tmp_path))}
+        assert names == {"RUNNABLE-TASK", "NOINFO-TASK", "GEN3-TASK", "COMMON-TASK"}
+
+    def test_a_bundle_without_the_shared_trees_still_works(self, tmp_path):
+        _make_bundle(tmp_path)                             # Model3 only
+        procs = odin_service.list_procedures_for("Model3", bundle=tmp_path)
+        assert [p["name"] for p in procs] == ["NOINFO-TASK", "RUNNABLE-TASK"]
+
+    def test_default_prefers_the_configured_product(self, tmp_path, monkeypatch):
+        import config as _cfg
+        monkeypatch.setattr(_cfg, "PRODUCT", "ModelY")
+        assert odin_service.default_vehicle(bundle=self._multi(tmp_path)) == "ModelY"
+
+    def test_default_falls_back_to_model3_when_the_product_is_absent(self, tmp_path,
+                                                                     monkeypatch):
+        import config as _cfg
+        monkeypatch.setattr(_cfg, "PRODUCT", "ModelS")     # not in this bundle
+        assert odin_service.default_vehicle(bundle=self._multi(tmp_path)) == "Model3"
+
+    def test_default_takes_what_there_is_when_neither_matches(self, tmp_path,
+                                                              monkeypatch):
+        import config as _cfg
+        monkeypatch.setattr(_cfg, "PRODUCT", "ModelS")
+        _write(tmp_path, "ModelY/tasks/ONLY", _RUNNABLE)
+        assert odin_service.default_vehicle(bundle=tmp_path) == "ModelY"
+
+
 class TestListProcedures:
     def test_all_procs_annotated_with_runnable_and_metadata(self, tmp_path):
         procs = odin_service.list_procedures(bundle=_make_bundle(tmp_path),
@@ -82,6 +177,11 @@ class TestListProcedures:
         assert run["title"] == "Double It"                 # wrapped {'value': ...}
         assert run["valid_states"] == ["StandStill|Parked"]
         assert run["principals"] == ["tbx-internal"]
+        assert run["description"] == "Double the input. - 1. Shift to D. 2. Coast to stop."
+        assert run["user_facing_impact"] == "Wheels will physically rotate."
+        assert run["additional_info"] == "Returns pass if the input is even."
+        assert run["gtw_diag_level"] == ["Service"]
+        assert run["cancelable"] is True and run["post_fusing_allowed"] is False
 
     def test_blocked_proc_reports_missing_type_and_bare_title(self, tmp_path):
         procs = odin_service.list_procedures(bundle=_make_bundle(tmp_path),
@@ -98,6 +198,10 @@ class TestListProcedures:
         assert noinfo["runnable"] is True
         assert noinfo["title"] is None
         assert noinfo["valid_states"] == [] and noinfo["principals"] == []
+        assert noinfo["description"] is None and noinfo["user_facing_impact"] is None
+        assert noinfo["additional_info"] is None
+        assert noinfo["gtw_diag_level"] == []
+        assert noinfo["cancelable"] is None and noinfo["post_fusing_allowed"] is None
 
     def test_runnable_only_filters_blocked(self, tmp_path):
         procs = odin_service.list_procedures(bundle=_make_bundle(tmp_path),
@@ -202,6 +306,227 @@ class TestProcedureRequirements:
             odin_service.procedure_requirements("Model3/tasks/NOPE", bundle=tmp_path)
 
 
+# Following a connection to its source. The shared libs are written once and
+# parameterised, so reading a field LOCALLY reports the lib's declared default
+# -- which for the DI/PM pairs is the REAR unit, on the front task's readout.
+# Modelled on Gen3/lib/DI_RESOLVER_LEARNING: a node_name Input defaulting to
+# 'DIR', a UDS call connected to it, and a signal name concatenated from it.
+_PARAM_LIB = '''
+network = {
+    "node_name": {"type": "networks.Input", "default": {"value": "DIR"}},
+    "concat": {"type": "strings.Concat", "a": {"connection": "node_name.value"},
+               "b": {"value": "_axleSpeed"}},
+    "cmp": {"type": "can.CANSignalValueComparison",
+            "signal_name": {"connection": "concat.c"}, "bus_name": {"value": "ETH"},
+            "target": {"value": 560}, "comparator": {"value": 4}},
+    "odx": {"type": "odx.OdxStartAndWaitResults", "routine_name": {"value": "R"},
+            "node_name": {"connection": "node_name.value", "value": "DIR"}},
+    "esp": {"type": "uds.UdsTesterPresent", "node_name": {"value": "ESP"}},
+}
+'''
+# The front task binds the input as a BARE literal, which is how the real
+# PROC_DIF_X_RESOLVER-LEARN writes it.
+_FRONT_TASK = '''
+network = {
+    "task": {"type": "networks.RunReferencedSubnetwork",
+             "basename": "Model3/lib/paramlib", "inputs": {"node_name": "DIF"}},
+}
+'''
+_REAR_TASK = '''
+network = {
+    "task": {"type": "networks.RunReferencedSubnetwork",
+             "basename": "Model3/lib/paramlib",
+             "inputs": {"node_name": {"value": "DIR"}}},
+}
+'''
+_UNBOUND_TASK = '''
+network = {
+    "task": {"type": "networks.RunReferencedSubnetwork",
+             "basename": "Model3/lib/paramlib"},
+}
+'''
+# A node_name sourced from a constant.Constant -- 147 of the bundle's UDS calls
+# are written this way, and a field-local read drops every one of them.
+_CONST_LIB = '''
+network = {
+    "which": {"type": "constant.Constant", "value": {"value": "IBST"}},
+    "uds": {"type": "uds.UdsReadDtcs", "node_name": {"connection": "which.out"}},
+    "loop": {"type": "control.ForEachEntry", "data": {"value": {}}},
+    "dyn": {"type": "can.CANSignalRead", "signal_name": {"connection": "loop.item"},
+            "bus_name": {"value": "ETH"}},
+}
+'''
+_CONST_TASK = '''
+network = {
+    "task": {"type": "networks.RunReferencedSubnetwork", "basename": "Model3/lib/constlib"},
+}
+'''
+
+
+# A pass-through lib between the task and the script it parameterises -- the
+# shape of Gen3/lib/FIRMWARE_DOWNLOAD, which is nine Inputs relayed straight into
+# UPDATE_MODULE. Without following those connections the component list a task
+# binds is invisible one hop later.
+_FLASH_LIB = '''
+network = {
+    "update_list": {"type": "networks.Input"},
+    "hwid_list": {"type": "networks.Input"},
+    "lock": {"type": "networks.Input", "default": {"value": "PMR"}},
+    "task": {"type": "scripts.RunScriptTest", "script_name": "Model3/scripts/UPD",
+             "inputs": {"update_component_list": {"connection": "update_list.value"},
+                        "hwidacq_component_list": {"connection": "hwid_list.value"},
+                        "node_to_lock": {"connection": "lock.value"}}},
+}
+'''
+_FLASH_TASK = '''
+network = {
+    "task": {"type": "networks.RunReferencedSubnetwork",
+             "basename": "Model3/lib/flashlib",
+             "inputs": {"update_list": {"value": ["pmr", "dir"]},
+                        "hwid_list": {"value": ["pmr"]}}},
+}
+'''
+
+
+class TestFlashTargets:
+    def _bundle(self, tmp_path):
+        _write(tmp_path, "Model3/scripts/UPD", "network = " + repr("""
+async def odin_script_test(api, update_component_list: list,
+                           hwidacq_component_list: list, node_to_lock: str = ''):
+    await api.cid.execute_application(path='/sbin/smashclicker', user='root',
+                                      args=['-u', ','.join(update_component_list)])
+    return 0
+"""))
+        _write(tmp_path, "Model3/lib/flashlib", _FLASH_LIB)
+        _write(tmp_path, "Model3/tasks/UPDATE_PMR", _FLASH_TASK)
+        _write(tmp_path, "Model3/tasks/PLAIN", _RUNNABLE)
+        _write(tmp_path, "Model3/lib/dbl", _CHILD)
+        return tmp_path
+
+    def test_the_components_a_task_binds_survive_a_pass_through_lib(self, tmp_path):
+        got = odin_service.flash_targets("Model3/tasks/UPDATE_PMR",
+                                         bundle=self._bundle(tmp_path))
+        assert got["update"] == ["pmr", "dir"]
+        assert got["hwidacq"] == ["pmr"]
+        assert got["node_to_lock"] == "PMR"      # from the lib's declared default
+
+    def test_a_procedure_that_writes_no_firmware_has_no_targets(self, tmp_path):
+        assert odin_service.flash_targets("Model3/tasks/PLAIN",
+                                          bundle=self._bundle(tmp_path)) is None
+
+    def test_listing_marks_which_procedures_flash(self, tmp_path):
+        procs = {p["name"]: p for p in odin_service.list_procedures(
+            bundle=self._bundle(tmp_path), entries="Model3/tasks",
+            runnable_only=False)}
+        assert procs["UPDATE_PMR"]["flashes"] is True
+        assert procs["PLAIN"]["flashes"] is False
+
+    def test_an_unknown_procedure_raises(self, tmp_path):
+        import pytest
+        with pytest.raises(FileNotFoundError):
+            odin_service.flash_targets("Model3/tasks/NOPE",
+                                       bundle=self._bundle(tmp_path))
+
+
+class _ArmableBackend(odin_runner.MockBackend):
+    """A mock that reports its arming the way BenchBackend.flash_preview does."""
+
+    def __init__(self, allow_flash=False):
+        super().__init__("success")
+        self.allow_flash = allow_flash
+        self.conditions: dict = {}
+
+    def flash_preview(self, update=(), hwidacq=()):
+        return {"plan": [], "conditions": dict(self.conditions), "choices": [],
+                "blocked": [], "armed": self.allow_flash, "error": None}
+
+
+class TestFlashPreflight:
+    def test_a_non_flashing_procedure_needs_no_confirmation(self, tmp_path):
+        _write(tmp_path, "Model3/tasks/PLAIN", _RUNNABLE)
+        _write(tmp_path, "Model3/lib/dbl", _CHILD)
+        got = odin_service.flash_preflight("Model3/tasks/PLAIN", bundle=tmp_path)
+        assert got == {"basename": "Model3/tasks/PLAIN", "flashes": False}
+
+    def test_a_backend_that_cannot_flash_says_so_before_the_run(self, tmp_path):
+        # Better here than at the point of no return.
+        bundle = TestFlashTargets()._bundle(tmp_path)
+        got = odin_service.flash_preflight("Model3/tasks/UPDATE_PMR", bundle=bundle)
+        assert got["flashes"] is True
+        assert got["update"] == ["pmr", "dir"]
+        assert got["plan"] == []
+        assert got["blocked"] == ["pmr", "dir"]
+        assert got["error"]
+
+    def test_the_preview_reports_the_arming_the_run_will_use(self, tmp_path):
+        # The preview builds its OWN backend, which starts disarmed. Without
+        # this the modal said "flashing is not armed" for a bench the operator
+        # had armed, and Confirm could never be enabled.
+        bundle = TestFlashTargets()._bundle(tmp_path)
+        be = _ArmableBackend(allow_flash=False)
+        got = odin_service.flash_preflight("Model3/tasks/UPDATE_PMR", bundle=bundle,
+                                           backend=be, allow_flash=True)
+        assert got["armed"] is True
+        assert be.allow_flash is True
+
+    def test_arming_is_left_alone_when_the_caller_does_not_declare_it(self, tmp_path):
+        bundle = TestFlashTargets()._bundle(tmp_path)
+        be = _ArmableBackend(allow_flash=True)
+        got = odin_service.flash_preflight("Model3/tasks/UPDATE_PMR", bundle=bundle,
+                                           backend=be)
+        assert got["armed"] is True
+
+
+class TestConnectionResolution:
+    def _bundle(self, tmp_path):
+        _write(tmp_path, "Model3/lib/paramlib", _PARAM_LIB)
+        _write(tmp_path, "Model3/tasks/FRONT", _FRONT_TASK)
+        _write(tmp_path, "Model3/tasks/REAR", _REAR_TASK)
+        _write(tmp_path, "Model3/tasks/UNBOUND", _UNBOUND_TASK)
+        return tmp_path
+
+    def test_the_caller_binding_wins_over_the_libs_declared_default(self, tmp_path):
+        # The bug this fixes: the FRONT task reported the REAR inverter, because
+        # the shared lib declares 'DIR' as its default and the readout never
+        # looked at what the task bound.
+        bundle = self._bundle(tmp_path)
+        front = odin_service.procedure_requirements("Model3/tasks/FRONT", bundle=bundle)
+        rear = odin_service.procedure_requirements("Model3/tasks/REAR", bundle=bundle)
+        assert front["nodes"] == ["DIF", "ESP"]
+        assert rear["nodes"] == ["DIR", "ESP"]
+
+    def test_a_concatenated_signal_name_resolves_instead_of_counting_as_dynamic(
+            self, tmp_path):
+        bundle = self._bundle(tmp_path)
+        front = odin_service.procedure_requirements("Model3/tasks/FRONT", bundle=bundle)
+        rear = odin_service.procedure_requirements("Model3/tasks/REAR", bundle=bundle)
+        assert front["signals"]["ETH"] == [{"signal": "DIF_axleSpeed", "kind": "compare"}]
+        assert rear["signals"]["ETH"] == [{"signal": "DIR_axleSpeed", "kind": "compare"}]
+        assert front["dynamic_count"] == 0
+
+    def test_an_unbound_input_still_falls_back_to_its_default(self, tmp_path):
+        req = odin_service.procedure_requirements("Model3/tasks/UNBOUND",
+                                                  bundle=self._bundle(tmp_path))
+        assert req["nodes"] == ["DIR", "ESP"]
+        assert req["signals"]["ETH"] == [{"signal": "DIR_axleSpeed", "kind": "compare"}]
+
+    def test_a_constant_sourced_node_name_is_listed(self, tmp_path):
+        _write(tmp_path, "Model3/lib/constlib", _CONST_LIB)
+        _write(tmp_path, "Model3/tasks/CONST", _CONST_TASK)
+        req = odin_service.procedure_requirements("Model3/tasks/CONST", bundle=tmp_path)
+        assert req["nodes"] == ["IBST"]
+
+    def test_a_loop_item_is_still_dynamic(self, tmp_path):
+        # Resolution follows pure-compute sources only. A per-iteration value is
+        # genuinely unknowable statically, and stays counted, not guessed.
+        _write(tmp_path, "Model3/lib/constlib", _CONST_LIB)
+        _write(tmp_path, "Model3/tasks/CONST", _CONST_TASK)
+        req = odin_service.procedure_requirements("Model3/tasks/CONST", bundle=tmp_path)
+        assert req["dynamic_count"] == 1
+        assert req["signals"] == {}
+
+
+# A tiny entry proc that captures one metric then exits 0.
 _CAP_TASK = '''
 network = {
     "enter": {"type": "networks.Enter", "start": {"connection": "cap.capture"}},

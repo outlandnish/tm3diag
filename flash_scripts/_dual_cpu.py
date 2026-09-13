@@ -16,6 +16,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from ._context import FlashContext
+from ._display import StatusDisplay
 from ._ecu_map import get_script
 from ._scripts import SCRIPT_PCS
 from ._steps import (
@@ -90,6 +91,7 @@ def run_pcs_dual_cpu(
     primary_entry: object,
     secondary_bhx: object,
     secondary_entry: object,
+    display: StatusDisplay | None = None,
 ) -> None:
     """Execute prog 1 — both CPUs in one authenticated session.
 
@@ -114,13 +116,17 @@ def run_pcs_dual_cpu(
     primary_module_byte = get_script(primary_entry.component.lower())[1]
     secondary_module_byte = get_script(secondary_entry.component.lower())[1]
 
-    print("  Dual-CPU sequence (prog 1, single auth session):")
-    print(
-        f"    primary   ({primary_entry.dest_name}, ecu_type={primary_entry.component})"
+    # Narrate through the display, not print(): a caller driving this headlessly
+    # (ODIN) passes one that forwards to its event stream, and a bare print goes
+    # only to whatever terminal happens to be attached.
+    display = display if display is not None else StatusDisplay()
+    display.set_detail("Dual-CPU sequence (prog 1, single auth session):")
+    display.set_detail(
+        f"  primary   ({primary_entry.dest_name}, ecu_type={primary_entry.component})"
         f"  → moduleToProgram(0x{primary_module_byte:02X})"
     )
-    print(
-        f"    secondary ({secondary_entry.dest_name}, ecu_type={secondary_entry.component})"
+    display.set_detail(
+        f"  secondary ({secondary_entry.dest_name}, ecu_type={secondary_entry.component})"
         f"  → moduleToProgram(0x{secondary_module_byte:02X}) [flashed first]"
     )
 
@@ -132,6 +138,7 @@ def run_pcs_dual_cpu(
         erase_timeout=SCRIPT_PCS.erase_timeout,
         security_level=SCRIPT_PCS.security_level,
         expected_fw_type=SCRIPT_PCS.expected_fw_type,
+        display=display,
     )
 
     # Outer setup — once for the whole dual-CPU session
@@ -142,14 +149,18 @@ def run_pcs_dual_cpu(
     step_security_access(sess, ctx)
 
     # ---- CPU2 / secondary first ----
-    print(f"  --- secondary ({secondary_entry.component}) ---")
+    # set_header, not set_detail: it starts this image's progress span, so the
+    # transfer's first report is not throttled against the previous image's.
+    display.set_header(f"flash {secondary_entry.dest_name} (secondary, "
+                       f"{secondary_entry.component})")
     step_module_to_program(sess, ctx)
     step_erase(sess, ctx)
     step_transfer_loop(sess, ctx)
     step_verify_crc(sess, ctx)
 
     # ---- CPU1 / primary second ----
-    print(f"  --- primary ({primary_entry.component}) ---")
+    display.set_header(f"flash {primary_entry.dest_name} (primary, "
+                       f"{primary_entry.component})")
     ctx.bhx_file = primary_bhx
     ctx.entry = primary_entry
     ctx.module_byte = primary_module_byte

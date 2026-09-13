@@ -18,6 +18,7 @@ import config as _cfg
 from flash_scripts import (
     find_bootloader_entries,
     find_dual_cpu_pair,
+    find_ramapp_entries,
     find_subcomponent_entries,
     get_script,
     parent_node_for_bootloader,
@@ -65,6 +66,7 @@ def _prompt_conditions(
     label_map: dict[str, dict[str, str]] | None = None,
 ) -> list:
     """Narrow *matches* by prompting for each varying condition key in turn."""
+    from uds_local.condition_labels import labels_for
     from uds_local.metadata import narrow_by_conditions, varying_condition_keys
 
     label_map = label_map or {}
@@ -73,11 +75,8 @@ def _prompt_conditions(
         values = sorted({e.conditions[key] for e in matches if key in e.conditions})
         if len(values) <= 1:
             continue
-        table = label_map.get(key, {})
-        labels = [
-            f"{key}={v} ({table[v]})" if v in table else f"{key}={v}"
-            for v in values
-        ]
+        table = labels_for(label_map, key)
+        labels = [f"{key}={v} ({table[v]})" if v in table else f"{key}={v}" for v in values]
         choice = prompt_select(
             f"Select {key}",
             labels,
@@ -118,7 +117,7 @@ def phase2_firmware_selection(
     if len(matches) == 1:
         selected = matches
     else:
-        label_map = load_condition_labels(_cfg.ETH_COMPACT)
+        label_map = load_condition_labels(_cfg.ETH_COMPACT, _cfg.ETH_DBC)
         matches = _prompt_conditions(matches, display, label_map=label_map)
         dest_names = {e.dest_name for e in matches}
         if len(dest_names) == len(matches):
@@ -139,6 +138,7 @@ def phase2_firmware_selection(
 
     selected = _prompt_bootloader_choice(selected, node_name, display)
     selected = _prompt_subcomponent_choice(selected, node_name, display)
+    selected = _prompt_ramapp_choice(selected, display)
     selected = _prompt_dual_cpu_choice(selected, display)
 
     for e in selected:
@@ -211,6 +211,28 @@ def _prompt_subcomponent_choice(selected: list, node_name: str, display: StatusD
     if prompt_confirm("Include subcomponents?", default=True, display=display):
         return selected
     return others
+
+
+def _prompt_ramapp_choice(selected: list, display: StatusDisplay) -> list:
+    """If `selected` includes RAM-app entries, ask how to flash them (default: skip)."""
+    rams, others = find_ramapp_entries(selected)
+    if not rams or not others:
+        return selected
+
+    print("\n  RAM apps detected:")
+    for e in rams:
+        print(f"    [{e.component}] {e.dest_name}  ({e.src_path})")
+    print("\n  RAM apps run from RAM and are not part of a normal app update — usually safe to skip.\n")
+
+    labels = [
+        "App only          — skip the RAM app(s)",
+        "App + RAM app(s)  — flash both",
+        "RAM app(s) only   — flash just the RAM app",
+    ]
+    choice = prompt_select(
+        "How should the RAM app(s) be flashed?", labels, default=0, display=display
+    )
+    return (others, selected, rams)[choice]
 
 
 def _prompt_dual_cpu_choice(selected: list, display: StatusDisplay) -> list:
@@ -448,8 +470,11 @@ def phase4_flash(
         secondary_bhx = _parse_firmware(artifacts_dir / secondary_entry.src_path)
         run_pcs_dual_cpu(
             sess,
-            primary_bhx, primary_entry,
-            secondary_bhx, secondary_entry,
+            primary_bhx,
+            primary_entry,
+            secondary_bhx,
+            secondary_entry,
+            display=display,
         )
 
     display.set_detail("Flash complete")

@@ -19,6 +19,14 @@
     --yellow: #f59e0b;
     --red: #ef4444;
     --flash: #3a3a10;
+    /* aliases used by the ODIN run dialog; defined here so `var(--dim)` etc.
+       resolve to the palette instead of being dropped as unknown properties */
+    --dim: var(--text-dim);
+    --line: var(--border);
+    --panel2: #202028;
+    /* native controls (the <select> popup above all) follow the page, not the
+       OS default of light-on-light */
+    color-scheme: dark;
   }
 
   body {
@@ -782,6 +790,33 @@
   .odin .reqs .note { font-size: 11px; color: var(--yellow); margin-top: 6px; }
   .odin .reqs .muted { font-size: 11px; color: var(--text-dim); }
   .odin .muted { font-size: 11px; color: var(--text-dim); }
+  /* ODIN procedure's own operator guidance (comments.TaskInfo) */
+  .odin .proc-impact {
+    display: flex; gap: 8px; align-items: baseline; margin-top: 12px;
+    padding: 8px 10px; border: 1px solid var(--yellow); border-radius: 4px;
+    background: color-mix(in srgb, var(--yellow) 10%, transparent);
+    font-size: 12px; line-height: 1.4;
+  }
+  .odin .proc-impact-tag {
+    flex: 0 0 auto; font-size: 9px; text-transform: uppercase; letter-spacing: .05em;
+    color: var(--yellow); font-weight: 600;
+  }
+  .odin .proc-desc { margin-top: 16px; border-top: 1px solid var(--border); padding-top: 12px; }
+  .odin .proc-desc h3 {
+    font-size: 11px; text-transform: uppercase; letter-spacing: .06em;
+    color: var(--text-dim); margin-bottom: 8px;
+  }
+  .odin .proc-desc-intro { font-size: 12px; line-height: 1.45; color: var(--text); }
+  .odin .proc-steps { margin: 8px 0 0; padding-left: 20px; }
+  .odin .proc-steps li { font-size: 12px; line-height: 1.45; margin-bottom: 4px; }
+  .odin .proc-desc-note { font-size: 12px; line-height: 1.45; color: var(--text-dim); margin-top: 8px; }
+  /* the run's own message to the operator (service_output / failure_message) */
+  .odin .run-msg {
+    margin: 10px 0; padding: 8px 10px; border-radius: 4px; font-size: 12px; line-height: 1.4;
+    border: 1px solid var(--border);
+  }
+  .odin .run-msg.ok  { border-color: var(--green); background: color-mix(in srgb, var(--green) 10%, transparent); }
+  .odin .run-msg.bad { border-color: var(--red);   background: color-mix(in srgb, var(--red) 10%, transparent); }
 
   /* low-level UDS operations */
   .odin select {
@@ -826,6 +861,133 @@
   .odin .uds-grid select { max-width: 110px; }
   /* the DID sidebar picker fills its row, like the text box it replaced */
   .odin .sidebar-header select { flex: 1; max-width: none; }
+  /* the platform picker is a short token (Model3 / Gen3) — the filter box gets
+     the rest of the row */
+  .odin .sidebar-header select#proc-vehicle { flex: 0 0 auto; max-width: 40%; }
+  /* operator-declared bench state: a compact row of checkboxes under the picker */
+  .odin .sidebar-header.bench-state { gap: 12px; padding-top: 0; }
+  .odin .sidebar-header.bench-state label {
+    display: flex; align-items: center; gap: 5px; cursor: pointer;
+    font-size: 11px; color: var(--dim); user-select: none;
+  }
+  .odin .sidebar-header.bench-state input { margin: 0; cursor: pointer; }
+  /* preflight: car config is a per-flash decision, so it lives at the decision */
+  .odin .run-dialog .flash-cfg {
+    display: flex; align-items: center; gap: 8px; margin-top: 10px; font-size: 11px;
+  }
+  .odin .run-dialog .flash-cfg span { color: var(--dim); white-space: nowrap; }
+  /* The opaque --bg/--text pair matters: a translucent background let the
+     browser composite the popup against white, so the option list came out
+     light-on-light and unreadable. */
+  .odin .run-dialog .flash-cfg select {
+    flex: 1; max-width: none; font-size: 11px; padding: 3px 6px;
+    background: var(--bg); color: var(--text);
+    border: 1px solid var(--border); border-radius: 4px;
+  }
+  .odin select option { background: var(--bg); color: var(--text); }
+  .odin .run-dialog .flash-cfg span { min-width: 140px; }
+  /* the bootloader opt-out reads as a choice, not a config field: checkbox
+     first, label free to run the width of the dialog */
+  .odin .run-dialog .flash-cfg.bl-toggle { gap: 6px; margin-top: 12px; }
+  .odin .run-dialog .flash-cfg.bl-toggle span {
+    min-width: 0; white-space: normal; color: var(--text); cursor: pointer;
+  }
+  .odin .run-dialog .flash-cfg.bl-toggle input { margin: 0; cursor: pointer; }
+  .odin .run-dialog .bl-list {
+    font-size: 10.5px; color: var(--dim); margin: 4px 0 0 20px;
+    overflow-wrap: anywhere;
+  }
+  .odin .run-dialog .bl-warn {
+    font-size: 10.5px; color: var(--yellow); margin: 4px 0 0 20px;
+  }
+  .odin .run-dialog .flash-cfg-note {
+    font-size: 10.5px; color: var(--dim); margin-top: 4px; overflow-wrap: anywhere;
+  }
+  .odin .run-dialog .btn.danger {
+    border-color: var(--red); color: var(--red);
+  }
+  .odin .run-dialog .btn.danger[disabled] { opacity: .45; }
+  /* the flash plan: exactly what is about to be written, before it is */
+  .odin .flash-plan {
+    margin-top: 10px; padding: 8px 10px; border-radius: 6px;
+    border: 1px solid var(--line, #333); background: var(--panel2, rgba(127,127,127,.08));
+    font-size: 11px;
+  }
+  .odin .flash-plan h4 { margin: 0 0 6px; font-size: 11px; }
+  .odin .flash-plan table { width: 100%; border-collapse: collapse; }
+  .odin .flash-plan td { padding: 1px 6px 1px 0; vertical-align: top; }
+  .odin .flash-plan td.c { color: var(--accent, #3b82f6); white-space: nowrap; }
+  .odin .flash-plan .cfg { color: var(--dim); margin-top: 6px; overflow-wrap: anywhere; }
+  .odin .flash-plan .blocked { color: var(--red); margin-top: 6px; }
+  /* flashing is destructive — the armed state has to read as armed at a glance */
+  .odin .sidebar-header.bench-state label.danger:has(input:checked) {
+    color: var(--red); font-weight: 600;
+  }
+  /* A run is exclusive (the server takes a lock), and changing the procedure or
+     the bench state under a running one is meaningless — so the ODIN pane is
+     covered while it runs. Scoped to .odin ON PURPOSE: the live bus view is
+     often exactly what you want to watch during a flash, so it stays reachable. */
+  .odin { position: relative; }
+  .odin .run-scrim {
+    position: absolute; inset: 0; z-index: 20;
+    display: flex; align-items: center; justify-content: center;
+    background: rgba(0, 0, 0, .55); backdrop-filter: blur(1.5px);
+  }
+  .odin .run-scrim[hidden] { display: none !important; }
+  .odin .run-dialog {
+    min-width: 340px; max-width: min(560px, 90%);
+    background: var(--panel, #1b1e24); border: 1px solid var(--line, #333);
+    border-radius: 8px; padding: 16px 18px;
+    box-shadow: 0 12px 40px rgba(0, 0, 0, .45);
+  }
+  .odin .run-dialog h3 { margin: 0 0 2px; font-size: 13px; }
+  .odin .run-dialog .sub {
+    font-size: 11px; color: var(--dim); margin-bottom: 12px;
+    overflow-wrap: anywhere;
+  }
+  .odin .run-dialog .row { justify-content: flex-end; margin-top: 12px; }
+  .odin .run-dialog .cancel-note {
+    font-size: 10.5px; color: var(--dim); margin-right: auto; max-width: 60%;
+  }
+  /* inline run controls — cancel + note beside the pane's own progress bar and
+     log, shown while a NON-flash procedure runs. A flash keeps the modal. */
+  .odin .run-controls {
+    display: flex; align-items: center; gap: 10px; margin: 4px 0;
+  }
+  .odin .run-controls[hidden] { display: none; }
+  .odin .run-controls .cancel-note {
+    font-size: 10.5px; color: var(--dim); margin-right: auto;
+  }
+  /* While a run holds the server lock, the sidebar can't start another run or
+     change bench state. The scrim blocked it for flashes; an inline run dims
+     and locks it directly. */
+  .odin .sidebar.busy { opacity: .5; pointer-events: none; }
+
+  /* run progress: determinate when the run reports a number, indeterminate
+     (a sliding band) while it is working but says only what step it is on */
+  .odin .run-progress { margin: 8px 0 4px; }
+  .odin .run-progress .bar {
+    height: 6px; border-radius: 3px; overflow: hidden;
+    background: var(--panel2, rgba(127,127,127,.2));
+  }
+  .odin .run-progress .fill {
+    height: 100%; width: 0; background: var(--accent, #3b82f6);
+    transition: width .2s linear;
+  }
+  .odin .run-progress.indeterminate .fill {
+    width: 35%; animation: run-progress-slide 1.1s ease-in-out infinite;
+  }
+  @keyframes run-progress-slide {
+    0%   { margin-left: -35%; }
+    100% { margin-left: 100%; }
+  }
+  .odin .run-progress-txt {
+    font-size: 11px; color: var(--dim); margin-top: 4px;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .odin .run-progress.indeterminate .fill { animation: none; width: 100%; opacity: .35; }
+  }
   .odin .field-row input.invalid,
   .odin .field-row select.invalid { border-color: var(--red); }
   /* the node picker carries "NAME  0x6xx/0x6xx", wider than the hex fields */
@@ -1073,7 +1235,24 @@
 <div id="tab-odin" class="tab-view odin">
   <div class="sidebar">
     <div class="sidebar-header">
+      <!-- Which car. Its own tree is a thin specialisation over the shared Gen3
+           and Common ones -- Model3's tasks reference Gen3/ 432 times -- so all
+           three are listed together, the car's own winning any name it shares
+           (Model3 and Gen3 share 217 names and 172 of them differ). Remembered
+           per browser. -->
+      <select id="proc-vehicle" title="Which car to list procedures for (its own tree plus the shared Gen3 and Common ones)"></select>
       <input type="search" id="proc-filter" placeholder="filter procedures…" autocomplete="off">
+    </div>
+    <!-- Facts about the unit that no bus reading can establish, so the operator
+         declares them; procedures gate on them (cid.IsFused). Sent to the server,
+         which seeds them into the CID store before a run. -->
+    <div class="sidebar-header bench-state">
+      <label title="Is the gateway on the bench fused (a production car) or unfused (a factory/service unit)? Procedures that write factory mode or vehicle config branch on this.">
+        <input type="checkbox" id="bench-is-fused"> fused gateway
+      </label>
+      <label class="danger" title="Let an UPDATE_* procedure actually flash the ECU through dfu. Those procedures ask for a flash with no confirmation of their own, so this stays off until you turn it on.">
+        <input type="checkbox" id="bench-allow-flash"> allow ECU flashing
+      </label>
     </div>
     <div class="list" id="proc-list"><div class="placeholder">loading…</div></div>
   </div>
@@ -1089,6 +1268,55 @@
     </div>
     <div class="pane-body" id="odin-body">
       <div class="placeholder">Pick a procedure on the left to run it against the bench.</div>
+    </div>
+  </div>
+  <!-- Flash-only run overlay. A flash holds a server-side lock and writes
+       firmware with no confirm of its own, so while one runs the scrim covers
+       the ODIN tab to keep it from being touched and the bar carries the byte
+       counts. Normal procedures skip the scrim and run inline in the pane
+       (progress + cancel there), so their log stays visible. Either way,
+       switching to the bus view stays possible. -->
+  <div class="run-scrim" id="run-scrim" hidden>
+    <div class="run-dialog" role="dialog" aria-modal="true" aria-labelledby="run-modal-title">
+      <h3 id="run-modal-title">Running procedure</h3>
+      <div class="sub" id="run-modal-sub"></div>
+      <div class="run-progress" id="run-modal-progress">
+        <div class="bar"><div class="fill"></div></div>
+        <div class="run-progress-txt">working…</div>
+      </div>
+      <div class="row">
+        <span class="cancel-note" id="run-cancel-note"></span>
+        <button class="btn" id="run-cancel-btn">Cancel</button>
+      </div>
+    </div>
+  </div>
+  <!-- Flash preflight. A UPDATE_* procedure writes firmware with no
+       confirmation of its own, and WHICH image it writes is chosen by the car's
+       configuration — so both are settled here, at the point of decision,
+       before the run starts. -->
+  <div class="run-scrim" id="flash-scrim" hidden>
+    <div class="run-dialog" role="dialog" aria-modal="true"
+         aria-labelledby="flash-modal-title">
+      <h3 id="flash-modal-title">Confirm flash</h3>
+      <div class="sub" id="flash-modal-sub"></div>
+      <div id="flash-modal-plan"></div>
+      <!-- Bootloader updates, when this procedure carries any. Shown only then,
+           since most flashes have none to decide about. -->
+      <div id="flash-bootloaders"></div>
+      <!-- RAM apps, when the procedure carries any. Three states, not a
+           checkbox: a RAM app is not part of a normal app update, so writing
+           one WITHOUT rewriting the app it rides on is a real request. -->
+      <div id="flash-ramapps"></div>
+      <!-- One picker per condition key that actually changes which image
+           applies for THIS ECU's identity — the map has nineteen, but only a
+           couple ever vary per unit. Values carry the firmware's own labels. -->
+      <div id="flash-choices"></div>
+      <div class="flash-cfg-note" id="flash-cfg-note"></div>
+      <div class="row">
+        <span class="cancel-note" id="flash-modal-note"></span>
+        <button class="btn" id="flash-cancel-btn">Cancel</button>
+        <button class="btn danger" id="flash-confirm-btn">Flash</button>
+      </div>
     </div>
   </div>
 </div>
@@ -2345,10 +2573,293 @@ function renderExp() {
   let selectedProc = null;
   let seenTimer = null;   // polls /api/seen-signals to color the requires-on-bus rows
 
+  // Which car procedures are listed for. Remembered across visits; the server
+  // decides the default (TM3_PRODUCT when the bundle has it, else Model3) and
+  // unions the car's own tree with the shared Gen3/Common ones.
+  const VEHICLE_KEY = 'tm3.odin.vehicle';
+  let vehicle = null;
+
+  function savedVehicle() {
+    try { return localStorage.getItem(VEHICLE_KEY); } catch (e) { return null; }
+  }
+
+  async function loadVehicles() {
+    const sel = $('#proc-vehicle');
+    let data;
+    try {
+      const r = await jget('/api/odin/vehicles');
+      if (!r.ok) { sel.style.display = 'none'; return; }
+      data = r.data;
+    } catch (e) { sel.style.display = 'none'; return; }
+    const found = data.vehicles || [];
+    sel.innerHTML = '';
+    for (const p of found) sel.append(Object.assign(el('option', null, p), { value: p }));
+    // A remembered car this bundle does not cover falls back to the default
+    // rather than listing nothing.
+    const want = savedVehicle();
+    vehicle = found.includes(want) ? want : (data.default || found[0] || null);
+    if (vehicle) sel.value = vehicle;
+    sel.style.display = found.length > 1 ? '' : 'none';
+    sel.onchange = () => {
+      vehicle = sel.value;
+      try { localStorage.setItem(VEHICLE_KEY, vehicle); } catch (e) { /* private mode */ }
+      selectedProc = null;
+      loadProcs();
+    };
+  }
+
+  // Operator-declared facts about the unit on the bench. The server owns the
+  // truth (it seeds them into the CID store before a run); the browser remembers
+  // the last choice so a reload does not silently revert what was declared.
+  const BENCH_STATE_KEY = 'tm3.odin.benchState';
+  const BENCH_STATE_FIELDS = {
+    is_fused: '#bench-is-fused',
+    allow_flash: '#bench-allow-flash',
+  };
+  function savedBenchState() {
+    try { return JSON.parse(localStorage.getItem(BENCH_STATE_KEY)) || null; }
+    catch (e) { return null; }
+  }
+
+  // Car config in the metadata's own "k=v" shape, for the read-only summary
+  // line; the operator sets it with the per-key pickers, not by typing.
+  function formatConditions(obj) {
+    return Object.entries(obj || {}).map(([k, v]) => `${k}=${v}`).join(' ');
+  }
+
+  function showBenchState(state) {
+    for (const [key, sel] of Object.entries(BENCH_STATE_FIELDS)) {
+      const box = $(sel);
+      if (box && key in state) box.checked = !!state[key];
+    }
+  }
+
+  async function postBenchState(patch) {
+    try {
+      const { ok, data } = await jpost('/api/odin/bench-state', patch);
+      if (ok && data && data.state) {
+        showBenchState(data.state);
+        try { localStorage.setItem(BENCH_STATE_KEY, JSON.stringify(data.state)); }
+        catch (e) { /* private mode */ }
+      }
+    } catch (e) { /* server down: the checkbox still shows what was asked for */ }
+  }
+
+  async function loadBenchState() {
+    let state = null;
+    try {
+      const r = await jget('/api/odin/bench-state');
+      if (r.ok && r.data) state = r.data.state;
+    } catch (e) { /* fall through to the remembered value */ }
+    // A remembered declaration is re-asserted to the server, which starts each
+    // process on its defaults.
+    const saved = savedBenchState();
+    if (saved) { showBenchState(saved); await postBenchState(saved); }
+    else if (state) showBenchState(state);
+    for (const [key, sel] of Object.entries(BENCH_STATE_FIELDS)) {
+      const box = $(sel);
+      if (box) box.onchange = () => postBenchState({ [key]: box.checked });
+    }
+  }
+
+  // ---- flash plan -------------------------------------------------------------
+  // What is about to be written, and the car config that chose it. Rendered both
+  // in the preflight dialog (before the run) and into the run pane (as the flash
+  // actually starts), so the two always agree.
+  function planTable(plan) {
+    const table = el('table');
+    for (const row of plan || []) {
+      const tr = el('tr');
+      tr.append(el('td', 'c', row.component));
+      tr.append(el('td', null, row.image));
+      tr.append(el('td', null, 'crc ' + row.crc));
+      table.append(tr);
+    }
+    return table;
+  }
+
+  function renderFlashPlan(d) {
+    const host = $('#odin-body');
+    if (!host) return;
+    let box = $('#flash-plan');
+    if (!box) {
+      box = el('div', 'flash-plan'); box.id = 'flash-plan';
+      host.append(box);
+    }
+    box.innerHTML = '';
+    box.append(el('h4', null, d.dry_run ? 'Flash plan (nothing written)' : 'Flashing'));
+    if ((d.plan || []).length) box.append(planTable(d.plan));
+    box.append(el('div', 'cfg', 'car config: ' + (formatConditions(d.conditions) || '(none known)')));
+    if ((d.excluded || []).length) {
+      // Deliberately left out, not unresolved — the run record has to say the
+      // procedure did less than its name promises.
+      box.append(el('div', 'cfg', 'excluded by the operator: ' + d.excluded.join(', ')));
+    }
+    if ((d.blocked || []).length) {
+      box.append(el('div', 'blocked', 'not flashed: ' + d.blocked.join(', ')));
+    }
+  }
+
+  // ---- flash preflight --------------------------------------------------------
+  // A UPDATE_* procedure writes firmware with no confirmation of its own, and
+  // which image it writes is chosen by the car's configuration. Both are settled
+  // here, before the run, rather than discovered while the first image is
+  // already going down the wire.
+  let flashResolve = null;
+
+  // One <select> per condition key that actually decides this flash, labelled
+  // with the firmware's own names (drivetrainType 0 → RWD) rather than raw
+  // numbers. Changing one re-resolves, so the plan shown is always the plan.
+  function renderChoices(p, choices, conditions) {
+    const host = $('#flash-choices');
+    host.innerHTML = '';
+    for (const ch of choices || []) {
+      const row = el('label', 'flash-cfg');
+      row.append(el('span', null, ch.key));
+      const sel = el('select');
+      // "from the bus" is a real option: leaving it unset means GTW_carConfig
+      // (or nothing) decides, which is different from pinning a value.
+      sel.append(Object.assign(el('option', null, '— from the car —'), { value: '' }));
+      for (const opt of ch.options || []) {
+        sel.append(Object.assign(
+          el('option', null, opt.label === opt.value ? opt.value
+                                                     : `${opt.label} (${opt.value})`),
+          { value: opt.value }));
+      }
+      const current = (conditions || {})[ch.key];
+      sel.value = current != null && [...sel.options].some(o => o.value === current)
+        ? current : '';
+      sel.onchange = async () => {
+        const next = { ...(conditions || {}) };
+        if (sel.value) next[ch.key] = sel.value; else delete next[ch.key];
+        await postBenchState({ conditions: next });
+        loadPreflight(p);
+      };
+      row.append(sel);
+      host.append(row);
+    }
+  }
+
+  // Bootloader updates are opt-OUT, not opt-in: a -WITH-BOOTLOADER procedure
+  // names its bu/bl by hand, so defaulting them off would silently downgrade the
+  // run the operator picked. What excluding them costs is spelled out rather
+  // than left to be recalled — after bu+bl the app slot holds the update agent.
+  function renderBootloaders(p, bl) {
+    const host = $('#flash-bootloaders');
+    host.innerHTML = '';
+    if (!bl || !(bl.available || []).length) return;   // nothing to decide
+
+    const row = el('label', 'flash-cfg bl-toggle');
+    const box = el('input'); box.type = 'checkbox'; box.checked = bl.included !== false;
+    row.append(box);
+    row.append(el('span', null, 'Include bootloader updates'));
+    box.onchange = async () => {
+      await postBenchState({ include_bootloaders: box.checked });
+      loadPreflight(p);
+    };
+    host.append(row);
+
+    const list = el('div', 'bl-list');
+    for (const e of bl.available) {
+      const what = e.kind === 'updater'
+        ? 'updater — flashed into the app slot first'
+        : 'bootloader image — written by the updater agent';
+      const via = e.parent ? `  · via ${e.parent}` : '';
+      list.append(el('div', null, `${e.component}  ${e.dest}  (${what})${via}`));
+    }
+    host.append(list);
+    if (bl.note) host.append(el('div', 'bl-warn', bl.note));
+  }
+
+  // RAM apps get a select, not a checkbox: "RAM apps only" — push the OPC
+  // gateway applet without rewriting the PMR app under it — is a distinct
+  // request from including or skipping them, and only offered when there is
+  // something else in the plan to leave out.
+  function renderRamapps(p, ra) {
+    const host = $('#flash-ramapps');
+    host.innerHTML = '';
+    if (!ra || !(ra.available || []).length) return;   // nothing to decide
+
+    const row = el('label', 'flash-cfg');
+    row.append(el('span', null, 'RAM apps'));
+    const sel = el('select');
+    for (const opt of ra.options || []) {
+      sel.append(Object.assign(el('option', null, opt.label), { value: opt.value }));
+    }
+    sel.value = ra.mode || 'include';
+    sel.onchange = async () => {
+      await postBenchState({ ramapps: sel.value });
+      loadPreflight(p);
+    };
+    row.append(sel);
+    host.append(row);
+
+    const list = el('div', 'bl-list');
+    for (const e of ra.available) list.append(el('div', null, `${e.component}  ${e.dest}`));
+    host.append(list);
+    if (ra.note) host.append(el('div', 'bl-warn', ra.note));
+  }
+
+  async function loadPreflight(p) {
+    const box = $('#flash-modal-plan');
+    const confirm = $('#flash-confirm-btn');
+    box.innerHTML = '';
+    box.append(el('div', 'muted', 'resolving…'));
+    confirm.disabled = true;
+    let data;
+    try {
+      const r = await jpost('/api/odin/flash-preflight', { procedure: p.basename });
+      data = r.data;
+      if (!r.ok) throw new Error((data && data.error) || 'preflight failed');
+    } catch (e) {
+      box.innerHTML = '';
+      box.append(el('div', 'blocked', String(e.message || e)));
+      return;
+    }
+    box.innerHTML = '';
+    if ((data.plan || []).length) box.append(planTable(data.plan));
+    renderBootloaders(p, data.bootloaders);
+    renderRamapps(p, data.ramapps);
+    renderChoices(p, data.choices, data.conditions);
+    const bits = [];
+    if (data.identity) bits.push('identity ' + data.identity);
+    if (data.node_to_lock) bits.push('through ' + data.node_to_lock);
+    if ((data.excluded || []).length) {
+      bits.push('excluded: ' + data.excluded.join(', '));
+    }
+    if (data.conditions && Object.keys(data.conditions).length) {
+      bits.push('car config ' + formatConditions(data.conditions));
+    }
+    $('#flash-cfg-note').textContent = bits.join('  ·  ');
+    const problems = [];
+    if ((data.blocked || []).length) problems.push('unresolved: ' + data.blocked.join(', '));
+    if (data.error) problems.push(data.error);
+    if (data.armed === false) problems.push('flashing is not armed');
+    $('#flash-modal-note').textContent = problems.join('  ·  ');
+    // Only a fully resolved, armed plan can be confirmed — the operator should
+    // not be able to start a flash that is already known to be incomplete.
+    confirm.disabled = problems.length > 0;
+  }
+
+  function askFlash(p) {
+    $('#flash-modal-sub').textContent = p.basename;
+    $('#flash-scrim').hidden = false;
+    loadPreflight(p);
+    return new Promise(resolve => { flashResolve = resolve; });
+  }
+
+  function closeFlashModal(go) {
+    $('#flash-scrim').hidden = true;
+    const resolve = flashResolve;
+    flashResolve = null;
+    if (resolve) resolve(!!go);
+  }
+
   async function loadProcs() {
     const list = $('#proc-list');
     try {
-      const { ok, data } = await jget('/api/odin/procedures');
+      const q = vehicle ? `?vehicle=${encodeURIComponent(vehicle)}` : '';
+      const { ok, data } = await jget('/api/odin/procedures' + q);
       if (!ok) { list.innerHTML = ''; list.append(el('div', 'placeholder', (data && data.error) || 'failed to load')); return; }
       procs = data;
       renderProcs();
@@ -2404,6 +2915,56 @@ function renderExp() {
     const res = el('span'); res.id = 'run-result';
     row.append(res);
     body.append(row);
+    // Where the run says what it is doing. A procedure that narrates itself
+    // (messages.ProgressUpdate) or a flash reporting bytes fills the bar; one
+    // that says nothing still shows it is alive, indeterminate.
+    const prog = el('div', 'run-progress'); prog.id = 'run-progress'; prog.hidden = true;
+    const bar = el('div', 'bar'); bar.append(el('div', 'fill'));
+    prog.append(bar);
+    prog.append(el('div', 'run-progress-txt'));
+    body.append(prog);
+    // Inline run controls: cancel + note beside the pane's progress bar and log
+    // while a non-flash procedure runs (a flash shows the modal instead).
+    const rc = el('div', 'run-controls'); rc.id = 'run-controls'; rc.hidden = true;
+    const rcNote = el('span', 'cancel-note'); rcNote.id = 'run-inline-note';
+    const rcBtn = el('button', 'btn', 'Cancel'); rcBtn.id = 'run-inline-cancel';
+    rcBtn.onclick = cancelRun;
+    rc.append(rcNote); rc.append(rcBtn);
+    body.append(rc);
+    // ODIN's own operator guidance for this procedure, straight off its
+    // comments.TaskInfo: the physical-impact warning and the step-by-step
+    // instructions the tech follows. Shown before the run so the pane is
+    // self-documenting instead of needing the ODIN bundle open alongside.
+    if (p.user_facing_impact) {
+      const imp = el('div', 'proc-impact');
+      imp.append(el('span', 'proc-impact-tag', '⚠ impact'));
+      imp.append(el('span', null, p.user_facing_impact));
+      body.append(imp);
+    }
+    if (p.description) {
+      const d = el('div', 'proc-desc');
+      d.append(el('h3', null, 'Instructions'));
+      // Descriptions read "<intro> - 1. step  2. step …"; split the numbered
+      // tail into an ordered list and keep the intro as prose. No numbered
+      // steps -> the whole thing stays prose.
+      const parts = p.description.split(/\s+-\s+(?=\d+\.\s)/);
+      const intro = (parts[0] || '').trim();
+      if (intro) d.append(el('div', 'proc-desc-intro', intro));
+      if (parts.length > 1) {
+        const steps = parts.slice(1).join(' ')
+          .split(/\s*\d+\.\s+/).map(s => s.trim()).filter(Boolean);
+        const ol = el('ol', 'proc-steps');
+        steps.forEach(s => ol.append(el('li', null, s)));
+        d.append(ol);
+      }
+      if (p.additional_info) d.append(el('div', 'proc-desc-note', p.additional_info));
+      body.append(d);
+    } else if (p.additional_info) {
+      const d = el('div', 'proc-desc');
+      d.append(el('h3', null, 'Instructions'));
+      d.append(el('div', 'proc-desc-note', p.additional_info));
+      body.append(d);
+    }
     if (p.valid_states && p.valid_states.length) {
       const vs = el('div', 'kv');
       vs.append(el('span', 'k', 'required states'));
@@ -2416,6 +2977,14 @@ function renderExp() {
       pr.append(el('span', null, p.principals.join(', ')));
       body.append(pr);
     }
+    // Declared preconditions/flags off the TaskInfo. The booleans are shown only
+    // when explicitly false — a notable constraint — since most procedures leave
+    // them unset (null) and the default is the unsurprising case.
+    const kv = (k, v) => { const r = el('div', 'kv'); r.append(el('span', 'k', k));
+                           r.append(el('span', null, v)); body.append(r); };
+    if (p.gtw_diag_level && p.gtw_diag_level.length) kv('gateway diag level', p.gtw_diag_level.join(', '));
+    if (p.cancelable === false) kv('cancelable', 'no — runs to completion once started');
+    if (p.post_fusing_allowed === false) kv('post-fusing', 'not allowed after the car is fused');
     // "Requires on bus": what the sim / a real ECU must provide before this proc runs.
     const reqs = el('div', 'reqs'); reqs.id = 'proc-reqs';
     reqs.append(el('h3', null, 'Requires on bus'));
@@ -2525,13 +3094,134 @@ function renderExp() {
     log.scrollTop = log.scrollHeight;
   }
 
+  // ---- run progress ----------------------------------------------------------
+  // A run reports either a number (a procedure's own ProgressUpdate, or a flash's
+  // byte counts) or just the step it is on. Both keep the bar visible; only the
+  // first makes it determinate, so an indeterminate bar honestly means "working,
+  // no total known" rather than "stuck".
+  //
+  // The same rendering drives the in-pane bar and the modal's, so whichever the
+  // operator is looking at says the same thing.
+  const PROGRESS_BOXES = ['#run-progress', '#run-modal-progress'];
+
+  function eachProgressBox(fn) {
+    for (const sel of PROGRESS_BOXES) {
+      const box = $(sel);
+      if (box) fn(box);
+    }
+  }
+
+  function resetProgress() {
+    eachProgressBox(box => {
+      box.classList.add('indeterminate');
+      box.querySelector('.fill').style.width = '';
+      box.querySelector('.run-progress-txt').textContent = 'working…';
+    });
+  }
+
+  function setProgress(d) {
+    const pct = Number(d.value);
+    const suffix = d.source && d.source !== 'procedure' ? `  · ${d.source}` : '';
+    eachProgressBox(box => {
+      const txt = box.querySelector('.run-progress-txt');
+      const fill = box.querySelector('.fill');
+      if (Number.isFinite(pct)) {
+        box.classList.remove('indeterminate');
+        fill.style.width = Math.max(0, Math.min(100, pct)) + '%';
+        const where = d.units === 'bytes' && d.total
+          ? ` ${(d.current / 1024).toFixed(1)} / ${(d.total / 1024).toFixed(1)} KB` : '';
+        txt.textContent = `${pct.toFixed(0)}%${where}`
+          + (d.label ? '  ' + d.label : '') + suffix;
+      } else {
+        box.classList.add('indeterminate');
+        fill.style.width = '';
+      }
+    });
+  }
+
+  function setStatus(d) {
+    // A status with no number leaves the bar indeterminate but names the step —
+    // the whole point for a flash that sits in one phase for a while.
+    const suffix = d.source && d.source !== 'procedure' ? `  · ${d.source}` : '';
+    eachProgressBox(box => {
+      if (box.classList.contains('indeterminate')) {
+        box.querySelector('.run-progress-txt').textContent =
+          String(d.status || 'working…') + suffix;
+      }
+    });
+  }
+
+  // ---- run controls ----------------------------------------------------------
+  // A run holds a server-side lock. A flash shows the scrim modal (below); a
+  // normal procedure runs inline in the pane so its log stays visible. Either
+  // way the ODIN sidebar is locked so nothing else starts under the lock, and
+  // the live bus view stays reachable (the tab bar sits outside all this).
+  let runCancelling = false;
+  // Cancel is offered in two places — the flash modal and the inline pane row —
+  // so drive whichever is showing; updating the hidden one is harmless.
+  const CANCEL_BTNS = ['#run-cancel-btn', '#run-inline-cancel'];
+  const CANCEL_NOTES = ['#run-cancel-note', '#run-inline-note'];
+
+  function armCancel() {
+    runCancelling = false;
+    for (const s of CANCEL_BTNS) { const b = $(s); if (b) { b.disabled = false; b.textContent = 'Cancel'; } }
+    for (const s of CANCEL_NOTES) { const n = $(s); if (n) n.textContent = ''; }
+  }
+
+  function openRunModal(p) {
+    $('#run-modal-sub').textContent = p.basename;
+    $('#run-modal-title').textContent = p.title || p.name || 'Running procedure';
+    $('#run-scrim').hidden = false;
+  }
+
+  function closeRunModal() { $('#run-scrim').hidden = true; }
+
+  // Dim + lock the ODIN sidebar for the length of a run — the scrim did this for
+  // flashes; an inline run needs it done directly.
+  function setOdinBusy(busy) {
+    const sb = document.querySelector('#tab-odin .sidebar');
+    if (sb) sb.classList.toggle('busy', busy);
+  }
+
+  async function cancelRun() {
+    if (runCancelling) return;
+    runCancelling = true;
+    for (const s of CANCEL_BTNS) { const b = $(s); if (b) { b.disabled = true; b.textContent = 'Cancelling…'; } }
+    try {
+      const { ok, data } = await jpost('/api/odin/cancel', {});
+      // Be straight about what cancel reaches: it ends the next WAIT. An
+      // operation already in flight — a flash above all — runs to completion.
+      const note = ok ? (data.note || 'stopping at the next wait')
+                      : (data.error || 'could not cancel');
+      for (const s of CANCEL_NOTES) { const n = $(s); if (n) n.textContent = note; }
+      logEvent('trace', ok ? '⏹ cancel requested' : '✖ ' + (data.error || 'cancel failed'));
+    } catch (e) {
+      for (const s of CANCEL_NOTES) { const n = $(s); if (n) n.textContent = 'cancel request failed'; }
+    }
+  }
+
   async function runProc(p) {
     const btn = $('#run-btn');
     btn.disabled = true;
     $('#run-result').textContent = '';
     $('#run-metrics').innerHTML = '';
+    const plan = $('#flash-plan'); if (plan) plan.remove();
     const log = $('#run-log'); if (log) log.innerHTML = '';
+    // A procedure that writes firmware is confirmed first — with the images it
+    // resolved to and the car config that chose them. One that writes nothing
+    // has nothing to confirm and runs straight.
+    if (p.flashes) {
+      const go = await askFlash(p);
+      if (!go) { btn.disabled = false; logEvent('trace', '· flash cancelled'); return; }
+    }
     logEvent('trace', '▶ running ' + p.basename + ' …');
+    const inPane = $('#run-progress'); if (inPane) inPane.hidden = false;
+    const controls = $('#run-controls'); if (controls) controls.hidden = false;
+    resetProgress();
+    armCancel();
+    setOdinBusy(true);
+    // A flash keeps the modal; a normal procedure runs inline so its log shows.
+    if (p.flashes) openRunModal(p);
     try {
       const { ok, status, data } = await jpost('/api/odin/run', { procedure: p.basename });
       if (!ok) {
@@ -2544,6 +3234,10 @@ function renderExp() {
       logEvent('error', '✖ ' + e);
     } finally {
       btn.disabled = false;
+      closeRunModal();
+      if (inPane) inPane.hidden = true;
+      if (controls) controls.hidden = true;
+      setOdinBusy(false);
     }
   }
 
@@ -2554,6 +3248,12 @@ function renderExp() {
       : '<span class="badge fail">fail · exit ' + res.exit_code + '</span>';
     const m = $('#run-metrics');
     m.innerHTML = '';
+    // The procedure's own message to the operator, surfaced as a readable banner
+    // rather than left buried in the raw outputs table: native-script procedures
+    // return it as outputs.service_output.user_facing_msg; graph procedures
+    // capture it as a 'failure_message' metric.
+    const msg = runUserMessage(res);
+    if (msg) m.append(el('div', 'run-msg ' + (pass ? 'ok' : 'bad'), msg));
     if (res.metrics && res.metrics.length) {
       const t = el('table', 'grid');
       const head = el('tr');
@@ -2584,6 +3284,19 @@ function renderExp() {
       m.append(el('div', 'section-label', 'outputs'));
       m.append(t);
     }
+  }
+
+  // The one human-readable sentence a run leaves for the operator. Native-script
+  // procedures (scripts.RunScriptTest) return a service_output with user_facing_msg;
+  // graph procedures capture a 'failure_message' metric on the failing path.
+  function runUserMessage(res) {
+    const so = res.outputs && res.outputs.service_output;
+    if (so && typeof so === 'object' && so.user_facing_msg) return String(so.user_facing_msg);
+    if (Array.isArray(res.metrics)) {
+      const fm = res.metrics.find(r => r.metric === 'failure_message' && r.value);
+      if (fm) return String(fm.value);
+    }
+    return '';
   }
 
   /* ===================== LOW-LEVEL UDS ===================== */
@@ -2794,6 +3507,9 @@ function renderExp() {
       let d; try { d = JSON.parse(e.data); } catch { return; }
       if (d.type === 'trace') logEvent('trace', '  '.repeat(d.depth || 0) + (d.message || ''));
       else if (d.type === 'metric') logEvent('metric', '● ' + d.metric + ' = ' + fmt(d.value) + ' (rc ' + d.result_code + ')');
+      else if (d.type === 'progress') setProgress(d);
+      else if (d.type === 'status') setStatus(d);
+      else if (d.type === 'flash_plan') renderFlashPlan(d);
       else if (d.type === 'done') logEvent('done', '✔ done · exit ' + d.exit_code);
       else if (d.type === 'error') logEvent('error', '✖ ' + d.error);
     };
@@ -2945,7 +3661,12 @@ function renderExp() {
   const boot = () => {
     if (booted) return;
     booted = true;
-    loadProcs();
+    // Vehicles first: it settles which car loadProcs asks for.
+    loadVehicles().then(loadProcs, loadProcs);
+    loadBenchState();
+    $('#run-cancel-btn').onclick = cancelRun;
+    $('#flash-cancel-btn').onclick = () => closeFlashModal(false);
+    $('#flash-confirm-btn').onclick = () => closeFlashModal(true);
     connectWS();
   };
   tabInit.odin = boot;

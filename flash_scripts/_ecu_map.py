@@ -272,6 +272,15 @@ def _add_bootloader_entries(table: dict[str, _Entry]) -> None:
 _add_bootloader_entries(ECU_SCRIPT_MAP)
 
 
+# RAM-app ecu_types (e.g. `pmramapp`, `vcsecramapp`): every entry that resolves to a
+# RAM-app script. Identity compare -- FlashScript is an unhashable dataclass.
+_RAMAPP_SCRIPTS = (SCRIPT_RAMAPP, SCRIPT_RAMAPP_ALT)
+RAMAPP_ECU_TYPES: frozenset[str] = frozenset(
+    et for et, (script, _mod) in ECU_SCRIPT_MAP.items()
+    if any(script is s for s in _RAMAPP_SCRIPTS)
+)
+
+
 def get_script(ecu_type: str) -> _Entry:
     """Look up (FlashScript, module_byte) for an ecu_type name.
 

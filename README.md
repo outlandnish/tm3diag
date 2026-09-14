@@ -90,7 +90,7 @@ With `TM3_ROOT` set, CAN frames are automatically decoded and converted into rea
 | | Source | Covers |
 |---|---|---|
 | 1 | **The firmware's own decoder** (`vapi_emu`) | the whole catalog, exactly as the car decodes it |
-| 2 | A generated DBC (`candata_to_dbc.py`) | |
+| 2 | A generated DBC (`candata_to_dbc.py`) | the whole catalog, from bit layouts recovered out of that same decoder |
 | 3 | `Model3_ETH.compact.json` | only the subset Tesla ships to the diagnostic tool, and it shrinks every release |
 
 To generate a DBC:

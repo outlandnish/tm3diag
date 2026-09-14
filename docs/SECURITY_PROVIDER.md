@@ -4,9 +4,7 @@ This project ships **no** seed/key algorithms, immobilizer response derivation, 
 decryption keys. Any such computation is delegated to a **provider** that you
 supply, for hardware you are lawfully entitled to service.
 
-This document describes the provider **interface only** — module names, method
-names, and argument/return types. It does not describe, specify, or hint at any
-algorithm. What a provider computes, and how, is entirely up to you.
+This document describes the provider interface so that your implementation can work correctly with the rest of tm3diag. 
 
 If no provider is configured, the seam is **fail-closed**: the call raises
 `NotImplementedError` (a `uds_local.security_provider.ProviderUnavailable`) with a
@@ -25,11 +23,7 @@ Resolution order, per surface:
    export TM3_SECURITY_PROVIDER=my_company.tesla_security
    ```
 
-   A value that cannot be imported raises loudly (it is a misconfiguration, not a
-   silent fall-through).
-
 2. **Local drop-in module** (used only when the environment variable is unset;
-   both are gitignored so they never enter the tree):
    - security-access: `uds_local/security_impl.py`
    - key-derivation: `uds_local/immobilizer.py`
 
@@ -113,7 +107,7 @@ time and fails closed otherwise.
 
 ## Minimal skeleton
 
-A provider that implements nothing is valid — every call simply fails closed:
+A provider that implements nothing is valid:
 
 ```python
 # my_company/tesla_security.py

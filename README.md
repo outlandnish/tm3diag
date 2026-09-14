@@ -3,7 +3,7 @@
 Tesla Model 3 diagnostics tools for CAN
 
 > **Use at your own risk**
-> This is unofficial, open-source software with no affiliation to Tesla. Flashing ECU firmware carries real risk — a failed or interrupted flash can leave an ECU in an unrecoverable state, potentially disabling safety-critical vehicle systems. By using these tools you accept full responsibility for any damage to your vehicle, its components, or any third parties. The authors provide no warranty and assume no liability.
+> This is unofficial, open-source software with no affiliation to Tesla. By using these tools you accept full responsibility for any damage to your vehicle, its components, or any third parties. The authors provide no warranty and assume no liability.
 
 > This tool ships **no** seed/key algorithms, immobilizer logic, or decryption keys. Where a security-access or immobilizer computation is required, you supply it through a provider you are lawfully entitled to use — see [docs/SECURITY_PROVIDER.md](docs/SECURITY_PROVIDER.md).
 
@@ -75,7 +75,7 @@ If your firmware's `.compact.json` and ODJ files are encrypted `.bin` files, you
 
 For UDS SecurityAccess as well as the immobilizer, an interface is provided for you to implement to access the relevant fearures. See [docs/SECURITY_PROVIDER.md](docs/SECURITY_PROVIDER.md). 
 
-The ODIN diagnostic graphs ship as a zip that nothing unpacks for you. Unzip it in place, or the ODIN panel reports `no ODIN bundle`:
+The ODIN diagnostic graphs ship as a zip. Unzip it it for access to diagnostics scripts:
 
 ```bash
 cd "$TM3_ROOT/opt/odin" && unzip -q odin_bundle.zip     # -> opt/odin/odin_bundle/networks
@@ -90,7 +90,7 @@ With `TM3_ROOT` set, CAN frames are automatically decoded and converted into rea
 | | Source | Covers |
 |---|---|---|
 | 1 | **The firmware's own decoder** (`vapi_emu`) | the whole catalog, exactly as the car decodes it |
-| 2 | A generated DBC (`candata_to_dbc.py`) | the whole catalog, from bit layouts recovered out of that same decoder |
+| 2 | A generated DBC (`candata_to_dbc.py`) | |
 | 3 | `Model3_ETH.compact.json` | only the subset Tesla ships to the diagnostic tool, and it shrinks every release |
 
 To generate a DBC:

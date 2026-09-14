@@ -5,14 +5,12 @@ Tesla Model 3 diagnostics tools for CAN
 > **Use at your own risk**
 > This is unofficial, open-source software with no affiliation to Tesla. Flashing ECU firmware carries real risk — a failed or interrupted flash can leave an ECU in an unrecoverable state, potentially disabling safety-critical vehicle systems. By using these tools you accept full responsibility for any damage to your vehicle, its components, or any third parties. The authors provide no warranty and assume no liability.
 
-> **Scope**
-> This tool ships **no** seed/key algorithms, immobilizer logic, or decryption keys. It is a CAN/UDS diagnostics and interoperability framework intended for use on hardware you own. Where a security-access or immobilizer computation is required, you supply it through a provider you are lawfully entitled to use — see [docs/SECURITY_PROVIDER.md](docs/SECURITY_PROVIDER.md).
+> This tool ships **no** seed/key algorithms, immobilizer logic, or decryption keys. Where a security-access or immobilizer computation is required, you supply it through a provider you are lawfully entitled to use — see [docs/SECURITY_PROVIDER.md](docs/SECURITY_PROVIDER.md).
 
 ## Requirements
 
 - Python 3.10 or later
-- A CAN interface connected to any of the Tesla ECUs — either a real USB adapter (e.g. PEAK, Kvaser, CANable) or a virtual interface (`vcan`) for offline testing
-- Linux is recommended; SocketCAN is the default interface driver
+- python-can compatible CAN interface(s) connected to the Tesla ECUs. Check your ECU config for Vehicle and Party CAN interfaces 
 
 ## Setup
 
@@ -26,8 +24,6 @@ source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
-The `source` line activates the virtual environment; re-run it in each new terminal session before using any of the tools.
-
 ### 2. Configure your CAN interface
 
 Copy the example config and open it in a text editor:
@@ -36,14 +32,16 @@ Copy the example config and open it in a text editor:
 cp .env.example .env
 ```
 
-Set `TM3_VEHICLE_CHANNEL` to your CAN interface name and `TM3_INTERFACE` to your adapter's driver. The defaults work for a standard Linux SocketCAN setup:
-
 ```bash
-TM3_VEHICLE_CHANNEL=can0   # your interface name — check with: ip link show type can
+TM3_VEHICLE_CHANNEL=can0
+#TM3_PARTY_CHANNEL=can1 # optional
+#TM3_CHARGE_CHANNEL=can2 # optional
 TM3_INTERFACE=socketcan
-```
 
-`TM3_VEHICLE_CHANNEL` is the vehicle bus and the default channel for every tool. On a multi-bus bench you can also set `TM3_PARTY_CHANNEL` and `TM3_CHARGE_CHANNEL`; tools fall back to the vehicle bus when a bus has no channel configured.
+# Optional path to extracted Tesla firmware squashfs root. use `unsquashfs_firmware.py` to extract a SquashFS image
+TM3_ROOT=/path/to/squashfs-root
+
+```
 
 Bring the interface up before running any tool (replace `can0` and `500000` with your interface and bitrate):
 
@@ -63,7 +61,7 @@ sudo ip link set vcan0 up
 
 ### 3. Firmware dump (optional)
 
-Some tools (`tm3cli.py`, `dfu.py`, `tm3uds.py`) can decode signal names and validate routines when pointed at an extracted Tesla firmware squashfs. This is **not required** for the CAN/bench tools.
+Some tools (`tm3cli.py`, `dfu.py`, `tm3uds.py`) can decode signal names and validate routines when pointed at an extracted Tesla firmware squashfs.
 
 If you have a firmware image, extract it with `unsquash_firmware.py`, then set `TM3_ROOT` in `.env` to the resulting `squashfs-root` directory:
 
@@ -71,11 +69,11 @@ If you have a firmware image, extract it with `unsquash_firmware.py`, then set `
 TM3_ROOT=/path/to/squashfs-root
 ```
 
-If your firmware's `.compact.json` and ODJ files are encrypted `.bin` files, you'll also need the decryption key, which you must supply for firmware you own — this project ships no key-extraction tooling. See `.env.example`.
+If your firmware's `.compact.json` and ODJ files are encrypted `.bin` files, you'll also need the decryption key in your `. env` as `TM3_BIN_KEY`
 
 ### 4. Security / immobilizer provider (optional)
 
-The framework contains no seed/key or immobilizer algorithms. Tools that need a UDS SecurityAccess key or an immobilizer response resolve it through a provider you supply. If none is configured they fail closed with a pointer to the docs. See [docs/SECURITY_PROVIDER.md](docs/SECURITY_PROVIDER.md) for the interface.
+For UDS SecurityAccess as well as the immobilizer, an interface is provided for you to implement to access the relevant fearures. See [docs/SECURITY_PROVIDER.md](docs/SECURITY_PROVIDER.md). 
 
 The ODIN diagnostic graphs ship as a zip that nothing unpacks for you. Unzip it in place, or the ODIN panel reports `no ODIN bundle`:
 
@@ -85,7 +83,7 @@ cd "$TM3_ROOT/opt/odin" && unzip -q odin_bundle.zip     # -> opt/odin/odin_bundl
 
 ### 4. Signal database
 
-With `TM3_ROOT` set, CAN frames are decoded by **running the MCU's own decoder** — `GUICanCracker::crackMessage` out of `libQtCarVAPI.so`, emulated, with the signal catalog from `libQtCarCANData.so` naming what it stores. Nothing is modelled, so nothing can be modelled wrong, and there is no build step: point `TM3_ROOT` at an extraction and every tool has the full database.
+With `TM3_ROOT` set, CAN frames are automatically decoded and converted into readable signals. Alternatively, you can provide a DBC file or generate one from the firmware.
 
 `default_db()` resolves three sources, best first:
 
@@ -95,20 +93,10 @@ With `TM3_ROOT` set, CAN frames are decoded by **running the MCU's own decoder**
 | 2 | A generated DBC (`candata_to_dbc.py`) | the whole catalog, from bit layouts recovered out of that same decoder |
 | 3 | `Model3_ETH.compact.json` | only the subset Tesla ships to the diagnostic tool, and it shrinks every release |
 
-Set `TM3_VAPI=0` to force the layout path — the A/B for a suspected layout bug.
-
-**Decoding needs no DBC.** Encoding does: `crackMessage` only runs one way, so `vehicle_sim.py`, `ecu_bench.py` and the frame builders need bit layouts. Build one once per firmware revision:
+To generate a DBC:
 
 ```bash
 python candata_to_dbc.py dbc        # writes Model3_ETH.<rev>.dbc, ~1-2 min
-```
-
-The revision is taken from the `TM3_ROOT` directory name — a trailing `.ice`, `.extracted` or `.ice.extracted` is stripped — and that same name is how `config` finds the DBC again, so the two cannot drift. Without a DBC, encoding falls back to whatever layouts `compact.json` carries.
-
-To check the recovered layouts against the firmware itself:
-
-```bash
-python vapi_emu.py parity           # same / different / only-emu / only-dbc
 ```
 
 ## Tools
@@ -118,8 +106,6 @@ python vapi_emu.py parity           # same / different / only-emu / only-dbc
 | [`tm3cli.py`](docs/tm3cli.md) | Interactive diagnostic terminal — read DIDs, run routines, trigger firmware updates |
 | [`tm3uds.py`](docs/tm3uds.md) | General-purpose UDS CLI for reading/writing DIDs, routines, and session management |
 | [`dfu.py`](docs/dfu.md) | Firmware flash CLI — identity discovery, file selection, and ECU-specific flash sequence |
-| [`scripts/di/di.py`](docs/di.md) | Drive Inverter bench emulator — gear/system control + optional immobilizer responder (provider-supplied) |
-| [`scripts/pcs/pcs.py`](docs/pcs.md) | PCS bench emulator — operating modes, precharge, DC-DC and charge control |
 | [`bhx.py`](docs/bhx.md) | BHX firmware image parser and builder |
 | [`ihex.py`](docs/ihex.md) | Intel HEX / `.hgz` parser — decode dual-bank gateway images to canonical Intel HEX |
 | [`clog.py`](docs/clog.md) | Gateway cluster-log parser — decode `CL/DATA/*.CLH`+`*.CLB` signal logs |

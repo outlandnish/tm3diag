@@ -43,7 +43,7 @@ TM3_ROOT=/path/to/squashfs-root
 
 ```
 
-Bring the interface up before running any tool (replace `can0` and `500000` with your interface and bitrate):
+Bring the interface up before running any tool: 
 
 ```bash
 sudo ip link set can0 type can bitrate 500000

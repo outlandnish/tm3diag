@@ -73,7 +73,7 @@ If your firmware's `.compact.json` and ODJ files are encrypted `.bin` files, you
 
 ### 4. Security / immobilizer provider (optional)
 
-For UDS SecurityAccess as well as the immobilizer, an interface is provided for you to implement to access the relevant fearures. See [docs/SECURITY_PROVIDER.md](docs/SECURITY_PROVIDER.md). 
+For UDS SecurityAccess as well as the immobilizer, an interface is provided for you to implement to access the relevant features. See [docs/SECURITY_PROVIDER.md](docs/SECURITY_PROVIDER.md). 
 
 The ODIN diagnostic graphs ship as a zip. Unzip it it for access to diagnostics scripts:
 
@@ -103,6 +103,7 @@ python candata_to_dbc.py dbc        # writes Model3_ETH.<rev>.dbc, ~1-2 min
 
 | Tool | Description |
 |---|---|
+| [`tm3web.py`](docs/tm3web.md) | Web-based live CAN signal viewer, ODIN interface, dashboard |
 | [`tm3cli.py`](docs/tm3cli.md) | Interactive diagnostic terminal — read DIDs, run routines, trigger firmware updates |
 | [`tm3uds.py`](docs/tm3uds.md) | General-purpose UDS CLI for reading/writing DIDs, routines, and session management |
 | [`dfu.py`](docs/dfu.md) | Firmware flash CLI — identity discovery, file selection, and ECU-specific flash sequence |
@@ -112,7 +113,6 @@ python candata_to_dbc.py dbc        # writes Model3_ETH.<rev>.dbc, ~1-2 min
 | [`compact_to_dbc.py`](docs/compact_to_dbc.md) | Convert `Model3_ETH.compact.json` to DBC |
 | [`dump_odin.py`](docs/dump_odin.md) | Extract + decompile the odin PyInstaller binary from a firmware squashfs |
 | [`unsquash_firmware.py`](docs/unsquash_firmware.md) | Unsquash a firmware image and expand its nested `.dirsquashed` parts |
-| [`tm3web.py`](docs/tm3web.md) | Web-based live CAN signal viewer |
 
 ## Reference
 

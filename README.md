@@ -5,7 +5,7 @@ Tesla Model 3 diagnostics tools for CAN
 > **Use at your own risk**
 > This is unofficial, open-source software with no affiliation to Tesla and is a vibe-coded rapid prototype. By using these tools you accept full responsibility for any damage to your vehicle, its components, or any third parties. The authors provide no warranty and assume no liability.
 
-> This tool ships **no** seed/key algorithms, immobilizer logic, or decryption keys. Where a security-access or immobilizer computation is required, you supply it through a provider you are lawfully entitled to use — see [docs/SECURITY_PROVIDER.md](docs/SECURITY_PROVIDER.md).
+> Where a security-access or immobilizer is required, you'll need to supply it through a provider you are lawfully entitled to use — see [docs/SECURITY_PROVIDER.md](docs/SECURITY_PROVIDER.md).
 
 ## Requirements
 

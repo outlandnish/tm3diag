@@ -43,20 +43,11 @@ TM3_ROOT=/path/to/squashfs-root
 
 ```
 
-Bring the interface up before running any tool: 
+Make sure you've brought up the relevant interfaces:
 
 ```bash
 sudo ip link set can0 type can bitrate 500000
 sudo ip link set can0 up
-```
-
-To use a virtual interface for testing without hardware:
-
-```bash
-sudo modprobe vcan
-sudo ip link add dev vcan0 type vcan
-sudo ip link set vcan0 up
-# then set TM3_VEHICLE_CHANNEL=vcan0 in .env
 ```
 
 ### 3. Firmware dump (optional)

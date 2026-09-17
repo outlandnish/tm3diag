@@ -1,16 +1,6 @@
 # Security / key-derivation provider
 
-This project ships **no** seed/key algorithms, immobilizer response derivation, or
-decryption keys. Any such computation is delegated to a **provider** that you
-supply, for hardware you are lawfully entitled to service.
-
-This document describes the provider interface so that your implementation can work correctly with the rest of tm3diag. 
-
-If no provider is configured, the seam is **fail-closed**: the call raises
-`NotImplementedError` (a `uds_local.security_provider.ProviderUnavailable`) with a
-message pointing back here. The rest of the framework — CAN decode, UDS
-session/DID/routine plumbing, firmware parsing, flashing that consumes a
-user-supplied image and key — works without any provider.
+Where security access is required to Tesla ECUs or an immobilizer is needed to test functionality, you'll need to provide your own implementation. This document outlines how you can set it up to work with `tm3diag`.
 
 ## Configuring a provider
 

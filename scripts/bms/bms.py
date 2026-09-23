@@ -6,10 +6,11 @@ DLC>=8 arrival clears bmsMIA regardless of payload; content is a drive-ready pac
 
 from __future__ import annotations
 
+import time
 from functools import partial
 
 from sim_core import BASELINE_FW, Node, SimFrame
-from tesla_frames import pack_le
+from tesla_frames import pack_le, vcfront_hv_charge_enable
 
 # DBC scaling that moved 2020.8.1 -> 2022.45.15 (layouts unchanged). 2020 LSBs on a 2022 DI read
 # minBusVoltage 300 V as 600 V (clamped 470 V) > the 373 V pack, so the DI's min-bus-voltage
@@ -19,17 +20,24 @@ _SCALE_2020 = {"bus_v": 0.01, "dis_i": 0.128, "dis_p": 0.01, "i_unf_off": -500.0
 _SCALE_2022 = {"bus_v": 0.02, "dis_i": 0.15, "dis_p": 0.013, "i_unf_off": -822.0}
 
 
-def _bms_hvBusStatus(s=_SCALE_2020) -> bytearray:  # 0x132, 10ms
+# BMS_packVoltage reports a MEASURED bus voltage, never a fixed one (a fixed value splits the
+# DIR's bus-voltage cross-check, DIR_a038_busVsensor, 5%): the DIR's DIR_vBat (0x126 @0|10,
+# 1 V/LSB 2022+, 0.5 V in 2020) if it is on the bus, else a real PCS's PCS_dcdcHvBusVolt
+# (0x2B4 @10|12, 0.146484375 V; the sim's PCS doesn't send 0x2B4), else 0 V.
+_HV_SOURCE_STALE_S = 1.0
+
+
+def _bms_hvBusStatus(s=_SCALE_2020, v=0.0) -> bytearray:  # 0x132, 10ms
     return pack_le(
         [
-            (0, 16, 373.0 / 0.01),  # BMS_packVoltage     373 V
+            (0, 16, v / 0.01),  # BMS_packVoltage
             (16, 16, 0),  # BMS_packCurrent     0 A (SNA=-32768)
             (32, 16, (0 - s["i_unf_off"]) / 0.05),  # BMS_currentUnfiltered 0 A
         ]
     )
 
 
-def _bms_hvBusStatus_2026(s=_SCALE_2022) -> bytearray:  # 0x132, 10ms, DLC **6**
+def _bms_hvBusStatus_2026(s=_SCALE_2022, v=0.0) -> bytearray:  # 0x132, DLC **6**
     # 2026.8.3 shortens 0x132 to DLC 6 and the DIR's DLC check is an EXACT match (both
     # short AND long frames are rejected), so the
     # 8-byte 2022 build is dropped outright on a 2026 DU -- taking the HV bus voltage with it.
@@ -38,7 +46,7 @@ def _bms_hvBusStatus_2026(s=_SCALE_2022) -> bytearray:  # 0x132, 10ms, DLC **6**
     # dropped -- we never populated it, so the payload is identical and only the length changes.
     return pack_le(
         [
-            (0, 16, 373.0 / 0.01),  # BMS_dcLinkVoltage   373 V (was BMS_packVoltage)
+            (0, 16, v / 0.01),  # BMS_dcLinkVoltage (was BMS_packVoltage)
             (16, 16, 0),  # BMS_packCurrent     0 A (SNA=-32768)
             (32, 16, (0 - s["i_unf_off"]) / 0.05),  # BMS_currentUnfiltered 0 A
         ],
@@ -72,10 +80,10 @@ def _bms_powerAvailable(s=_SCALE_2020) -> bytearray:  # 0x252, 100ms  -> drive-r
     )
 
 
-def _bms_driveLimits(s=_SCALE_2020) -> bytearray:  # 0x2D2, 100ms
+def _bms_driveLimits(s=_SCALE_2020, v_min=300.0) -> bytearray:  # 0x2D2, 100ms
     return pack_le(
         [
-            (0, 16, 300.0 / s["bus_v"]),  # BMS_minBusVoltage      300 V
+            (0, 16, v_min / s["bus_v"]),  # BMS_minBusVoltage (DIR clamps to >= 210 V)
             (16, 16, 400.0 / s["bus_v"]),  # BMS_maxBusVoltage      400 V
             (48, 14, 500.0 / s["dis_i"]),  # BMS_maxDischargeCurrent ~500 A
         ]
@@ -166,6 +174,16 @@ class Bms(Node):
     def __init__(self, ctx=None) -> None:
         super().__init__(ctx)
         self.mode = "drive"  # drive | dcdc | charge — driver externality (BMS_status 0x212)
+        self.min_bus_voltage = 300.0
+        self._hv: dict[str, tuple[float, float]] = {}  # source -> (volts, monotonic time)
+
+    def _pack_v(self) -> float:
+        now = time.monotonic()
+        for src in ("DIR", "PCS"):  # the inverter's own measurement first
+            v, t = self._hv.get(src, (None, 0.0))
+            if v is not None and now - t <= _HV_SOURCE_STALE_S:
+                return v
+        return 0.0
 
     def frames(self) -> list[SimFrame]:
         # Proven bench set. Only 0x212 + 0x312 exist in the 2020 DIR; 0x132/0x252/0x2D2 are
@@ -174,10 +192,11 @@ class Bms(Node):
 
     def _frames(self, s) -> list[SimFrame]:
         return [
-            SimFrame("BMS_hvBusStatus", 0x132, 0.010, partial(_bms_hvBusStatus, s)),
+            SimFrame("BMS_hvBusStatus", 0x132, 0.010, lambda: _bms_hvBusStatus(s, self._pack_v())),
             SimFrame("BMS_status", 0x212, 0.100, self._bms_status),
             SimFrame("BMS_powerAvailable", 0x252, 0.100, partial(_bms_powerAvailable, s)),
-            SimFrame("BMS_driveLimits", 0x2D2, 0.100, partial(_bms_driveLimits, s)),
+            SimFrame("BMS_driveLimits", 0x2D2, 0.100,
+                     lambda: _bms_driveLimits(s, self.min_bus_voltage)),
             SimFrame("BMS_thermalStatus", 0x312, 1.000, _bms_thermalStatus),
         ]
 
@@ -199,7 +218,8 @@ class Bms(Node):
         noBatteryPower calibration that _SCALE_2022 exists for still holds."""
         s = _SCALE_2022
         repl = {
-            0x132: SimFrame("BMS_hvBusStatus", 0x132, 0.010, partial(_bms_hvBusStatus_2026, s)),
+            0x132: SimFrame("BMS_hvBusStatus", 0x132, 0.010,
+                            lambda: _bms_hvBusStatus_2026(s, self._pack_v())),
             0x212: SimFrame("BMS_status", 0x212, 0.100, self._bms_status_2026),
             0x252: SimFrame(
                 "BMS_powerAvailable", 0x252, 0.100, partial(_bms_powerAvailable_2026, s)
@@ -222,19 +242,36 @@ class Bms(Node):
         self.mode = key
         return key
 
-    def configure(self, **s) -> None:  # scenario key: mode
+    def configure(self, **s) -> None:
+        """Scenario keys: mode, min_bus_voltage."""
         mode = s.pop("mode", None)
         if mode is not None:
             self.set_mode(mode)
+        if (v := s.pop("min_bus_voltage", None)) is not None:
+            self.min_bus_voltage = float(v)
         super().configure(**s)
 
     def rx_handlers(self):
-        return {0x3A1: self._on_vcfront_status}  # VCFRONT_vehicleStatus
+        return {0x3A1: self._on_vcfront_status,  # VCFRONT_vehicleStatus
+                0x126: self._on_dir_hv_status,   # DIR_hvStatus
+                0x2B4: self._on_pcs_rail_status}  # PCS_dcdcRailStatus
+
+    def _on_dir_hv_status(self, data, send) -> None:
+        if len(data) >= 2:
+            raw = data[0] | (data[1] & 3) << 8
+            lsb = 1.0 if self.fw is None or self.fw >= "2022.45.15" else 0.5
+            self._hv["DIR"] = (raw * lsb, time.monotonic())
+
+    def _on_pcs_rail_status(self, data, send) -> None:
+        if len(data) >= 3:
+            raw = int.from_bytes(data[:3], "little") >> 10 & 0xFFF
+            self._hv["PCS"] = (raw * 0.146484375, time.monotonic())
 
     def _on_vcfront_status(self, data, send) -> None:
-        # bmsHvChargeEnable @0: charge when set, else drive.
-        charge = bool(int.from_bytes(bytes(data), "little") & 1)
-        self.mode = "charge" if charge else "drive"
+        # VCFRONT_bmsHvChargeEnable (2020: bit 0; 2022+: 0x3A1 page 1): charge, else drive.
+        charge = vcfront_hv_charge_enable(data, muxed=self.fw is None or self.fw >= "2022.45.15")
+        if charge is not None:
+            self.mode = "charge" if charge else "drive"
 
     def _bms_status(self) -> bytearray:  # 0x212, 100ms
         return pack_le(_BMS_STATUS_MODES[self.mode])

@@ -85,6 +85,29 @@ async def _client(seen_msg, msg_signals):
         yield client
 
 
+class TestFrames:
+    def test_latest_payload_per_bus_for_requested_ids(self):
+        async def body():
+            app = web.Application()
+            now = time.time()
+            app["last_frame"] = {
+                "can0": {0x39D: (bytes.fromhex("a00a010000"), now - 0.5),
+                         0x2A8: (bytes(8), now)},
+                "can1": {0x39D: (bytes.fromhex("a00b010000"), now)},
+            }
+            app.router.add_get("/api/frames", tm3web._api_frames)
+            async with TestClient(TestServer(app)) as client:
+                data = await (await client.get("/api/frames?ids=0x39D,0x185")).json()
+                f = data["frames"]
+                assert set(f) == {"0x39D"}                  # 0x185 not seen; 0x2A8 not asked
+                assert f["0x39D"]["can0"]["data"] == "a00a010000"
+                assert f["0x39D"]["can1"]["data"] == "a00b010000"
+                assert 0.4 <= f["0x39D"]["can0"]["age_s"] < 5
+                r = await client.get("/api/frames?ids=nope")
+                assert r.status == 400
+        asyncio.run(body())
+
+
 class TestSeenSignals:
     def test_fresh_ids_expand_to_signals_stale_dropped(self):
         async def body():

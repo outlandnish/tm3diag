@@ -29,6 +29,9 @@ keep UI/manual control instead of following the DI's wired switch; see scripts/v
 They are NOT a considered bench profile: GTW_numberHVILNodes 0 and GTW_brakeHWType 0 in
 particular are worth setting deliberately.
 
+Any other GTW_carConfig signal can be set in a scenario by its DBC name, ignoring case and
+underscores, e.g. ``gtw_wheeltype = "STILETTO_19"`` under ``[scenario.GTW]``.
+
 Needs the CAN DB: constructed with ``NodeContext(db=...)``.
 """
 
@@ -156,10 +159,27 @@ class Gtw(Node):
         """Driver externality: set a GTW_carConfig signal by its raw DBC name (dashboard)."""
         return self.carcfg.set(signal, value)
 
-    def configure(self, **s) -> None:  # scenario keys: the CARCONFIG keys
+    def configure(self, **s) -> None:
+        # scenario keys: the CARCONFIG keys, or any GTW_carConfig signal by DBC name, matched
+        # ignoring case and underscores (GTW_wheelType == gtw_wheeltype == gtw_wheel_type);
+        # a name the loaded DB lacks is an error.
         for key in [k for k in s if k in CARCONFIG]:
             self.set_config(key, s.pop(key))
+        by_norm = {_norm(sn): sn for sn, sig in self.carcfg.signals.items()
+                   if not sig.get("is_muxer")}
+        for key in [k for k in s if _norm(k).startswith("gtw")]:
+            value = s.pop(key)
+            signal = by_norm.get(_norm(key))
+            if signal is None:
+                raise ValueError(
+                    f"GTW: {key} is not a GTW_carConfig signal in the loaded CAN database"
+                )
+            self.set_carconfig(signal, value)
         super().configure(**s)
+
+
+def _norm(name: str) -> str:
+    return name.replace("_", "").lower()
 
 
 NODE = Gtw

@@ -48,6 +48,7 @@ class Vcfront(Node):
         # Reactive inputs observed on the bus (see on_rx): user charge request + EVSE present.
         self._ui_charge_req = False
         self._cp_evse = False
+        self._status_page = 1  # 0x3A1 mux page last sent (2022+); first frame is page 0
 
     def frames(self) -> list[SimFrame]:
         return [
@@ -85,6 +86,30 @@ class Vcfront(Node):
             sigs.append((0, 1, 1))  # VCFRONT_bmsHvChargeEnable = 1
         return pack_le(sigs)
 
+    def _vehicle_status_muxed(self) -> bytearray:
+        """0x3A1 from 2022: VCFRONT_vehicleStatusMuxIndex @0. Page 0 carries the drive status,
+        page 1 VCFRONT_bmsHvChargeEnable @1; alternate like the real VCFRONT."""
+        self._status_page ^= 1
+        if self._status_page:
+            return pack_le([(0, 1, 1), (1, 1, int(self.hv_charge_enable))])
+        sigs = [
+            (10, 3, 3),  # VCFRONT_diPowerOnState = DI_POWERED_ON_FOR_DRIVE
+            (31, 1, 1),  # VCFRONT_driverDoorStatus = DOOR_CLOSED
+            # 2020's pcs12vVoltageTarget bits, kept so the drive frame is unchanged; on 2022 they
+            # read as VCFRONT_dcr12VMilliOhms @16|8 = 96 (bits 24-26 unused).
+            (16, 11, 14.0 / 0.0125),
+        ]
+        if self.lv_ready_for_drive:
+            sigs.append((14, 2, 1))  # VCFRONT_12vStatusForDrive = READY_FOR_DRIVE_12V(1)
+        return pack_le(sigs)
+
+    def _frames_2022(self) -> list[SimFrame]:
+        return [
+            SimFrame("VCFRONT_vehicleStatus", 0x3A1, 0.050, self._vehicle_status_muxed, 52, 56)
+            if f.can_id == 0x3A1 else f
+            for f in self.frames()
+        ]
+
     def _frames_2026(self) -> list[SimFrame]:
         # 2026.8.3 RESEEDS the 0x3A1 checksum magic: 0xA4 (2020) -> 0x2A (2022+) -> 0xC0 (2026).
         # Read out of the DIR's 0x3A1 check in each revision (2022 gives 0x2A, matching
@@ -100,7 +125,7 @@ class Vcfront(Node):
         # id_lo+id_hi (0x23 / 0x24) and already carry counter+checksum, so they are unchanged.
         return [
             SimFrame(
-                "VCFRONT_vehicleStatus", 0x3A1, 0.050, self._vehicle_status, 52, 56,
+                "VCFRONT_vehicleStatus", 0x3A1, 0.050, self._vehicle_status_muxed, 52, 56,
                 cksum_magic=0xC0,
             )
             if f.can_id == 0x3A1 else f
@@ -108,7 +133,11 @@ class Vcfront(Node):
         ]
 
     def fw_variants(self):
-        return {BASELINE_FW: self.frames, "2026.8.3": self._frames_2026}
+        return {
+            BASELINE_FW: self.frames,
+            "2022.45.15": self._frames_2022,
+            "2026.8.3": self._frames_2026,
+        }
 
     def set_lv(self, state: str) -> int:
         """Driver externality: VCFRONT_vehiclePowerState (off|accessory|conditioning|drive)."""

@@ -1,0 +1,43 @@
+# Learn scenario: drive.toml plus the UI state the DIR's rotor-offset (0x406) and
+# resolver-error (0x409) learns check.
+#
+#   python scripts/vehicle_sim.py --config scenarios/drive-learn.toml --channel can0 --party-channel can1
+#
+# Resolver learn (0x407) needs traction mode dyno instead; scripts/di/dir_learn.py sets the
+# traction mode each learn needs (this [scenario.UI] overrides --traction-mode).
+
+[firmware]
+version = "2022.45.15"
+
+[nodes]
+real = ["DI", "DIR", "PMR"]
+absent = ["DIF", "PMF"]
+
+[scenario.GTW]
+drivetrain_type = "RWD"
+chassis_type = "3_CHASSIS"
+# Any GTW_carConfig signal by DBC name (case/underscores ignored), e.g. the wheels, which size
+# the ESP's 0x175 wheel speeds:
+# gtw_wheeltype = "STILETTO_19"
+
+[scenario.VCFRONT]
+lv_power_state = "drive"
+
+[scenario.UI]
+traction_mode = "rolls"    # UI_tractionControlMode 0x293: 0x406/0x409 fail NOT_IN_ROLLS_MODE otherwise
+service_mode = "on"        # UI_serviceMode 0x284: learn START reason NOT_IN_SERVICE_MODE otherwise
+# UI_developmentCar (0x353) stays off: only the dyno learn (0x407) needs it, to keep dyno from
+# latching unavailable, and dir_learn.py --learn resolver turns it on for that run.
+# Service mode makes the MCU send UI_limitMode=SERVICE on 0x334 unless GUI_factoryModeLimitOverride.
+# Tesla's learn scripts set the override themselves (the ODIN runner mirrors it here); turn it on
+# for manual driving in service mode without the SERVICE limit.
+# factory_mode_limit_override = "on"
+
+[scenario.BMS]
+# BMS_packVoltage always mirrors the measured bus: DIR_vBat, else a real PCS's 0x2B4, else 0 V.
+# BMS_minBusVoltage (default 300 V; the DIR clamps it to >= 210 V). Below it the DI flags vBatLow
+# and powers off. Lower it only as far as the test pack's own cell limits allow.
+# min_bus_voltage = 250
+
+[scenario.ESP]
+wheel_speeds = "axle"      # 0x175 rear wheels follow DIR_axleSpeed (car on a lift); "zero" = old behavior

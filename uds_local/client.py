@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import collections
 import contextlib
 import logging
 import threading
@@ -44,6 +45,15 @@ _SID_TD = 0x36  # TransferData
 _SID_RTE = 0x37  # RequestTransferExit
 _SID_ER = 0x11  # ECUReset
 _SID_TP = 0x3E  # TesterPresent
+
+# Keep-alive gating: a 3E 80 mid ISO-TP transfer can make the ECU abort it.
+_N_CR_S = 1.0          # a multi-frame reply silent this long is dead
+_REPLY_GUARD_S = 0.05  # P2server: after a request, give the reply this long to start
+_TP_POLL_S = 0.02      # how soon a changed keep-alive interval takes effect
+_TP_GAP_WARN_S = 0.3   # log a keep-alive gap this much longer than the interval
+_TP_HEARTBEAT_S = 2.0  # log the keep-alive's counters this often
+_ECU_TURNAROUND_S = 0.02  # min gap between the ECU's last frame and our next request
+_FC_RETRIES = 2           # resends of a multi-frame request whose flow control never came
 _SID_CDI = 0x14  # ClearDiagnosticInformation
 _SID_IOCBI = 0x2F  # InputOutputControlByIdentifier
 _SID_RDTC = 0x19  # ReadDTCInformation
@@ -195,6 +205,72 @@ class _BusErrorListener(can.Listener):
         pass
 
 
+class _ResponseFrameLog(can.Listener):
+    """Records the raw frames the ECU sends on its response CAN id.
+
+    `_send_raw` reports a failed receive as "no response received", but the
+    transport raises TimeoutError both when the ECU said NOTHING and when a
+    multi-frame reply STARTED and did not finish (a dropped consecutive frame,
+    an interleaved packet). Those need opposite fixes, and only the wire tells
+    them apart -- so keep the last few response-id frames and quote them in the
+    error.
+    """
+
+    def __init__(self, can_id: int, depth: int = 6) -> None:
+        super().__init__()
+        self._can_id = can_id
+        self._frames: collections.deque = collections.deque(maxlen=depth)
+        self._lock = threading.Lock()
+        self._reply_start = 0.0   # when the last SF/FF arrived
+        self._segment_due = 0     # bytes still to come in a multi-frame reply
+        self._last_frame = 0.0
+
+    def on_message_received(self, msg: can.Message) -> None:
+        if msg.arbitration_id != self._can_id or msg.is_error_frame:
+            return
+        now, data = time.monotonic(), bytes(msg.data)
+        pci = data[0] >> 4 if data else None
+        with self._lock:
+            self._frames.append((now, data))
+            self._last_frame = now
+            if pci == 0:                                  # single frame
+                self._reply_start, self._segment_due = now, 0
+            elif pci == 1 and len(data) >= 2:             # first frame: 12-bit length
+                self._reply_start = now
+                self._segment_due = (((data[0] & 0x0F) << 8) | data[1]) - (len(data) - 2)
+            elif pci == 2:                                # consecutive frame
+                self._segment_due -= len(data) - 1
+
+    def last_frame_at(self) -> float:
+        with self._lock:
+            return self._last_frame
+
+    def reply_started_since(self, t: float) -> bool:
+        with self._lock:
+            return self._reply_start >= t
+
+    def reply_in_progress(self, now: float) -> bool:
+        """A multi-frame reply has started and not finished (nor stalled past N_Cr)."""
+        with self._lock:
+            return self._segment_due > 0 and now - self._last_frame < _N_CR_S
+
+    def mark(self) -> float:
+        """Timestamp to report frames since (called just before a request)."""
+        return time.monotonic()
+
+    def summary(self, since: float) -> str:
+        """What the ECU put on the wire since `since`, for an error message."""
+        with self._lock:
+            seen = [(t, d) for t, d in self._frames if t >= since]
+        if not seen:
+            return f"no frames from 0x{self._can_id:03X}"
+        first = seen[0][1]
+        kind = ("first frame of a multi-frame reply" if first and first[0] >> 4 == 1
+                else "single frame" if first and first[0] >> 4 == 0 else "frame")
+        return (f"{len(seen)} frame(s) from 0x{self._can_id:03X} ({kind}), "
+                f"first {first.hex(' ')}, last {seen[-1][1].hex(' ')}")
+
+
 class FlashCountError(Exception):
     """Raised when the ECU's flash count is at or over its per-ECU limit."""
 
@@ -237,6 +313,21 @@ class UdsSession:
         self._node = node
         self._tp_stop = threading.Event()
         self._tp_thread: threading.Thread | None = None
+        self._tp_interval = 0.5
+        # Serializes our request frames with the keep-alive's (see _tp_clear).
+        self._tx_lock = threading.Lock()
+        self._awaiting_since: float | None = None
+        # Keep-alive health (see tp_stats).
+        self._tp_sent = 0
+        self._tp_fail = 0
+        self._tp_max_gap = 0.0
+        self._tp_last_ok: float | None = None
+        self._tp_phase = "stopped"  # what the keep-alive thread is doing (heartbeat log)
+        # Wire-level record of the ECU's replies, so a failed receive can say
+        # whether the ECU answered at all (see _ResponseFrameLog).
+        self._rx_log = _ResponseFrameLog(node.response_can_id)
+        self._install_listener(self._rx_log)
+        self._rx_since = 0.0
 
         bcast = broadcast_for(node.name)
 
@@ -250,7 +341,8 @@ class UdsSession:
         self._frame_notifier.add_listener(listener)
 
     def start_tester_present(self) -> None:
-        """Send TesterPresent (3E 80, suppress positive response) at 2 Hz.
+        """Send TesterPresent (3E 80, suppress positive response) every
+        `set_tester_present_interval` seconds (default 0.5), never mid-transfer.
 
         Idempotent: a no-op if the keep-alive thread is already running, so callers
         can start it defensively even after `wait_for_bootloader` already did.
@@ -267,23 +359,129 @@ class UdsSession:
             self._tp_thread.join()
             self._tp_thread = None
 
-    def _tp_loop(self) -> None:
-        tp_packet = CanPacket(
+    def _tp_clear(self, now: float) -> bool:
+        """Whether a 3E 80 sent now stays out of an ISO-TP transfer. Call holding
+        _tx_lock (our own multi-frame requests hold it while they go out).
+
+        Deferred only while the ECU's multi-frame reply is on the wire, or for
+        _REPLY_GUARD_S after a request until the reply starts (its first frame can
+        otherwise arrive just before our 3E 80, ahead of our flow control). A slow
+        ECU or a 0x78 response-pending wait does not hold it up.
+        """
+        if self._rx_log.reply_in_progress(now):
+            return False
+        since = self._awaiting_since
+        return (since is None or now - since >= _REPLY_GUARD_S
+                or self._rx_log.reply_started_since(since))
+
+    def set_tester_present_interval(self, seconds: float) -> float:
+        """Set the keep-alive period (takes effect within _TP_POLL_S); returns the old one."""
+        if seconds <= 0:
+            raise ValueError(f"TesterPresent interval must be > 0, got {seconds}")
+        previous, self._tp_interval = self._tp_interval, float(seconds)
+        return previous
+
+    def send_tester_present(self) -> None:
+        """One `3E 80` now (still kept out of a transfer on the wire)."""
+        self._send_tp_when_clear(self._tp_packet())
+
+    def _tp_packet(self) -> CanPacket:
+        return CanPacket(
             packet_type=CanPacketType.SINGLE_FRAME,
             addressing_format=CanAddressingFormat.NORMAL_ADDRESSING,
             addressing_type=AddressingType.PHYSICAL,
             can_id=self._node.request_can_id,
             payload=[_SID_TP, 0x80],
+            # Padded like the segmenter's requests: the DIR drops any frame on its
+            # request id whose DLC isn't 8, so an optimized `03 3E 80` never arrives.
+            dlc=8,
         )
-        while not self._tp_stop.wait(0.5):
+
+    def _send_tp_when_clear(self, packet: CanPacket,
+                            stop: threading.Event | None = None) -> None:
+        mine = threading.current_thread() is self._tp_thread  # phase is the keep-alive's
+        while stop is None or not stop.is_set():
+            if mine:
+                self._tp_phase = "waiting for tx lock"
+            with self._tx_lock:
+                if self._tp_clear(time.monotonic()):
+                    if mine:
+                        self._tp_phase = "sending"
+                    self._transport.send_packet(packet)
+                    return
+            if mine:
+                self._tp_phase = "deferred (reply on the wire)"
+            time.sleep(0.002)
+
+    def tp_stats(self) -> dict:
+        """Keep-alive health for diagnosing an ECU's FAIL_NO_TESTER_PRESENT: how many 3E 80
+        we sent, how many sends failed, and the largest gap between two sends (seconds)."""
+        last_ok = self._tp_last_ok
+        alive = self._tp_thread is not None and self._tp_thread.is_alive()
+        return {"session": f"{id(self):x}", "thread_alive": alive, "phase": self._tp_phase,
+                "interval_s": self._tp_interval,
+                "sent": self._tp_sent, "failed": self._tp_fail,
+                "max_gap_s": round(self._tp_max_gap, 3),
+                "since_last_s": round(time.monotonic() - last_ok, 3) if last_ok else None}
+
+    def _tp_loop(self) -> None:
+        tp_packet = self._tp_packet()
+        last_sent: float | None = None
+        last_ok: float | None = None  # last 3E 80 actually handed to the bus
+        next_beat = time.monotonic()
+        _log.info("TesterPresent 0x%03X: keep-alive thread started (session %x)",
+                  self._node.request_can_id, id(self))
+        while not self._tp_stop.is_set():
+            if time.monotonic() >= next_beat:  # heartbeat: is this thread still turning over?
+                _log.info("TesterPresent 0x%03X: session %x sent %d failed %d interval %.2f s",
+                          self._node.request_can_id, id(self), self._tp_sent, self._tp_fail,
+                          self._tp_interval)
+                next_beat = time.monotonic() + _TP_HEARTBEAT_S
+            self._tp_phase = "idle"
+            # First one immediately: a learn routine started right after the session
+            # opens fails at once if no TesterPresent has reached the ECU yet.
+            wait = 0.0 if last_sent is None else last_sent + self._tp_interval - time.monotonic()
+            if wait > 0:
+                self._tp_stop.wait(min(wait, _TP_POLL_S))  # re-reads the interval
+                continue
+            last_sent = time.monotonic()
             try:
-                self._transport.send_packet(tp_packet)
-            except Exception as exc:
-                # Bus dropped mid keep-alive: record and exit quietly.
+                self._send_tp_when_clear(tp_packet, self._tp_stop)
+                now = time.monotonic()
+                self._tp_sent += 1
+                # An ECU watchdog (the DIR learn's) ends the job on a TesterPresent gap;
+                # say when we made one, and how long.
+                if last_ok is not None:
+                    gap = now - last_ok
+                    self._tp_max_gap = max(self._tp_max_gap, gap)
+                    if gap > self._tp_interval + _TP_GAP_WARN_S:
+                        _log.warning("TesterPresent 0x%03X: %.2f s since the last one "
+                                     "(interval %.2f s)", self._node.request_can_id,
+                                     gap, self._tp_interval)
+                last_ok = self._tp_last_ok = now
+            except Exception as exc:  # noqa: BLE001  (a keep-alive tick must never crash)
+                self._tp_fail += 1
+                _log.warning("TesterPresent 0x%03X send failed: %r",
+                             self._node.request_can_id, exc)
+                # Bus dropped out from under the keep-alive thread. Record it
+                # (so the main thread can report it) and exit quietly instead
+                # of letting the daemon thread crash with a stderr traceback.
                 if self._is_bus_down_error(exc):
                     self._bus_error_listener.on_error(exc)
+                    _log.warning("TesterPresent 0x%03X: keep-alive stopped (bus down)",
+                                 self._node.request_can_id)
                     return
-                raise
+                # Transient send failure -- e.g. ENOBUFS (errno 105): the socketcan
+                # TX queue is momentarily full on a busy shared bus. Skip this tick and
+                # retry next interval instead of tearing the daemon thread down.
+                continue
+        self._tp_phase = "stopped"
+        _log.info("TesterPresent 0x%03X: keep-alive thread stopped (session %x, sent %d)",
+                  self._node.request_can_id, id(self), self._tp_sent)
+
+    # ------------------------------------------------------------------
+    # UDS services
+    # ------------------------------------------------------------------
 
     def diagnostic_session(self, mode: int = _SESSION_DEFAULT) -> None:
         resp = self._send_raw([_SID_DSC, mode])
@@ -672,12 +870,43 @@ class UdsSession:
         return out
 
     def _send_raw(self, payload: list[int], timeout_ms: float = 2000) -> list[int]:
+        try:
+            return self._exchange(payload, timeout_ms)
+        finally:
+            self._awaiting_since = None
+
+    def _exchange(self, payload: list[int], timeout_ms: float) -> list[int]:
+        _log.debug("TX  %s", bytes(payload).hex(" "))
+        self._rx_since = self._rx_log.mark()
         msg = UdsMessage(
             payload=bytearray(payload),
             addressing_type=AddressingType.PHYSICAL,
         )
+        # SecurityAccess is a stateful seed/key handshake: a resent 27 05 hands back a fresh
+        # seed that voids the key the caller is about to compute from the first one, and a
+        # resent 27 06 can land the DIR one step out. Never resend it -- let it fail and the
+        # caller redo the whole handshake.
+        retries = 0 if payload[0] == _SID_SA else _FC_RETRIES
         try:
-            self._transport.send_message(msg)
+            for attempt in range(retries + 1):
+                # An ECU that serves one ISO-TP direction at a time (the DIR) drops a request
+                # that arrives while it is still closing out its own multi-frame reply; give
+                # it a moment after its last frame.
+                idle = time.monotonic() - self._rx_log.last_frame_at()
+                if idle < _ECU_TURNAROUND_S:
+                    time.sleep(_ECU_TURNAROUND_S - idle)
+                try:
+                    with self._tx_lock:
+                        self._transport.send_message(msg)
+                        # The reply guard (see _tp_clear) runs from the request's last frame.
+                        self._awaiting_since = time.monotonic()
+                    break
+                except TimeoutError:
+                    # No flow control for our first frame: the ECU missed it. Resend.
+                    if attempt == retries:
+                        raise
+                    _log.warning("no flow control for %s; resending",
+                                 bytes(payload[:2]).hex(" "))
         except Exception as exc:
             err_str = str(exc)
             if "105" in err_str or "buffer" in err_str.lower():
@@ -692,6 +921,10 @@ class UdsSession:
             raise
         expected_sid = payload[0]
         positive_sid = expected_sid + 0x40
+        # A positive response echoes the DID (22/2E) or subtype + routine id (31); a late
+        # reply to an earlier request of the same service must not pass as this one's.
+        echo = {_SID_RDBI: payload[1:3], _SID_WDBI: payload[1:3],
+                _SID_RC: payload[1:4]}.get(expected_sid, [])
         deadline_ms = timeout_ms
         while True:
             try:
@@ -732,6 +965,10 @@ class UdsSession:
                     positive_sid,
                 )
                 continue
+            elif resp[1:1 + len(echo)] != echo:
+                _log.warning("[stale] discarding %s while waiting for the reply to %s",
+                             bytes(resp[:4]).hex(" "), bytes(payload[:4]).hex(" "))
+                continue
             return resp
 
     @property
@@ -756,10 +993,13 @@ class UdsSession:
         text = str(exc).lower()
         return "network is down" in text or "no such device" in text
 
-    @staticmethod
-    def _check_positive(resp: list[int], expected_sid: int) -> None:
+    def _check_positive(self, resp: list[int], expected_sid: int) -> None:
         if not resp:
-            raise MalformedResponseError(expected_sid, "no response received")
+            # Quote the wire: "no frames" is a silent ECU, frames-but-no-message
+            # is a reception that started and broke (see _ResponseFrameLog).
+            log = getattr(self, "_rx_log", None)
+            wire = log.summary(getattr(self, "_rx_since", 0.0)) if log else "no wire record"
+            raise MalformedResponseError(expected_sid, f"no response received ({wire})")
         if resp[0] == 0x7F:
             if len(resp) < 3:
                 raise MalformedResponseError(

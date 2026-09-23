@@ -17,13 +17,14 @@ when the matching availability status bit is SET, so these builders assert those
 """
 from __future__ import annotations
 
-from sim_core import PARTY_RATE_S, Node, SimFrame, clamp_pct, zeros
+from sim_core import PARTY_RATE_S, Node, SimFrame, clamp_pct
 from tesla_frames import (
     DI_BRAKE_SWITCH_ID,
     GTW_CARCONFIG_ID,
     J1850Frame,
     di_brake_switch_pressed,
     gtw_brake_line_switch_type,
+    gtw_wheel_type,
     normalize_brake_line_switch_type,
     pack_le,
 )
@@ -40,6 +41,31 @@ _STABILITY = {"init": 0, "on": 1, "engaged": 2, "faulted": 3}     # ESP_stabilit
 
 _APPLIED_DEFAULT_PCT = 50.0  # 0x38D master-cyl pressure when "applied" with no explicit pressure
 _BAR_PER_PCT = 1.0           # bench mapping: 100% pedal -> 100 bar master-cyl pressure
+
+# ESP_wheelSpeeds 0x175 (ETH DBC): FrL@0 FrR@13 ReL@26 ReR@39, 13 bits, 0.042 km/h, 0x1FFF SNA.
+# wheel_speeds="axle" reports the rear wheels turning with DIR_axleSpeed (0x108 @40 s16, 0.1 rpm),
+# as a real ESP would with the car on a lift; "zero" = stationary.
+# Tire size follows GTW_carConfig GTW_wheelType (0x7FF mux3), rim inches per the DBC value names.
+_DIR_TORQUE_ID = 0x108
+_WHEEL_SPEEDS = ("zero", "axle")
+_WHEEL_TYPE_RIM_IN = {
+    0: 18, 18: 18, 22: 18, 24: 18,                 # PINWHEEL_18 (+ cap kit / refresh)
+    1: 19, 4: 19, 5: 19, 17: 19, 20: 19, 21: 19, 27: 19,  # STILETTO/GEMINI/APOLLO/ZEROG 19
+    2: 20, 3: 20, 14: 20, 15: 20, 19: 20, 23: 20,  # STILETTO/INDUCTION/ZEROG/UBERTURBINE 20
+    16: 21,                                        # UBERTURBINE_21
+}
+_TIRE_CIRCUMFERENCE_M = {  # stock fitment, circumference = pi * (rim + 2 * sidewall)
+    18: 2.101,  # 235/45R18
+    19: 2.107,  # 235/40R19
+    20: 2.113,  # 235/35R20
+    21: 2.236,  # 255/35R21
+}
+_KPH_PER_LSB = 0.042
+
+
+def _esp_0x175_wheelspeeds(rear_kph: float | None) -> bytearray:
+    raw = 0x1FFF if rear_kph is None else min(round(abs(rear_kph) / _KPH_PER_LSB), 0x1FFE)
+    return pack_le([(26, 13, raw), (39, 13, raw)])
 
 
 def _esp_0x105_valid() -> bytearray:  # 0x105: brake torque=0 + MC pressure=0 bar + availability
@@ -60,8 +86,11 @@ def _esp_0x155_valid() -> bytearray:  # 0x155: availability (feeds a232 velocity
     return pack_le([(40, 1, 1), (41, 1, 1)])  # word2 bits 8/9 -> DIR ESP signal-status bits 14/15
 
 
-def _esp_0x185_wheelspeeds_valid() -> bytearray:  # 0x185: wheel speeds=0 (stationary) + direction
-    return pack_le([(50, 1, 1)])  # direction bit -> DIR status bit3 = shared wheel-speed validity
+def _esp_0x185_brake_torques() -> bytearray:
+    # 0x185 (not in the ETH DBC): per-wheel brake torque, FrL@0 FrR@12 ReL@24 ReR@36, 12 bits.
+    # 0 = no brake torque. The DIR's rolls-learn gate needs the sum <= 0 to allow the ~720 rpm
+    # spin ceiling (else ~11 rpm, OFFSET_RESULT 1). Bit 50 = validity flag for the brake-temp model.
+    return pack_le([(50, 1, 1)])
 
 
 def _esp_0x11d_valid() -> bytearray:  # 0x11D otherControllerState = present+valid (clears DI a210)
@@ -91,6 +120,9 @@ class Esp(Node):
         self.abs_fault_lamp = False
         self.ebd_fault_lamp = False
         self.esp_fault_lamp = False
+        self.wheel_speeds = "zero"
+        self._axle_rpm = 0.0
+        self._rim_in = 18  # until GTW_carConfig mux3 arrives
 
     def frames(self) -> list[SimFrame]:
         rate = PARTY_RATE_S[self.name]
@@ -99,9 +131,9 @@ class Esp(Node):
             SimFrame("ESP_0x11D", 0x11D, rate, _esp_0x11d_valid, 8, 0, bus="party"),
             SimFrame("ESP_0x105", 0x105, rate, _esp_0x105_valid, 52, 56, bus="party"),
             SimFrame("ESP_0x155", 0x155, rate, _esp_0x155_valid, 52, 56, bus="party"),
-            SimFrame("ESP_0x175", 0x175, rate, zeros(8), 52, 56, bus="party"),
+            SimFrame("ESP_wheelSpeeds", 0x175, rate, self._esp_wheel_speeds, 52, 56, bus="party"),
             SimFrame(
-                "ESP_0x185_wheelSpeeds", 0x185, rate, _esp_0x185_wheelspeeds_valid,
+                "ESP_0x185_brakeTorques", 0x185, rate, _esp_0x185_brake_torques,
                 52, 56, bus="party",
             ),
             SimFrame("ESP_party3", 0x38D, rate, J1850Frame(7, self._esp_party3).frame, bus="party"),
@@ -166,10 +198,25 @@ class Esp(Node):
         self.brake_pressure = clamp_pct(pressure)
         return key
 
+    def _esp_wheel_speeds(self) -> bytearray:  # 0x175
+        rpm = self._axle_rpm if self.wheel_speeds == "axle" else 0.0
+        if rpm is None:  # DIR_axleSpeed SNA: report the rears SNA too
+            return _esp_0x175_wheelspeeds(None)
+        return _esp_0x175_wheelspeeds(rpm * _TIRE_CIRCUMFERENCE_M[self._rim_in] * 60.0 / 1000.0)
+
     def rx_handlers(self):
         # Mirror the DI's wired brake switch (0x1D6) into ESP brake posture -- but only in
         # DI_VC_SHARED (the switch is shared with the DI). VC_ONLY -> ignore 0x1D6, keep UI control.
-        return {DI_BRAKE_SWITCH_ID: self._on_di_brake, GTW_CARCONFIG_ID: self._on_carconfig}
+        return {
+            DI_BRAKE_SWITCH_ID: self._on_di_brake,
+            GTW_CARCONFIG_ID: self._on_carconfig,
+            _DIR_TORQUE_ID: self._on_dir_torque,
+        }
+
+    def _on_dir_torque(self, data, send) -> None:
+        if len(data) >= 7:
+            raw = int.from_bytes(data[5:7], "little", signed=True)
+            self._axle_rpm = None if raw == -0x8000 else raw * 0.1  # 0x8000 = SNA
 
     def _on_di_brake(self, data, send) -> None:
         if self.brake_line_switch_type == "di_vc_shared":
@@ -179,6 +226,9 @@ class Esp(Node):
         t = gtw_brake_line_switch_type(data)
         if t is not None:
             self.brake_line_switch_type = t
+        w = gtw_wheel_type(data)
+        if w is not None:
+            self._rim_in = _WHEEL_TYPE_RIM_IN.get(w, 18)
 
     def set_abs_event(self, event: str) -> str:
         """Driver externality: ESP_absBrakeEvent2 (none|front_rear|front|rear). Anything but
@@ -199,7 +249,7 @@ class Esp(Node):
 
     def configure(self, **s) -> None:
         # scenario keys: brake, abs_event, stability, standstill_skid, qf_in_spec,
-        #                abs_fault_lamp, ebd_fault_lamp, esp_fault_lamp
+        #                abs_fault_lamp, ebd_fault_lamp, esp_fault_lamp, wheel_speeds
         for key, setter in (
             ("brake", self.set_brake),
             ("abs_event", self.set_abs_event),
@@ -213,6 +263,12 @@ class Esp(Node):
             val = s.pop(flag, None)
             if val is not None:
                 setattr(self, flag, bool(val))
+        ws = s.pop("wheel_speeds", None)
+        if ws is not None:
+            ws = str(ws).strip().lower()
+            if ws not in _WHEEL_SPEEDS:
+                raise ValueError(f"ESP wheel_speeds must be one of {list(_WHEEL_SPEEDS)}")
+            self.wheel_speeds = ws
         lt = s.pop("brake_line_switch_type", None)
         if lt is not None:
             self.brake_line_switch_type = normalize_brake_line_switch_type(lt)

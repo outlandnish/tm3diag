@@ -5,8 +5,11 @@ results specs, cross-checked against scripts/di/resolver_cal.py.
 """
 import struct
 
+import pytest
+
 from uds_local.odj import FieldSpec, SubSpec
 from uds_local.odj_codec import (
+    OdjCodecError,
     decode_field,
     decode_response,
     encode_fields,
@@ -21,10 +24,10 @@ _OFFSET_ENUM = {"SUCCESS": 0, "FAIL_BRAKES": 1, "FAIL_INVALID_GEAR": 2,
                 "FAIL_NEG_SPEED": 3, "FAIL_OVER_SPEED": 4, "FAIL_TIMEOUT": 7}
 
 
-def _fs(bit_length, byte_position, bit_position=0, data_type="uint", enum=None):
+def _fs(bit_length, byte_position, bit_position=0, data_type="uint", enum=None, **linear):
     return FieldSpec(bit_length=bit_length, byte_position=byte_position,
                      bit_position=bit_position, data_type=data_type,
-                     enum_map=enum or {})
+                     enum_map=enum or {}, **linear)
 
 
 # Mirrors DIR RESOLVER_LEARNING.results (out_size 187).
@@ -134,15 +137,36 @@ class TestEncode:
                       input={"V": _fs(16, 0, data_type="int")})
         assert encode_request(sub, {"V": -1}) == b"\xff\xff"
 
-    def test_negative_on_a_uint_field_wraps_to_twos_complement(self):
-        # ROTOR_LEARNING's ROTOR_TEMPERATURE is typed uint in the ODJ but the DIR
-        # learn script sends a signed degC (-40); the ECU reads it as two's
-        # complement, so -40 must pack as 0xD8, not raise OverflowError.
+    def test_linear_offset_inverts_on_encode(self):
+        # DIR ROTOR_LEARNING.start as the ODJ defines it: ROTOR_TEMPERATURE uint8 @0
+        # with a linear map offset -40. The script passes PHYSICAL -40 °C -> raw 0x00
+        # (wrapping it to 0xD8 told the DIR +176 °C).
         sub = SubSpec(security_level=0, input_size=2, output_size=0, output={},
-                      input={"LEARN_SELECT": _fs(8, 0, data_type="uint"),
-                             "ROTOR_TEMPERATURE": _fs(8, 1, data_type="uint")})
-        assert encode_request(sub, {"LEARN_SELECT": 1, "ROTOR_TEMPERATURE": -40}) \
-            == b"\x01\xd8"
+                      input={"ROTOR_TEMPERATURE": _fs(8, 0, offset=-40.0),
+                             "LEARN_SELECT": _fs(2, 1, 0, "uint", {"ROTOR_OFFSET": 1})})
+        assert encode_request(sub, {"LEARN_SELECT": "ROTOR_OFFSET",
+                                    "ROTOR_TEMPERATURE": -40}) == b"\x00\x01"
+        assert encode_request(sub, {"ROTOR_TEMPERATURE": 25}) == b"\x41\x00"
+
+    def test_out_of_range_raises_instead_of_wrapping(self):
+        sub = SubSpec(security_level=0, input_size=1, output_size=0, output={},
+                      input={"T": _fs(8, 0, data_type="uint")})
+        with pytest.raises(OdjCodecError, match="outside a 8-bit uint"):
+            encode_request(sub, {"T": -40})
+
+    def test_linear_map_decodes_to_physical(self):
+        temp = _fs(8, 0, offset=-40.0)
+        assert decode_field(temp, b"\x41") == 25                    # parsed: °C
+        assert decode_field(temp, b"\x41", parsed=False) == 65      # raw
+        assert decode_field(_fs(8, 0, denominator=16.0), b"\x08") == 0.5
+        flux = _fs(32, 0, data_type="int", factor=3.7252903e-09)
+        assert abs(decode_field(flux, (1 << 28).to_bytes(4, "big")) - 1.0) < 1e-6
+
+    def test_linear_map_round_trips(self):
+        odo = _fs(32, 0, factor=10.0)                 # DRIVE_UNIT_ODOMETER-style
+        sub = SubSpec(security_level=0, input_size=4, output_size=4,
+                      input={"ODO": odo}, output={"ODO": odo})
+        assert decode_response(sub, encode_request(sub, {"ODO": 12340}))["ODO"] == 12340
 
     def test_a_non_negative_uint_is_unchanged(self):
         sub = SubSpec(security_level=0, input_size=1, output_size=0, output={},

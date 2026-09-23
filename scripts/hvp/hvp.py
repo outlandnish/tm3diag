@@ -15,7 +15,7 @@ carries a rolling counter or checksum, so these are plain frames. Default is idl
 from __future__ import annotations
 
 from sim_core import Node, SimFrame
-from tesla_frames import pack_le
+from tesla_frames import pack_le, vcfront_hv_charge_enable
 
 # HVP_pcsControlRequest enum
 _PCS_CONTROL = {"SHUTDOWN": 0, "SUPPORT": 1, "PRECHARGE": 2, "DISCHARGE": 3}
@@ -84,9 +84,10 @@ class Hvp(Node):
         return {0x3A1: self._on_vcfront_status}  # VCFRONT_vehicleStatus
 
     def _on_vcfront_status(self, data, send) -> None:
-        # bmsHvChargeEnable @0: charge -> SUPPORT + charge HW + contactors closed; else idle.
-        charge = bool(int.from_bytes(bytes(data), "little") & 1)
-        self.set_mode("charge" if charge else "off")
+        # VCFRONT_bmsHvChargeEnable: charge -> SUPPORT + charge HW + contactors closed; else idle.
+        charge = vcfront_hv_charge_enable(data, muxed=self.fw is None or self.fw >= "2022.45.15")
+        if charge is not None:
+            self.set_mode("charge" if charge else "off")
 
     def _pcs_control(self) -> bytearray:  # 0x22A, dlc4
         return pack_le(

@@ -14,6 +14,10 @@ class FieldSpec:
     bit_position: int
     data_type: str            # "uint" | "int" | "ascii" | "bytes"
     enum_map: dict[str, int]  # empty dict if no enum
+    # ODJ "linear" map: physical = raw * factor / denominator + offset (identity if absent)
+    factor: float = 1.0
+    denominator: float = 1.0
+    offset: float = 0.0
 
 
 @dataclass
@@ -58,12 +62,21 @@ def _parse_field_spec(raw: dict) -> FieldSpec:
     enum_map: dict[str, int] = {}
     if map_block.get("calculator") == "enum":
         enum_map = {str(k): int(v) for k, v in map_block.get("enum", {}).items()}
+    linear = map_block.get("calculator") == "linear"
+
+    def _num(key, default):
+        v = map_block.get(key) if linear else None
+        return default if v is None else float(v)
+
     return FieldSpec(
         bit_length=raw["bit_length"],
         byte_position=raw["byte_position"],
         bit_position=raw["bit_position"],
         data_type=raw.get("data_type", "uint"),
         enum_map=enum_map,
+        factor=_num("factor", 1.0),
+        denominator=_num("denominator", 1.0),
+        offset=_num("offset", 0.0),
     )
 
 

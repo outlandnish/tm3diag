@@ -769,8 +769,23 @@ class BenchBackend(Backend):
     def cid_get(self, name):
         return self._cid.get(name)
 
+    # MCU GUI_* data-values a procedure sets that reach the DU only as vehicle_sim UI state
+    # (the MCU puts them on 0x284 / 0x334). GUI_factoryModeLimitOverride has no CAN bit: it
+    # turns UI_limitMode SERVICE into NORMAL (see tesla_frames.ui_limit_mode).
+    _CID_TO_SIM_UI = {"GUI_serviceMode": "service_mode",
+                      "GUI_factoryModeLimitOverride": "factory_mode_limit_override"}
+
     def cid_set(self, name, value):
         self._cid.set(name, value)
+        field = self._CID_TO_SIM_UI.get(name)
+        if field is None or not self.sim_url:
+            return
+        on = 1 if str(value).strip().lower() in ("1", "true", "on", "yes") else 0
+        try:
+            self._set_sim_ui(field, on)
+            self._status(f"vehicle_sim: {field}={on} ({name})")
+        except Exception as e:  # noqa: BLE001  (a bench without the sim still runs)
+            self._status(f"{name} not on the bus: {e}")
 
     # -- the ODIN session's MCU state, held on the bus for a whole run --
     @contextlib.contextmanager
@@ -778,27 +793,32 @@ class BenchBackend(Backend):
         """A tech runs ODIN with the car in service mode, and the DI refuses
         ROTOR/RESOLVER_LEARNING without UI_serviceMode on 0x284 -- which the MCU
         sends and a bench does not have. So turn vehicle_sim's service mode on for
-        the run and restore it after. Never fails the run: without it the DI's own
-        refusal says what is missing, and the status line says why."""
-        restore = False
+        the run; every sim UI field a procedure changes (cid_set) is restored after.
+        Never fails the run: without it the DI's own refusal says what is missing,
+        and the status line says why."""
+        saved = {}
         try:
             if not self.sim_url:
                 raise RuntimeError("no vehicle_sim control URL (tm3web --control)")
-            if not self._sim_request("/state")["ui"]["service_mode"]:
-                self._set_sim_service_mode(1)
-                restore = True
+            ui = self._sim_request("/state")["ui"]
+            saved = {f: ui[f] for f in self._CID_TO_SIM_UI.values() if f in ui}
+            if not ui["service_mode"]:
+                self._set_sim_ui("service_mode", 1)
                 self._status("vehicle_sim: service mode on for this run")
         except Exception as e:  # noqa: BLE001
             self._status(f"UI_serviceMode not on the bus: {e}")
         try:
             yield
         finally:
-            if restore:
+            for field, value in saved.items():
                 with contextlib.suppress(Exception):
-                    self._set_sim_service_mode(0)
+                    self._set_sim_ui(field, value)
+
+    def _set_sim_ui(self, field, value):
+        self._sim_request("/cmd", {"type": "ui", "field": field, "value": value})
 
     def _set_sim_service_mode(self, value):
-        self._sim_request("/cmd", {"type": "ui", "field": "service_mode", "value": value})
+        self._set_sim_ui("service_mode", value)
 
     def _sim_request(self, path, payload=None):
         """JSON request to vehicle_sim's control server: GET, or POST `payload`."""
@@ -1220,7 +1240,20 @@ class _UdsAdapter:
         self.sess = sess
 
     def tester_present(self):
-        pass  # UdsSession runs its own keep-alive thread
+        # One now; UdsSession's keep-alive thread repeats it. An ECU reset stops that thread
+        # (so it can't fight the reset) and nothing else restarts it in a long-lived bench
+        # session -- start it again (a no-op while it runs).
+        start = getattr(self.sess, "start_tester_present", None)
+        if start:
+            start()
+        send = getattr(self.sess, "send_tester_present", None)
+        if send:
+            send()
+
+    def tester_present_interval(self, seconds):
+        """Set the keep-alive period; returns the previous one (None if unsupported)."""
+        setter = getattr(self.sess, "set_tester_present_interval", None)
+        return setter(seconds) if setter else None
 
     def diagnostic_session(self, session_type):
         s = str(session_type).upper()

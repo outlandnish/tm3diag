@@ -51,6 +51,7 @@ class Ui(Node):
         super().__init__(ctx)
         self.uicfg = UiConfig()
         self.ui_pt = UiPowertrainControl(self.uicfg)
+        self.ui_pt_2022 = UiPowertrainControl(self.uicfg, layout="2022")
         # Charge-request state (0x333). Idle default: no request (all-zero frame).
         self.charge_enable = False
         self.charge_limit_a = 0        # UI_acChargeCurrentLimit (A, scale 1)
@@ -80,9 +81,13 @@ class Ui(Node):
         # 0x353 UI_status is supervised separately and IS read: UI_developmentCar (@bit40) is the
         # dyno-inhibit bypass (=1 keeps dyno latched, =0 makes it one-shot per cycle), so it is
         # sent with the development_car knob. 0x500 is supervised-but-not-read -> droppable.
+        #
+        # 0x334 was re-laid in 2022 (UI_speedLimit @34|12, limitMode @21): the 2020 build reads
+        # as limitMode=SERVICE + a real speed limit on a 2022 DIR.
         c = self.uicfg
+        pt = SimFrame("UI_powertrainControl", 0x334, 0.100, self.ui_pt_2022.frame)
         return [
-            *self.frames(),
+            *[pt if f.can_id == 0x334 else f for f in self.frames()],
             SimFrame("UI_vehicleControl2", 0x3B3, 0.100, zeros(8)),
             SimFrame("UI_status", 0x353, 0.100, partial(_ui_status, c)),
         ]

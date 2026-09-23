@@ -105,6 +105,23 @@ def gtw_brake_line_switch_type(data):
     return None
 
 
+def vcfront_hv_charge_enable(data, muxed: bool):
+    """VCFRONT_vehicleStatus 0x3A1 -> VCFRONT_bmsHvChargeEnable, or None if this frame is not
+    the page carrying it. 2020: plain bit 0. 2022+: mux index @0, the signal is page 1 bit 1."""
+    d = int.from_bytes(bytes(data), "little")
+    if not muxed:
+        return bool(d & 1)
+    return bool((d >> 1) & 1) if d & 1 else None
+
+
+def gtw_wheel_type(data):
+    """GTW_carConfig 0x7FF mux3 -> raw GTW_wheelType (@48|7), or None if not the mux3 page."""
+    d = bytes(data)
+    if len(d) >= 7 and d[0] == 3:
+        return d[6] & 0x7F
+    return None
+
+
 # SCCM_rightStalk 0x229 -- the gear stalk (bus A / CANA, len 3, 100 ms).
 # AutoSAR E2E Profile-2 CRC (not the Tesla additive checksum): CRC@byte0 + counter@byte1
 # lo-nibble, CRC-8/H2F (poly 0x2F, init 0xFF, xorout 0xFF) over the data bytes + DataID[counter].
@@ -143,10 +160,12 @@ STALK_UP_2 = 2
 STALK_DOWN_1 = 3
 STALK_DOWN_2 = 4
 
-# Default gesture hold durations (seconds).
+# Default gesture hold durations (seconds). Neutral from R or D needs the detent held
+# >= 1 s on the wire; at 100 ms frames a 1.0 s pulse puts only ~0.9 s of held frames out,
+# so hold 1.5 s.
 HOLD_DRIVE_S = 0.6
 HOLD_REVERSE_S = 0.6
-HOLD_NEUTRAL_S = 1.0
+HOLD_NEUTRAL_S = 1.5
 HOLD_PARK_S = 0.4
 
 
@@ -228,9 +247,11 @@ class SccmRightStalk:
     def reverse(self, duration_s: float = HOLD_REVERSE_S) -> None:
         self.pulse(STALK_UP_2, duration_s=duration_s)
 
-    def neutral(self, duration_s: float = HOLD_NEUTRAL_S) -> None:
-        # First-detent held -> Neutral. DOWN_1 and UP_1 both map to N.
-        self.pulse(STALK_DOWN_1, duration_s=duration_s)
+    def neutral(self, duration_s: float = HOLD_NEUTRAL_S, from_gear: str | None = None) -> None:
+        # First detent held -> Neutral, pushed AGAINST the current direction: from D a
+        # down push is still "drive", so D -> N needs UP_1; from R/P, DOWN_1.
+        up = str(from_gear or "").upper() == "D"
+        self.pulse(STALK_UP_1 if up else STALK_DOWN_1, duration_s=duration_s)
 
     def park(self, duration_s: float = HOLD_PARK_S) -> None:
         self.pulse(STALK_IDLE, park=1, duration_s=duration_s)
@@ -277,6 +298,8 @@ class UiConfig:
     traction_mode: int = 0  # UI_tractionControlMode: NORMAL
     service_mode: int = 0  # UI_serviceMode (0x284): the DI's rotor/resolver-learn start gate
     development_car: int = 0  # UI_developmentCar (0x353): DIR dyno-inhibit BYPASS (dyno not one-shot)
+    # GUI_factoryModeLimitOverride: no CAN bit of its own; lifts UI_limitMode SERVICE -> NORMAL
+    factory_mode_limit_override: int = 0
 
 
 def ui_cruise_control(_c: UiConfig) -> bytearray:  # 0x213, DLC2
@@ -316,6 +339,33 @@ def ui_powertrain_control(c: UiConfig) -> bytearray:  # 0x334, DLC8 (raw payload
     )
 
 
+def ui_limit_mode(c: UiConfig) -> int:
+    """UI_limitMode as the MCU derives it (libQtCarVAPI VehicleLinkUtils::limitMode, 2022.45.15):
+    service mode -> SERVICE (3) unless GUI_factoryModeLimitOverride, which gives NORMAL (0).
+    (Factory -> FACTORY (2) and valet/car-wash/transport -> VALET (1) aren't modeled.)"""
+    return 3 if c.service_mode and not c.factory_mode_limit_override else 0
+
+
+def ui_powertrain_control_2022(c: UiConfig) -> bytearray:  # 0x334, DLC8, 2022.45.15+ layout
+    # 2022 re-laid 0x334 (DIR handler confirms the DBC). The 2020 builder on a 2022 DIR reads as
+    # UI_limitMode=SERVICE (its 0xFF speed byte lands on @21) and a real UI_speedLimit made of
+    # motorOnMode/stoppingMode bits -- a speed cap. UI_speedLimit is unlimited ONLY at raw 0x1FF.
+    return pack_le(
+        [
+            (0, 5, 31),  # UI_systemPowerLimit  = SNA
+            (5, 2, c.pedal_map),  # UI_pedalMap
+            (8, 6, 63),  # UI_systemTorqueLimit = SNA
+            (16, 5, 20),  # UI_regenTorqueMax    = 100 %
+            (21, 2, ui_limit_mode(c)),  # UI_limitMode
+            (24, 2, c.motor_on_mode),  # UI_motorOnMode
+            (30, 2, c.stopping_mode),  # UI_stoppingMode
+            (34, 12, 0x1FF),  # UI_speedLimit        = SNA
+        ]
+    )
+
+
+_UI_PT_BUILDERS = {"2020": ui_powertrain_control, "2022": ui_powertrain_control_2022}
+
 # 0x334 needs the Tesla additive checksum + rolling counter (ctr @52, cksum @56).
 UI_POWERTRAIN_CONTROL_ID = 0x334
 
@@ -323,12 +373,13 @@ UI_POWERTRAIN_CONTROL_ID = 0x334
 class UiPowertrainControl:
     """0x334 builder: reads a UiConfig live + own rolling counter/checksum."""
 
-    def __init__(self, cfg: UiConfig) -> None:
+    def __init__(self, cfg: UiConfig, layout: str = "2020") -> None:
         self.cfg = cfg
+        self._build = _UI_PT_BUILDERS[layout]
         self._ctr = 0
 
     def frame(self) -> bytes:
-        data = ui_powertrain_control(self.cfg)
+        data = self._build(self.cfg)
         place_counter(data, 52, self._ctr)  # @52 w4 (byte6 hi nibble) 2022 layout
         place_checksum(data, UI_POWERTRAIN_CONTROL_ID, 56)  # @56 (byte7) 2022 layout
         self._ctr = (self._ctr + 1) & 0xF
@@ -351,6 +402,8 @@ UI_SETTINGS: dict[str, dict] = {
     "trailer_mode": {"label": "Trailer mode", "options": {"off": 0, "on": 1}},
     "service_mode": {"label": "Service mode", "options": {"off": 0, "on": 1}},
     "development_car": {"label": "Development car", "options": {"off": 0, "on": 1}},
+    "factory_mode_limit_override": {"label": "Factory mode limit override",
+                                    "options": {"off": 0, "on": 1}},
 }
 
 

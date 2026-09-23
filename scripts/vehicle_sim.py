@@ -78,6 +78,7 @@ import can
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # repo root: config, can_decoder, uds
 sys.path.insert(0, str(Path(__file__).resolve().parents[0]))  # scripts/: tesla_frames, sim_*, nodes
 
+import scenario_signals  # noqa: E402
 import sim_core  # noqa: E402
 import sim_registry  # noqa: E402
 from tesla_frames import UI_SETTINGS  # noqa: E402
@@ -654,6 +655,9 @@ def main() -> None:
             print(f"  scenario: node {scen_node} not selected -- skipping its [scenario] block")
             continue
         try:
+            settings, vet_lines = scenario_signals.vet(scen_node, settings, db)
+            for line in vet_lines:
+                print(line)
             node.configure(**settings)
         except (ValueError, KeyError, TypeError) as e:
             p.error(f"[scenario.{scen_node}]: {e}")

@@ -5,7 +5,10 @@ the ODJ specs, so these run with no bench and no firmware data. The RESOLVER_LEA
 results spec mirrors the real DIR ODJ (see test_odj_codec).
 """
 import struct
+import threading
+import time
 from pathlib import Path
+from types import SimpleNamespace
 
 import can
 import odin_runner
@@ -425,6 +428,216 @@ class TestProtoReadFile:
             "exit": {"type": "networks.Exit", "exit_code": lit(0)},
         }
         assert eng.run_graph(graph, {}).metrics[0]["value"] == "VERSION 1.2\n"
+
+
+class TestNoResponseDiagnostic:
+    """A failed receive must say whether the ECU put anything on the wire: a
+    silent ECU and a broken multi-frame reassembly both raise TimeoutError
+    inside py-uds, and they need opposite fixes."""
+
+    @staticmethod
+    def _session(frames):
+        from uds_local.client import _ResponseFrameLog
+
+        sess = UdsSession.__new__(UdsSession)
+        sess._rx_log = _ResponseFrameLog(0x616)
+        sess._rx_since = sess._rx_log.mark()
+        for data in frames:
+            sess._rx_log.on_message_received(
+                can.Message(arbitration_id=0x616, data=data, is_extended_id=False))
+        return sess
+
+    def _detail(self, frames):
+        from uds_local.client import MalformedResponseError
+
+        with pytest.raises(MalformedResponseError) as e:
+            self._session(frames)._check_positive([], 0x31)
+        return str(e.value)
+
+    def test_silent_ecu_says_no_frames(self):
+        assert "no frames from 0x616" in self._detail([])
+
+    def test_started_multiframe_is_reported_as_such(self):
+        detail = self._detail([bytes.fromhex("10c07103040900010000"[:16])])
+        assert "first frame of a multi-frame reply" in detail and "10 c0" in detail
+
+    def test_other_ids_are_ignored(self):
+        sess = self._session([])
+        sess._rx_log.on_message_received(
+            can.Message(arbitration_id=0x118, data=b"\x01\x02", is_extended_id=False))
+        assert "no frames" in sess._rx_log.summary(sess._rx_since)
+
+
+class TestTesterPresentKeepAlive:
+    """The keep-alive runs at a settable period and is deferred only while an ISO-TP
+    transfer is on the wire (a 3E 80 mid multi-frame reply can make the ECU abort)."""
+
+    @staticmethod
+    def _session():
+        from uds_local.client import _ResponseFrameLog
+
+        sent: list = []
+        sess = UdsSession.__new__(UdsSession)
+        sess._node = SimpleNamespace(request_can_id=0x606)
+        sess._tp_stop = threading.Event()
+        sess._tp_thread = None
+        sess._tp_interval = 0.5
+        sess._tp_sent = sess._tp_fail = 0
+        sess._tp_max_gap = 0.0
+        sess._tp_last_ok = None
+        sess._tp_phase = "stopped"
+        sess._tx_lock = threading.Lock()
+        sess._awaiting_since = None
+        sess._rx_log = _ResponseFrameLog(0x616)
+        sess._transport = SimpleNamespace(send_packet=lambda p: sent.append(bytes(p.raw_frame_data)))
+        return sess, sent
+
+    @staticmethod
+    def _reply(sess, hexdata):
+        sess._rx_log.on_message_received(
+            can.Message(arbitration_id=0x616, data=bytes.fromhex(hexdata), is_extended_id=False))
+
+    def test_interval_is_settable(self):
+        sess, sent = self._session()
+        assert sess.set_tester_present_interval(0.02) == 0.5
+        sess.start_tester_present()
+        time.sleep(0.3)
+        sess.stop_tester_present()
+        # DLC 8: the DIR ignores shorter frames on its request id
+        assert len(sent) >= 3 and set(sent) == {bytes.fromhex("023e80cccccccccc")}
+
+    def test_first_one_goes_out_immediately(self):
+        # A learn START right after the session opens fails if no TesterPresent arrived.
+        sess, sent = self._session()
+        sess.set_tester_present_interval(10)
+        sess.start_tester_present()
+        time.sleep(0.1)
+        sess.stop_tester_present()
+        assert len(sent) == 1
+
+    def test_interval_change_applies_without_waiting_out_the_old_one(self):
+        sess, sent = self._session()
+        sess.set_tester_present_interval(10)
+        sess.start_tester_present()
+        time.sleep(0.05)
+        sess.set_tester_present_interval(0.02)
+        time.sleep(0.3)
+        sess.stop_tester_present()
+        assert len(sent) >= 4
+
+    def test_send_tester_present_sends_one_now(self):
+        sess, sent = self._session()
+        sess.send_tester_present()
+        assert sent == [bytes.fromhex("023e80cccccccccc")]
+
+    def test_adapter_tester_present_sends_one_and_restarts_the_keep_alive(self):
+        # An ECU reset stops the keep-alive thread; the next tester_present() restarts it.
+        sess, sent = self._session()
+        sess.set_tester_present_interval(10)
+        _UdsAdapter(sess).tester_present()
+        time.sleep(0.05)
+        try:
+            assert sess._tp_thread is not None and sess._tp_thread.is_alive()
+            assert 1 <= len(sent) <= 2  # the explicit one + the thread's first
+        finally:
+            sess.stop_tester_present()
+
+    def test_rejects_non_positive_interval(self):
+        sess, _ = self._session()
+        with pytest.raises(ValueError):
+            sess.set_tester_present_interval(0)
+
+    def test_clear_when_idle(self):
+        sess, _ = self._session()
+        assert sess._tp_clear(time.monotonic())
+
+    def test_slow_reply_does_not_hold_it_up(self):
+        sess, _ = self._session()
+        t0 = sess._awaiting_since = time.monotonic()
+        assert not sess._tp_clear(t0 + 0.01)      # reply may be about to start
+        assert sess._tp_clear(t0 + 0.2)           # silent ECU: keep-alive goes out
+
+    def test_single_frame_reply_clears_it(self):
+        sess, _ = self._session()
+        t0 = sess._awaiting_since = time.monotonic()
+        self._reply(sess, "037f3178")             # response pending
+        assert sess._tp_clear(t0 + 0.01)
+
+    def test_deferred_only_during_a_multiframe_reply(self):
+        sess, _ = self._session()
+        t0 = sess._awaiting_since = time.monotonic()
+        self._reply(sess, "101e710304090000")     # FF, 30 bytes: 6 here, 24 due
+        assert not sess._tp_clear(t0 + 0.3)
+        for sn in range(1, 4):                    # 3 CFs x 7 = 21 bytes
+            self._reply(sess, f"2{sn}00000000000000")
+        assert not sess._tp_clear(t0 + 0.3)
+        self._reply(sess, "2400000000000000")     # last CF
+        assert sess._tp_clear(t0 + 0.3)
+
+    def test_stalled_multiframe_reply_expires(self):
+        sess, _ = self._session()
+        self._reply(sess, "101e710304090000")
+        assert not sess._tp_clear(time.monotonic())
+        assert sess._tp_clear(time.monotonic() + 2)
+
+    def test_flow_control_is_not_a_reply(self):
+        sess, _ = self._session()
+        t0 = sess._awaiting_since = time.monotonic()
+        self._reply(sess, "300000")               # ECU's FC to our multi-frame request
+        assert not sess._tp_clear(t0 + 0.01)
+
+    def test_request_frames_go_out_under_the_lock(self):
+        sess, _ = self._session()
+        held = []
+        sess._rx_since = 0.0
+        sess._transport.send_message = lambda msg: held.append(sess._tx_lock.locked())
+        sess._transport.receive_message = lambda **k: SimpleNamespace(payload=[0x7E, 0x00])
+        assert sess._send_raw([0x3E, 0x00]) == [0x7E, 0x00]
+        assert held == [True] and sess._awaiting_since is None
+
+
+class TestStaleReplies:
+    """A late reply to an earlier request of the same service must not pass as this one's:
+    a positive response has to echo the DID (22/2E) or subtype + routine id (31)."""
+
+    @staticmethod
+    def _session(*replies):
+        sess, _ = TestTesterPresentKeepAlive._session()
+        sess._rx_since = 0.0
+        queue = [SimpleNamespace(payload=list(bytes.fromhex(r))) for r in replies]
+
+        def receive(**_k):
+            if not queue:
+                raise TimeoutError
+            return queue.pop(0)
+
+        sess._transport.send_message = lambda msg: None
+        sess._transport.receive_message = receive
+        sess._bus_error_listener = SimpleNamespace(error=None)
+        return sess
+
+    def test_read_did_skips_another_dids_reply(self):
+        # The bench backup that came back shifted by one DID: 0x306's late reply, then 0x309's.
+        sess = self._session("620306f6ffbdff", "620309aabbccdd")
+        assert sess.read_did(0x0309) == bytes.fromhex("aabbccdd")
+
+    def test_routine_control_skips_another_subtype_or_routine(self):
+        sess = self._session("7101040602", "7103040700", "7103040601")
+        assert sess.routine_control(0x0406, subtype=0x03) == b"\x01"
+
+    def test_only_stale_replies_is_no_response(self):
+        from uds_local.client import MalformedResponseError
+
+        sess = self._session("620306f6ffbdff")
+        with pytest.raises(MalformedResponseError, match="no response"):
+            sess.read_did(0x0309)
+
+    def test_negative_response_still_matches_by_sid(self):
+        from uds_local.client import UdsError
+
+        sess = self._session("7f2231")
+        with pytest.raises(UdsError):
+            sess.read_did(0x0309)
 
 
 class TestReadDtcs:

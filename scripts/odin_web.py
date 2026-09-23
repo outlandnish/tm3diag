@@ -266,9 +266,13 @@ class OdinWeb:
             return _json({"error": "missing 'procedure'"}, status=400)
         if self._run_lock.locked():
             return _json({"error": "a run is already in progress"}, status=409)
+        routine_params = body.get("routine_params") or {}
+        if not isinstance(routine_params, dict):
+            return _json({"error": "'routine_params' must be {routine: {param: value}}"},
+                         status=400)
         async with self._run_lock:
             try:
-                result = await self._run(proc)
+                result = await self._run(proc, routine_params)
             except Exception as e:  # noqa: BLE001  (surface a run failure as 500)
                 return _json({"error": str(e), "procedure": proc}, status=500)
             finally:
@@ -296,12 +300,15 @@ class OdinWeb:
                       "note": "stops at the next wait; a flash in progress "
                               "finishes its current image"})
 
-    async def _run(self, proc: str) -> dict:
+    async def _run(self, proc: str, routine_params: dict | None = None) -> dict:
         loop = asyncio.get_running_loop()
         # Build the backend FIRST: if backend_factory raises (e.g. no CAN channel),
         # fail before the pump task starts so nothing leaks.
         backend = self._apply_bench_state(
             self._backend_factory() if self._backend_factory else "mock")
+        # START-param overrides for this run only (the bench backend is shared across runs).
+        if not isinstance(backend, str):
+            backend.routine_param_overrides = dict(routine_params or {})
         q: asyncio.Queue = asyncio.Queue()
 
         def emit(kind, payload):  # called from the executor thread
@@ -324,6 +331,8 @@ class OdinWeb:
                 ),
             )
         finally:
+            if not isinstance(backend, str):
+                backend.routine_param_overrides = {}
             await q.put(None)  # sentinel: all events already queued (FIFO) -> stop pump
             await pump
 

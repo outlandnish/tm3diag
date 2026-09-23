@@ -3,14 +3,15 @@
 Wire convention:
   * Byte-aligned multi-byte fields (``bit_position == 0`` and ``bit_length`` a
     multiple of 8) are **big-endian**. ``int`` is signed, ``uint`` unsigned,
-    ``ascii``/``bytes`` returned as text/raw. A negative value handed to a ``uint``
-    field is wrapped to two's complement on encode, so a signed °C like -40 packs as
-    the ECU expects.
+    ``ascii``/``bytes`` returned as text/raw.
   * Sub-byte fields are **LSB-relative bit fields** within the byte at
     ``byte_position`` (e.g. ``RUNNING`` = bit 4 of byte 186).
 
-``parsed=True`` applies ``enum_map`` (raw value -> enum name); ``parsed=False``
-returns the raw number.
+``parsed=True`` applies the field's map -- ``enum_map`` (raw -> name) or the ODJ
+linear map (raw -> physical, ``raw * factor / denominator + offset``); ``parsed=False``
+returns the raw number. Encoding takes PHYSICAL values and inverts the linear map, as
+Tesla's scripts expect: ROTOR_LEARNING's ROTOR_TEMPERATURE (uint8, offset -40) is passed
+as -40 °C and goes on the wire as 0x00.
 """
 from __future__ import annotations
 
@@ -23,6 +24,25 @@ class OdjCodecError(ValueError):
 
 def _byte_aligned(fs: FieldSpec) -> bool:
     return fs.bit_position == 0 and fs.bit_length % 8 == 0
+
+
+def _scaled(fs: FieldSpec) -> bool:
+    return (fs.factor, fs.denominator, fs.offset) != (1.0, 1.0, 0.0) and fs.factor != 0
+
+
+def _to_physical(fs: FieldSpec, raw: int):
+    """Raw wire integer -> physical value per the ODJ linear map."""
+    if not _scaled(fs):
+        return raw
+    v = raw * fs.factor / fs.denominator + fs.offset
+    return int(v) if float(v).is_integer() else v
+
+
+def _to_raw(fs: FieldSpec, value) -> int:
+    """Physical value -> raw wire integer (inverse of the ODJ linear map)."""
+    if not _scaled(fs):
+        return int(value)
+    return round((float(value) - fs.offset) * fs.denominator / fs.factor)
 
 
 def decode_field(fs: FieldSpec, data: bytes, *, parsed: bool = True):
@@ -57,7 +77,7 @@ def decode_field(fs: FieldSpec, data: bytes, *, parsed: bool = True):
             return bool(value)
         inverse = {v: k for k, v in fs.enum_map.items()}
         return inverse.get(value, value)
-    return value
+    return _to_physical(fs, value) if parsed else value
 
 
 def decode_response(sub: SubSpec | None, data: bytes, *, parsed: bool = True) -> dict:
@@ -100,14 +120,15 @@ def encode_fields(fields: dict[str, FieldSpec], values: dict,
             elif fs.data_type == "bytes":
                 raw = bytes(value)[:n].ljust(n, b"\x00")
             else:
-                iv = int(value)
-                # A negative value on a field the ODJ types unsigned (e.g.
-                # ROTOR_LEARNING's ROTOR_TEMPERATURE, degC, sent as -40): the ECU
-                # reads it as two's complement, so wrap it into the field width
-                # rather than refusing it. Signed ('int') fields already round-trip.
-                if iv < 0 and fs.data_type != "int":
-                    iv &= (1 << (8 * n)) - 1
-                raw = iv.to_bytes(n, "big", signed=(fs.data_type == "int"))
+                iv = _to_raw(fs, value)
+                try:
+                    raw = iv.to_bytes(n, "big", signed=(fs.data_type == "int"))
+                except OverflowError:
+                    # Refuse rather than wrap: a wrapped -40 on ROTOR_TEMPERATURE
+                    # once reached the DIR as +176 °C.
+                    raise OdjCodecError(
+                        f"{name}={value!r} is raw {iv}, outside a {8 * n}-bit "
+                        f"{fs.data_type} field") from None
             _ensure(fs.byte_position + n)
             buf[fs.byte_position:fs.byte_position + n] = raw
         elif fs.bit_length < 8 and fs.bit_position + fs.bit_length <= 8:
@@ -115,7 +136,7 @@ def encode_fields(fields: dict[str, FieldSpec], values: dict,
             mask = ((1 << fs.bit_length) - 1) << fs.bit_position
             buf[fs.byte_position] = (
                 (buf[fs.byte_position] & ~mask & 0xFF)
-                | ((int(value) << fs.bit_position) & mask))
+                | ((_to_raw(fs, value) << fs.bit_position) & mask))
         else:
             raise OdjCodecError(
                 f"unsupported input field layout for {name!r}: "

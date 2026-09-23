@@ -235,6 +235,28 @@ def test_builder_managed_counter_also_rolls_back_on_drop():
         assert owner._ctr == start
 
 
+@pytest.mark.parametrize("phase", [0.0, 0.01, 0.05, 0.099])
+def test_neutral_holds_the_detent_over_a_second_on_the_wire(monkeypatch, phase):
+    # From R or D the DIR needs the first detent held >= 1 s. 0x229 goes out every
+    # 100 ms, so the press can land anywhere in a frame period (phase).
+    from types import SimpleNamespace
+
+    import tesla_frames
+    from tesla_frames import STALK_DOWN_1, SccmRightStalk
+
+    clock = [0.0]
+    monkeypatch.setattr(tesla_frames, "time", SimpleNamespace(monotonic=lambda: clock[0]))
+    stalk = SccmRightStalk()
+    clock[0] = phase
+    stalk.neutral()
+    held = []
+    for tick in range(1, 40):                     # frames at 0.1, 0.2, ... s
+        clock[0] = tick * 0.1
+        if stalk.frame()[1] >> 4 == STALK_DOWN_1:
+            held.append(clock[0])
+    assert held[-1] - held[0] > 1.0 + 0.1          # > 1 s plus a DIR tick of margin
+
+
 def test_bus_membership_matches_firmware_groups():
     frames = _sim_frames()
     vehicle = {f.can_id for f in frames if f.bus == "vehicle"}
@@ -536,6 +558,17 @@ def test_configure_applies_charge_scenario_across_nodes():
     sccm = reg.BY_NAME["SCCM"](_ctx())
     sccm.configure(gear="D")
     assert sccm.last_gear_cmd == "D"
+
+
+@pytest.mark.parametrize("reported, detent", [("D", 1), ("R", 3), ("P", 3), (None, 3)])
+def test_neutral_pushes_against_the_reported_gear(reported, detent):
+    # D -> N is a first-detent UP push (DOWN_1 in D means "stay in drive"); from R/P, DOWN_1.
+    sccm = sim_registry.BY_NAME["SCCM"](_ctx())
+    code = {"P": 1, "R": 2, "N": 3, "D": 4}.get(reported, 0)
+    sccm.rx_handlers()[0x118]((code << 21).to_bytes(8, "little"), None)
+    assert sccm.di_gear == reported
+    sccm.gear("N")
+    assert sccm.stalk.frame()[1] >> 4 == detent
 
 
 def test_configure_rejects_unknown_key_on_stateful_node():
@@ -1081,7 +1114,7 @@ def test_bms_2022_variant_uses_2022_dbc_scaling():
     by20 = {f.can_id: bytes(f.frame()) for f in bms.frames_for("2020.8.1")}
     assert by20[0x2D2].hex() == "3075409c0000420f"
     assert by20[0x252].hex() == "7017983a00000100"
-    assert by20[0x132].hex() == "b491000010270000"
+    assert by20[0x132].hex() == "0000000010270000"  # packVoltage 0 V: nothing measured yet
     # 2022.45.15 DBC scaling -> same engineering values
     vmin, vmax, idis = fields("2022.45.15", 0x2D2, (0, 16), (16, 16), (48, 14))
     assert (vmin * 0.02, vmax * 0.02) == pytest.approx((300.0, 400.0))
@@ -1090,6 +1123,43 @@ def test_bms_2022_variant_uses_2022_dbc_scaling():
     assert pdis * 0.013 == pytest.approx(150.0, abs=0.013)
     (iunf,) = fields("2022.45.15", 0x132, (32, 16))
     assert iunf * 0.05 - 822.0 == pytest.approx(0.0)
+
+
+def test_bms_pack_voltage_mirrors_the_measured_bus():
+    # BMS_packVoltage (0x132 @0|16, 0.01 V) = DIR_vBat, else a real PCS's 0x2B4, else 0 V.
+    import time
+
+    import pytest
+
+    bms = sim_registry.BY_NAME["BMS"](_ctx())
+    bms.fw = "2022.45.15"
+
+    def pack_v():
+        f = {f.can_id: f for f in bms.frames_for()}[0x132]
+        return int.from_bytes(bytes(f.frame())[:2], "little") * 0.01
+
+    assert pack_v() == 0.0
+    pcs = (round(352 / 0.146484375) << 10).to_bytes(3, "little") + bytes(5)  # @10|12
+    _rx(bms, 0x2B4, pcs)
+    assert pack_v() == pytest.approx(352.0, abs=0.15)
+    _rx(bms, 0x126, (330).to_bytes(2, "little") + bytes(6))  # DIR_vBat @0|10, 1 V
+    assert pack_v() == pytest.approx(330.0)  # the DIR wins over the PCS
+    bms._hv["DIR"] = (330.0, time.monotonic() - 5)
+    assert pack_v() == pytest.approx(352.0, abs=0.15)  # stale DIR -> PCS
+    bms._hv["PCS"] = (352.0, time.monotonic() - 5)
+    assert pack_v() == 0.0
+    bms.fw = "2020.8.1"  # 2020 DIR_vBat is 0.5 V/LSB
+    _rx(bms, 0x126, (700).to_bytes(2, "little") + bytes(6))
+    assert pack_v() == pytest.approx(350.0)
+
+
+def test_bms_min_bus_voltage_is_configurable():
+    import pytest
+
+    bms = sim_registry.BY_NAME["BMS"](_ctx())
+    bms.configure(min_bus_voltage=250)
+    f = {f.can_id: f for f in bms.frames_for("2022.45.15")}[0x2D2]
+    assert int.from_bytes(bytes(f.frame())[:2], "little") * 0.02 == pytest.approx(250.0)
 
 
 def test_vcsec_node_answers_immo_only_with_a_key():
@@ -1117,7 +1187,8 @@ def test_rx_handler_registration_builds_the_dispatch_table():
     reg = sim_registry
     # Each reactive node declares exactly the IDs it handles; fixed-liveness nodes register none.
     assert set(reg.BY_NAME["VCFRONT"](_ctx()).rx_handlers()) == {0x333, 0x21D}
-    assert set(reg.BY_NAME["BMS"](_ctx()).rx_handlers()) == {0x3A1}
+    # BMS also follows the measured HV bus: DIR_hvStatus 0x126, PCS_dcdcRailStatus 0x2B4.
+    assert set(reg.BY_NAME["BMS"](_ctx()).rx_handlers()) == {0x3A1, 0x126, 0x2B4}
     assert set(reg.BY_NAME["HVP"](_ctx()).rx_handlers()) == {0x3A1}
     assert set(reg.BY_NAME["EPB"](_ctx()).rx_handlers()) == {0x118}
     assert set(reg.BY_NAME["VCSEC"](_ctx()).rx_handlers()) == {0x276}
@@ -1143,15 +1214,25 @@ def test_vcfront_reacts_to_ui_charge_request_and_cp_evse():
 def test_bms_and_hvp_react_to_vcfront_charge_enable():
     bms = sim_registry.BY_NAME["BMS"](_ctx())
     hvp = sim_registry.BY_NAME["HVP"](_ctx())
-    on = (1).to_bytes(8, "little")   # VCFRONT bmsHvChargeEnable @0 = 1
-    off = (0).to_bytes(8, "little")
+    # 2022+ (fw None = newest): mux index @0, page 1 carries bmsHvChargeEnable @1.
+    on = (0b11).to_bytes(8, "little")
+    off = (0b01).to_bytes(8, "little")
+    page0 = (0).to_bytes(8, "little")  # the drive page: no charge-enable signal
     _rx(bms, 0x3A1, on)
     _rx(hvp, 0x3A1, on)
     assert bms.mode == "charge"
     assert hvp.control == "SUPPORT" and hvp.charge_hw and hvp.contactor_stage == "closed"
+    _rx(bms, 0x3A1, page0)
+    _rx(hvp, 0x3A1, page0)
+    assert bms.mode == "charge" and hvp.control == "SUPPORT"  # page 0 leaves it alone
     _rx(bms, 0x3A1, off)
     _rx(hvp, 0x3A1, off)
     assert bms.mode == "drive" and hvp.control == "SHUTDOWN"
+    # 2020: no mux, bmsHvChargeEnable @0
+    bms.fw = hvp.fw = "2020.8.1"
+    _rx(bms, 0x3A1, (1).to_bytes(8, "little"))
+    _rx(hvp, 0x3A1, (1).to_bytes(8, "little"))
+    assert bms.mode == "charge" and hvp.control == "SUPPORT"
 
 
 def test_charge_session_cascades_from_externalities():
@@ -1162,9 +1243,10 @@ def test_charge_session_cascades_from_externalities():
     by["CP"].set_evse(True, 32)
     by["UI"].set_charge(enable=True, limit_a=32)
     # Simulate the engine's dispatch: each node broadcasts, delivered to the matching handlers.
+    # frames_for(): each node encodes the same (newest) firmware it decodes.
     for _ in range(4):
         for src in nodes:
-            for f in src.frames():
+            for f in src.frames_for():
                 data = f.frame()
                 for dst in nodes:
                     _rx(dst, f.can_id, data)
@@ -1205,3 +1287,17 @@ def test_load_drive_scenario_marks_inverter_real():
     assert set(cfg.absent) == {"DIF", "PMF"}
     assert cfg.scenario["VCFRONT"] == {"lv_power_state": "drive"}
     assert cfg.scenario["GTW"] == {"drivetrain_type": "RWD", "chassis_type": "3_CHASSIS"}
+
+
+def test_learn_scenario_is_drive_plus_the_learn_ui_state():
+    drive, _, _ = _load_scenario("drive.toml")
+    learn, nodes, _ = _load_scenario("drive-learn.toml")
+    for attr in ("fw", "real", "absent"):
+        assert getattr(learn, attr) == getattr(drive, attr)
+    extra = ("UI", "ESP", "BMS")
+    assert {k: v for k, v in learn.scenario.items() if k not in extra} == drive.scenario
+    assert learn.scenario["ESP"] == {"wheel_speeds": "axle"}  # rear wheels follow the axle
+    assert learn.scenario.get("BMS", {}) == {}  # min_bus_voltage only when a pack needs it
+    ui = next(n for n in nodes if n.name == "UI").uicfg
+    # rolls, service mode on; development_car only for the dyno learn (dir_learn sets it)
+    assert (ui.traction_mode, ui.service_mode, ui.development_car) == (4, 1, 0)

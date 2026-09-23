@@ -412,9 +412,19 @@ class _Uds(_Ns):
     async def uds_tester_present_context(self, uds_node_name=None, node_name=None,
                                          interval=None, **_kw):
         node = uds_node_name or node_name
-        self._sess(node).tester_present()
-        self._log(f"tester-present context {node}")
-        yield {"node_name": node}
+        sess = self._sess(node)
+        # Honor the script's period for the block (bench sessions keep TP alive on
+        # their own thread); stub nodes have no setter.
+        set_interval = getattr(sess, "tester_present_interval", None) if interval else None
+        previous = set_interval(float(interval)) if set_interval else None
+        sess.tester_present()   # before the block's first request (a learn START checks it)
+        self._log(f"tester-present context {node}"
+                  + (f" every {interval} s" if previous is not None else ""))
+        try:
+            yield {"node_name": node}
+        finally:
+            if previous is not None:
+                set_interval(previous)
 
     @contextlib.asynccontextmanager
     async def uds_node_lock_context(self, node_name=None, **_kw):
@@ -476,8 +486,15 @@ class _Odx(_Ns):
         # a field of the StartRoutine (0x31 01) RESPONSE, not RequestRoutineResults
         # (0x31 03, whose record is ROUTINE_STATUS / LEARN_RESULT). start_routine
         # returns that start response already decoded, so hand it straight back.
-        return {"results": self._sess(node_name).start_routine(
-            routine_name, input_parameters or params)}
+        params = dict(input_parameters or params or {})
+        # Operator overrides for this run (e.g. ROTOR_LEARNING LEARN_SELECT=ALL): Tesla's
+        # scripts hard-code their START params.
+        override = (getattr(self._backend, "routine_param_overrides", None) or {}).get(
+            routine_name)
+        if override:
+            self._log(f"override {routine_name} START params {override} (script: {params})")
+            params.update(override)
+        return {"results": self._sess(node_name).start_routine(routine_name, params)}
 
     async def odx_stop_routine(self, node_name=None, routine_name=None,
                                input_parameters=None, params=None):

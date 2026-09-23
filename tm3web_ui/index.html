@@ -3257,7 +3257,7 @@ function renderExp() {
     if (res.metrics && res.metrics.length) {
       const t = el('table', 'grid');
       const head = el('tr');
-      ['metric', 'value', 'rc', 'expected'].forEach(h => head.append(el('th', null, h)));
+      ['metric', 'value', 'rc', 'expected', 'metadata'].forEach(h => head.append(el('th', null, h)));
       t.append(head);
       for (const row of res.metrics) {
         const tr = el('tr');
@@ -3265,6 +3265,7 @@ function renderExp() {
         tr.append(el('td', null, fmt(row.value)));
         tr.append(el('td', null, fmt(row.result_code)));
         tr.append(el('td', null, fmt(row.expected)));
+        tr.append(el('td', null, fmt(row.metadata)));
         t.append(tr);
       }
       m.append(el('div', 'section-label', 'metrics'));
@@ -3506,7 +3507,10 @@ function renderExp() {
     ws.onmessage = (e) => {
       let d; try { d = JSON.parse(e.data); } catch { return; }
       if (d.type === 'trace') logEvent('trace', '  '.repeat(d.depth || 0) + (d.message || ''));
-      else if (d.type === 'metric') logEvent('metric', '● ' + d.metric + ' = ' + fmt(d.value) + ' (rc ' + d.result_code + ')');
+      // Native scripts put the routine's real result (ROUTINE_STATUS, LEARN_RESULT, ...)
+      // in the metric's metadata, not its value -- show it.
+      else if (d.type === 'metric') logEvent('metric', '● ' + d.metric + ' = ' + fmt(d.value) + ' (rc ' + d.result_code + ')'
+        + (d.metadata != null ? ' · ' + fmt(d.metadata) : ''));
       else if (d.type === 'progress') setProgress(d);
       else if (d.type === 'status') setStatus(d);
       else if (d.type === 'flash_plan') renderFlashPlan(d);

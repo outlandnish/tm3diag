@@ -335,6 +335,7 @@ def _build_dash_snapshot(
         "lv_state": st.get("lv_state"),
         "lv_options": st.get("lv_options", []),
         "brake_pressed": st.get("brake_pressed"),
+        "brake_pedal_state": brake,  # DI_brakePedalState: what the DI concluded (0 OFF 1 ON 2 INVALID)
         "brake_pressure": st.get("brake_pressure"),
         "brake_controllable": st.get("brake_controllable", False),
         "ui": st.get("ui"),
@@ -1063,6 +1064,39 @@ async def _api_seen_signals(request: web.Request) -> web.Response:
     return web.json_response({"signals": sorted(names), "window": window})
 
 
+async def _api_uds_health(request: web.Request) -> web.Response:
+    """TesterPresent keep-alive stats for a node's live UDS session (?node=DIR), to tell an
+    ECU's FAIL_NO_TESTER_PRESENT from our keep-alive stalling. Reads only already-open
+    sessions -- never opens a bus just to answer."""
+    node = request.query.get("node", "DIR").upper()
+    be = request.app.get("odin_bench")
+    entry = getattr(be, "_nodes", {}).get(node) if be is not None else None
+    if entry is None:
+        return web.json_response({"node": node, "session": None})
+    _cfg, sess = entry
+    stats = sess.tp_stats() if hasattr(sess, "tp_stats") else None
+    return web.json_response({"node": node, "session": True, "tp": stats})
+
+
+async def _api_frames(request: web.Request) -> web.Response:
+    """Latest raw payload per bus for ?ids=0x39D,0x2A8,... -- for callers that decode
+    by firmware layout rather than the DBC. age_s is from the frame's RX timestamp."""
+    try:
+        ids = [int(x, 0) for x in request.query.get("ids", "").split(",") if x.strip()]
+    except ValueError:
+        return web.json_response({"error": "ids must be comma-separated ints (0x.. ok)"},
+                                  status=400)
+    now = time.time()
+    out: dict[str, dict] = {}
+    for label, frames in request.app.get("last_frame", {}).items():
+        for aid in ids:
+            cell = frames.get(aid)
+            if cell is not None:
+                out.setdefault(f"0x{aid:03X}", {})[label] = {
+                    "data": cell[0].hex(), "age_s": round(max(0.0, now - cell[1]), 3)}
+    return web.json_response({"frames": out})
+
+
 async def _forward_cmd(request: web.Request, cmd_type: str) -> web.Response:
     """Read the POST body, tag it with the command type, forward to vehicle_sim."""
     try:
@@ -1166,6 +1200,8 @@ def _build_app(
     app.router.add_get("/api/alerts", _api_alerts)
     app.router.add_post("/api/alerts/clear", _api_alerts_clear)
     app.router.add_get("/api/seen-signals", _api_seen_signals)
+    app.router.add_get("/api/frames", _api_frames)
+    app.router.add_get("/api/uds-health", _api_uds_health)
     app.router.add_post("/api/gear", _api_gear)
     app.router.add_post("/api/ui", _api_ui)
     app.router.add_post("/api/lv", _api_lv)
@@ -1277,6 +1313,9 @@ def main() -> None:
     args = parser.parse_args()
 
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
+    # The per-request access log buries anything worth seeing (e.g. the UDS keep-alive
+    # warnings) under a line per /api/dash + /api/frames poll. Quiet it.
+    logging.getLogger("aiohttp.access").setLevel(logging.WARNING)
 
     global _DB
     if args.no_vapi:

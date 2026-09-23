@@ -213,11 +213,11 @@ def test_only_fw_varied_nodes_diverge_from_baseline_today():
     # validates it on bus A (a110_brakeMIA) where 2020 only wanted it on party.
     # DIF is in BOTH sets: DIF_status 0x2D5 is DLC 7 on 2022.45.15 and DLC 8 again on 2026.8.3,
     # both read out of firmware. (PMF is baseline-only -- 0x1D5's placement does not move.)
-    varied_2022 = {"DAS", "BMS", "CMP", "APP", "UI", "EPAS3P", "IBST", "CP", "DIF"}
+    # VCFRONT's 2022 set multiplexes 0x3A1 (VCFRONT_vehicleStatus pages 0/1).
+    varied_2022 = {"DAS", "BMS", "CMP", "APP", "UI", "EPAS3P", "IBST", "CP", "DIF", "VCFRONT"}
     # Nodes that additionally author a 2026.8.3 set: BMS re-lays 0x132 (DLC 8->6) / 0x212 / 0x252,
     # UI 0x284 gains a now-ENFORCED counter+checksum, APP swaps 0x25C -> 0x25B, and VCFRONT
-    # reseeds the 0x3A1 checksum magic (0x2A -> 0xC0). VCFRONT has no 2022 set, so on a 2022
-    # bench it correctly falls back to baseline.
+    # reseeds the 0x3A1 checksum magic (0x2A -> 0xC0).
     varied_2026 = {"BMS", "UI", "APP", "VCFRONT", "VCLEFT", "GTW", "DIF"}
     for node in _db_free_nodes():
         if node.name in varied_2026:

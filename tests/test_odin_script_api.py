@@ -297,6 +297,38 @@ async def odin_script_test(api, nodeName: str):
                          ("secacc", "DIR", "LEVEL_5")]
         assert backend.values["GUI_serviceMode"] == 1
 
+    def test_tester_present_context_applies_the_script_interval(self, tmp_path):
+        periods: list = []
+
+        class _Uds:
+            period = 0.5
+
+            def tester_present(self):
+                periods.append(("tp", _Uds.period))
+
+            def tester_present_interval(self, seconds):
+                previous, _Uds.period = _Uds.period, seconds
+                return previous
+
+            def diagnostic_session(self, session_type):
+                periods.append(_Uds.period)
+
+        class _Backend(odin_runner.Backend):
+            def uds(self, node_name):
+                return _Uds()
+
+        _script(tmp_path, "T/scripts/S", """
+async def odin_script_test(api):
+    async with api.uds.uds_tester_present_context(uds_node_name='DIR', interval=0.1):
+        await api.uds.uds_diagnostic_session(node_name='DIR', session_type='DEFAULT_SESSION')
+    return 0
+""")
+        _write(tmp_path, "T/tasks/E", _wrapper("T/scripts/S"))
+
+        assert _engine(tmp_path, _Backend()).run_procedure("T/tasks/E").exit_code == 0
+        # one sent at the new period before the block's first request; restored after
+        assert periods == [("tp", 0.1), 0.1] and _Uds.period == 0.5
+
     def test_get_data_value_until_reports_a_timeout_rather_than_raising(self, tmp_path):
         _script(tmp_path, "T/scripts/S", """
 async def odin_script_test(api):

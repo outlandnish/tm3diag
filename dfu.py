@@ -11,6 +11,8 @@ from __future__ import annotations
 import argparse
 import gzip
 import io
+import logging
+import os
 import sys
 from pathlib import Path
 
@@ -501,6 +503,28 @@ def run_flash(
     phase4_flash(sess, artifacts_dir, selected, display, channel=channel, interface=interface)
 
 
+def _setup_flash_logging(node: str, log_file: str | None, verbose: bool) -> None:
+    """Persist the `flash_scripts` logger trace (file and/or stderr)."""
+    if log_file is None and not verbose:
+        return
+    flash_log = logging.getLogger("flash_scripts")
+    flash_log.setLevel(logging.INFO)
+    flash_log.propagate = False
+    fmt = logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s")
+
+    if log_file is not None:
+        path = log_file or f"dfu-{node}-{os.getpid()}.log"
+        fh = logging.FileHandler(path, mode="w")
+        fh.setFormatter(fmt)
+        flash_log.addHandler(fh)
+        print(f"Flash trace -> {Path(path).resolve()}")
+
+    if verbose:
+        sh = logging.StreamHandler(sys.stderr)
+        sh.setFormatter(fmt)
+        flash_log.addHandler(sh)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(
         description="Tesla Model 3 ECU firmware flashing tool",
@@ -522,6 +546,21 @@ def main() -> int:
     parser.add_argument("--dry-run", action="store_true",
                         help="Print flash plan without sending any UDS frames")
     parser.add_argument(
+        "--log-file",
+        nargs="?",
+        const="",  # bare --log-file => auto-name in cwd
+        default=None,
+        help=(
+            "Write the full module-select / RequestDownload / NRC trace to this file "
+            "(the status line overwrites in place). Bare --log-file auto-names "
+            "dfu-<node>-<pid>.log. Attach it to flash-failure reports."
+        ),
+    )
+    parser.add_argument(
+        "--verbose", "-v", action="store_true",
+        help="Also echo the flash trace to stderr.",
+    )
+    parser.add_argument(
         "--packed-key", type=lambda s: int(s, 0),
         help=(
             "Offline identity override (decimal or 0x hex). "
@@ -531,6 +570,8 @@ def main() -> int:
         ),
     )
     args = parser.parse_args()
+
+    _setup_flash_logging(args.node, args.log_file, args.verbose)
 
     if args.packed_key is not None and not args.dry_run:
         parser.error("--packed-key requires --dry-run")

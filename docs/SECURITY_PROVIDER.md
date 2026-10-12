@@ -95,6 +95,23 @@ The framework imports these lazily from
 Keystore, challenge_response`); the seam resolves them from your provider at call
 time and fails closed otherwise.
 
+## Alert-hash provider
+
+Used only by `dump_alerts.py` to reverse `bus-alerts-map.json`. Separate from the
+two surfaces above: set `TM3_ALERT_HASH_PROVIDER` (or `--provider`) to a module
+name or a `.py` path. Unset, the tool exits. The module (or the object returned
+by its `get_alert_hash_provider()`) exposes:
+
+```python
+def alert_hash(alert_str: str, salt: str) -> str:
+    """Return the map hash (lowercase hex) of a full alert string under a map's salt."""
+
+def bus_bucket(bus_name: str, salt: str) -> str:
+    """Return the bucket hash (lowercase hex) of a bus name under a map's salt."""
+
+BUS_NAMES: list[str]  # optional: candidate bus names for bucket resolution
+```
+
 ## Minimal skeleton
 
 A provider that implements nothing is valid:

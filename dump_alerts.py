@@ -3,8 +3,9 @@
 
 Every build ships ``opt/odin/data/<model>/bus-alerts-map.json`` -- a per-model
 map of which alert IDs are reachable on which vehicle bus. IDs are stored as
-salted hashes: map hash = ``sha256(alert_str + salt)``, bus bucket =
-``sha256(bus_name + salt)``, with the per-file salt read from the map.
+salted hashes (per-file salt read from the map). The hash recipe is not shipped:
+it comes from an alert-hash provider (``--provider`` / ``TM3_ALERT_HASH_PROVIDER``,
+see docs/SECURITY_PROVIDER.md). Without one the tool exits.
 
 Given a firmware root (or ``TM3_ROOT`` in .env), the tool:
   * loads each ``bus-alerts-map.json`` and resolves its bucket(s) to bus names;
@@ -16,7 +17,7 @@ Given a firmware root (or ``TM3_ROOT`` in .env), the tool:
 
 Usage:
   python dump_alerts.py [firmware_root] [--out DIR] [--catalog FILE]
-                        [--scrape/--no-scrape] [--quiet]
+                        [--provider MODULE] [--scrape/--no-scrape] [--quiet]
 
 Example:
   python dump_alerts.py                      # uses TM3_ROOT from .env
@@ -26,8 +27,10 @@ Example:
 from __future__ import annotations
 
 import argparse
-import hashlib
+import importlib
+import importlib.util
 import json
+import os
 import re
 import subprocess
 import sys
@@ -49,22 +52,57 @@ _NAMECHARS = set(
 _DEFAULT_OUT = _REPO / "alerts"
 _DEFAULT_CATALOG = _DEFAULT_OUT / "alert_catalog.txt"
 
-# Candidate bus names for resolving a bucket hash -> bus label. Tesla's Bus enum
-# only defines ETH for these platforms.
+# Candidate bus names for resolving a bucket hash -> bus label (a provider may
+# override with its own BUS_NAMES).
 BUS_NAMES = [
     "ETH", "eth", "VEHICLE", "vehicle", "PARTY", "party", "CHASSIS", "chassis",
     "PT", "pt", "BODY", "body", "POWERTRAIN", "powertrain", "CANV", "CAN",
 ]
 
-
-def alert_hash(alert_str: str, salt: str) -> str:
-    """Map hash of a full alert string under a map's salt (lowercase hex)."""
-    return hashlib.sha256((alert_str + salt).encode()).hexdigest()
+_PROVIDER_ENV = "TM3_ALERT_HASH_PROVIDER"
+_PROVIDER_DOC = "docs/SECURITY_PROVIDER.md"
 
 
-def bus_bucket(bus_name: str, salt: str) -> str:
-    """Bucket hash of a bus name under a map's salt (lowercase hex)."""
-    return hashlib.sha256((bus_name + salt).encode()).hexdigest()
+class _Provider:
+    """Resolved alert-hash provider: alert_hash / bus_bucket / BUS_NAMES."""
+
+    def __init__(self, mod) -> None:
+        if hasattr(mod, "get_alert_hash_provider"):
+            mod = mod.get_alert_hash_provider()
+        for attr in ("alert_hash", "bus_bucket"):
+            if not callable(getattr(mod, attr, None)):
+                sys.exit(f"alert-hash provider is missing {attr}(). See {_PROVIDER_DOC}.")
+        self.alert_hash = mod.alert_hash
+        self.bus_bucket = mod.bus_bucket
+        self.BUS_NAMES = list(getattr(mod, "BUS_NAMES", BUS_NAMES))
+
+
+def load_provider(spec: str | None = None) -> _Provider:
+    """Load the alert-hash provider from ``spec`` (--provider) or $TM3_ALERT_HASH_PROVIDER.
+
+    ``spec`` is an importable module name or a path to a ``.py`` file. Fails closed
+    (exits with a pointer to the docs) when none is configured or it can't load.
+    """
+    spec = spec or os.environ.get(_PROVIDER_ENV)
+    if not spec:
+        sys.exit(
+            "No alert-hash provider configured. This build ships no alert-hash recipe; "
+            f"set {_PROVIDER_ENV} (or --provider) to a module exposing "
+            f"alert_hash(alert_str, salt) and bus_bucket(bus_name, salt). See {_PROVIDER_DOC}."
+        )
+    path = Path(spec).expanduser()
+    try:
+        if path.suffix == ".py" or path.exists():
+            if not path.is_file():
+                raise ImportError(f"no such file: {path}")
+            mspec = importlib.util.spec_from_file_location("alert_hash_provider", path)
+            mod = importlib.util.module_from_spec(mspec)
+            mspec.loader.exec_module(mod)
+        else:
+            mod = importlib.import_module(spec)
+    except ImportError as exc:
+        sys.exit(f"{_PROVIDER_ENV}={spec!r} could not be loaded ({exc}). See {_PROVIDER_DOC}.")
+    return _Provider(mod)
 
 
 def find_odin_dir(root: Path) -> Path:
@@ -125,7 +163,7 @@ def scrape_image(root: Path) -> set:
     return {ln for ln in res.stdout.splitlines() if ln}
 
 
-def reverse_map(inner: set, salt: str, candidates: set) -> dict:
+def reverse_map(prov: _Provider, inner: set, salt: str, candidates: set) -> dict:
     """Return {alert-hash: alert_str} for every inner hash we can explain."""
     matched = {}
     for c in candidates:
@@ -133,13 +171,13 @@ def reverse_map(inner: set, salt: str, candidates: set) -> dict:
         if not m:
             continue
         ide = m.end()
-        h = alert_hash(c, salt)
+        h = prov.alert_hash(c, salt)
         if h in inner:
             matched.setdefault(h, c)
         for e in range(ide + 2, len(c) + 1):
             if c[e - 1] not in _NAMECHARS:
                 break
-            h = alert_hash(c[:e], salt)
+            h = prov.alert_hash(c[:e], salt)
             if h in inner and h not in matched:
                 matched[h] = c[:e]
     return matched
@@ -174,28 +212,28 @@ def load_so_alert_descs(img_root: Path) -> dict:
     return {}
 
 
-def dump_one(map_path: Path, odin: Path, root: Path, catalog: set,
+def dump_one(prov: _Provider, map_path: Path, odin: Path, root: Path, catalog: set,
              ui: dict, do_scrape: bool, quiet: bool, descs: dict | None = None) -> dict:
     data = json.loads(map_path.read_text())
     salt = data["s"]
     buckets = data["c"]
     model = map_path.parent.name
 
-    known = {bus_bucket(b, salt): b for b in BUS_NAMES}
+    known = {prov.bus_bucket(b, salt): b for b in prov.BUS_NAMES}
     bus_of = {bh: known.get(bh, f"?{bh[:8]}") for bh in buckets}
 
     inner_all = set()
     for v in buckets.values():
         inner_all.update(v)
 
-    matched = reverse_map(inner_all, salt, catalog)
+    matched = reverse_map(prov, inner_all, salt, catalog)
     if len(matched) < len(inner_all):
-        matched.update(reverse_map(inner_all, salt, harvest_alertd(odin)))
+        matched.update(reverse_map(prov, inner_all, salt, harvest_alertd(odin)))
     if do_scrape and len(matched) < len(inner_all):
         if not quiet:
             print(f"    scraping image for {len(inner_all) - len(matched)} "
                   f"unresolved (this takes a few minutes)...", file=sys.stderr)
-        found = reverse_map(inner_all, salt, scrape_image(root))
+        found = reverse_map(prov, inner_all, salt, scrape_image(root))
         for h, s in found.items():
             matched.setdefault(h, s)
     catalog.update(matched.values())
@@ -254,6 +292,8 @@ def main() -> None:
     ap.add_argument("--catalog", type=Path, default=_DEFAULT_CATALOG,
                     help="plaintext alert catalogue, grows over time "
                          f"(default {_DEFAULT_CATALOG})")
+    ap.add_argument("--provider", default=None,
+                    help=f"alert-hash provider module or .py path (default: ${_PROVIDER_ENV})")
     ap.add_argument("--scrape", dest="scrape", action="store_true", default=True,
                     help="scrape the image for unresolved alerts (default on)")
     ap.add_argument("--no-scrape", dest="scrape", action="store_false")
@@ -264,6 +304,7 @@ def main() -> None:
     if root is None:
         sys.exit("no firmware root: pass one, or set TM3_ROOT in .env")
     root = Path(root)
+    prov = load_provider(args.provider)
     odin = find_odin_dir(root)
     img_root = root
     if odin == root:
@@ -285,7 +326,7 @@ def main() -> None:
     args.out.mkdir(parents=True, exist_ok=True)
     summary = []
     for mp in maps:
-        res = dump_one(mp, odin, img_root, catalog, ui,
+        res = dump_one(prov, mp, odin, img_root, catalog, ui,
                        args.scrape, args.quiet, so_descs)
         outp = args.out / f"{rev}-{res['model']}-alerts.json"
         outp.write_text(json.dumps(res, indent=2))

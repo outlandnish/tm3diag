@@ -9,9 +9,11 @@ Usage:
 
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
 import readline
+import sys
 import warnings
 from pathlib import Path
 
@@ -27,6 +29,11 @@ from uds_local.client import (
 from uds_local.node_config import NodeConfig
 from uds_local.odj import FieldSpec, IoControlEntry, OdjEntry, RoutineEntry
 from uds_local.resolve import IOCP_SUFFIX_MAP as _IOCP_SUFFIX_MAP
+
+# DID menus reuse scripts/odin_service (ODJ codec + SecurityAccess).
+_SCRIPTS_DIR = str(Path(__file__).resolve().parent / "scripts")
+if _SCRIPTS_DIR not in sys.path:
+    sys.path.insert(0, _SCRIPTS_DIR)
 
 _log = logging.getLogger(__name__)
 
@@ -272,6 +279,8 @@ def _show_identity(sess, cfg: NodeConfig) -> bool:
 
 
 def _did_menu(sess, cfg: NodeConfig, dids: dict[str, OdjEntry]) -> None:
+    import odin_service
+
     from uds_local.client import UdsError
 
     readable = {name: entry for name, entry in dids.items() if entry.read is not None}
@@ -330,73 +339,141 @@ def _did_menu(sess, cfg: NodeConfig, dids: dict[str, OdjEntry]) -> None:
 
         if sl:
             print(f"  DID requires security level {sl} — running security access...")
-            try:
-                sess.diagnostic_session(_SESSION_PROGRAMMING)
-                sess.security_access(seed_level=sl)
-            except UdsError as e:
-                print(f"  Security access failed: {e}")
-                continue
 
         try:
-            data = sess.read_did(did_id)
-            fields: dict[str, FieldSpec] = (
-                entry.read.output if entry and entry.read else {}
-            )
-            _print_did_response(name, did_id, data, fields)
+            res = odin_service.read_did(sess, cfg, did_id)
+        except UdsError as e:
+            _err(f"Error: {e}")
+            continue
+        fields: dict[str, FieldSpec] = (
+            entry.read.output if entry and entry.read else {}
+        )
+        _print_did_response(name, did_id, bytes.fromhex(res["raw"]), fields)
+
+
+def _did_write_menu(sess, cfg: NodeConfig, dids: dict[str, OdjEntry]) -> None:
+    """WriteDataByIdentifier (0x2E). ODJ DIDs with input fields are prompted per
+    field; others (incl. raw hex IDs) take hex bytes. Every write is confirmed."""
+    import odin_service
+
+    from uds_local.client import UdsError
+
+    writable = {name: entry for name, entry in dids.items() if entry.write is not None}
+    names = sorted(writable.keys())
+    _setup_completion(names + ["back", "list"])
+
+    _hdr(f"DID write — {cfg.name}  ({len(writable)} writable DIDs)")
+    _warn("Writes are persistent and can misconfigure the ECU. Proceed with care.")
+    print("  Type a DID name (tab to complete), hex ID (0xNNNN), 'list', or 'back'")
+
+    while True:
+        try:
+            raw = input("\n  DID write> ").strip()
+        except (EOFError, KeyboardInterrupt):
+            return
+
+        if not raw:
+            continue
+        if raw.lower() in ("back", "q", "quit"):
+            return
+        if raw.lower() == "list":
+            print()
+            if not writable:
+                print("    (no writable DIDs in this node's ODJ — enter a hex ID to write raw)")
+            for n in names:
+                entry = writable[n]
+                size = entry.write.input_size if entry.write else "?"
+                sl = entry.write.security_level if entry.write else 0
+                sl_str = f"  sl={sl}" if sl else ""
+                print(f"    0x{entry.hex_id:04X}  {n:<40} {size}B{sl_str}")
+            continue
+
+        # Resolve name or hex
+        if raw in writable:
+            name = raw
+            entry = writable[name]
+        elif raw.lower().startswith("0x"):
+            try:
+                did_id = int(raw, 16)
+            except ValueError:
+                print(f"  Invalid hex: {raw!r}")
+                continue
+            match = next((n for n, e in writable.items() if e.hex_id == did_id), None)
+            if match:
+                name, entry = match, writable[match]
+            else:
+                print(f"  DID 0x{did_id:04X} not in ODJ (writable) — writing raw bytes")
+                name, entry = raw, None
+        else:
+            _err(f"Unknown DID: {raw!r}  (try 'list' or tab complete)")
+            continue
+
+        did_id = entry.hex_id if entry else int(raw, 16)
+        sl = entry.write.security_level if entry and entry.write else 0
+
+        input_fields: dict[str, FieldSpec] = (
+            entry.write.input if entry and entry.write else {}
+        )
+        if input_fields:
+            print("  Inputs:")
+            values = _prompt_field_values(input_fields)
+            if values is None:
+                continue
+            _, _, data = odin_service.encode_did_write(cfg, did_id, values)
+        else:
+            data_raw = input("  Data bytes (hex): ").strip()
+            try:
+                data = bytes.fromhex(data_raw.replace(" ", "")) if data_raw else b""
+            except ValueError:
+                print(f"  Invalid hex: {data_raw!r}")
+                continue
+
+        if not data:
+            _err("Refusing to send an empty write — provide at least one data byte.")
+            continue
+
+        print(f"\n  About to write {name} (0x{did_id:04X}):")
+        print(f"    {data.hex(' ')}  [{len(data)} bytes]")
+        if input("  Send this WriteDataByIdentifier (0x2E)? [y/N] ").strip().lower() != "y":
+            print("  Aborted.")
+            continue
+
+        if sl:
+            print(f"  DID requires security level {sl} — running security access...")
+
+        try:
+            res = odin_service.write_did(sess, cfg, did_id, data)
+            print(f"  Wrote {res['hex_id']} ({res['size']} bytes).")
         except UdsError as e:
             _err(f"Error: {e}")
 
 
-def _prompt_routine_inputs(fields: dict[str, FieldSpec]) -> bytes | None:
-    """Prompt for each input field and pack into bytes. Returns None on error."""
-    if not fields:
-        return b""
-    total = max(
-        f.byte_position + (f.bit_length + 7) // 8
-        for f in fields.values()
-    )
-    buf = bytearray(total)
+def _prompt_field_values(fields: dict[str, FieldSpec]) -> dict | None:
+    """Prompt for each input field -> {name: value} for the ODJ codec (which packs
+    byte-aligned fields big-endian). Enums accept name or number. None on error."""
+    values: dict = {}
     for fname, fspec in fields.items():
-        bit_len = fspec.bit_length
-        byte_pos = fspec.byte_position
-        bit_pos = fspec.bit_position
-        dtype = fspec.data_type
-        enum_map = fspec.enum_map
-        if enum_map:
-            opts = ", ".join(f"{k}={v}" for k, v in enum_map.items())
+        if fspec.enum_map:
+            opts = ", ".join(f"{k}={v}" for k, v in fspec.enum_map.items())
             raw = input(f"    {fname} ({opts}): ").strip()
-            upper_map = {k.upper(): v for k, v in enum_map.items()}
+            upper_map = {k.upper(): v for k, v in fspec.enum_map.items()}
             if raw.upper() in upper_map:
-                val = upper_map[raw.upper()]
-            else:
-                try:
-                    val = int(raw, 0)
-                except ValueError:
-                    print(f"  Invalid value: {raw!r}")
-                    return None
+                values[fname] = upper_map[raw.upper()]
+                continue
         else:
-            prompt = f"    {fname} ({'signed' if dtype == 'int' else 'uint'}, {bit_len}b): "
-            raw = input(prompt).strip()
-            try:
-                val = int(raw, 0)
-            except ValueError:
-                print(f"  Invalid value: {raw!r}")
-                return None
-        mask = (1 << bit_len) - 1
-        val &= mask
-        for i in range(bit_len):
-            bit = (val >> i) & 1
-            b = byte_pos + (bit_pos + i) // 8
-            bp = (bit_pos + i) % 8
-            if bit:
-                buf[b] |= (1 << bp)
-            else:
-                buf[b] &= ~(1 << bp)
-    return bytes(buf)
+            dtype = "signed" if fspec.data_type == "int" else "uint"
+            raw = input(f"    {fname} ({dtype}, {fspec.bit_length}b): ").strip()
+        try:
+            values[fname] = int(raw, 0)
+        except ValueError:
+            print(f"  Invalid value: {raw!r}")
+            return None
+    return values
 
 
 def _routine_menu(sess, cfg: NodeConfig, routines: dict[str, RoutineEntry]) -> None:
     from uds_local.client import UdsError
+    from uds_local.odj_codec import encode_request
 
     named = list(_NAMED_ROUTINES.keys())
     odj_names = sorted(routines.keys())
@@ -492,9 +569,10 @@ def _routine_menu(sess, cfg: NodeConfig, routines: dict[str, RoutineEntry]) -> N
             input_fields = sub.input if sub else {}
             if input_fields:
                 print(f"  Inputs for {action}:")
-                arg = _prompt_routine_inputs(input_fields)
-                if arg is None:
+                values = _prompt_field_values(input_fields)
+                if values is None:
                     continue
+                arg = encode_request(sub, values)
             else:
                 arg = b""
             subtype = {"start": 0x01, "stop": 0x02, "results": 0x03}[action]
@@ -516,6 +594,7 @@ def _routine_menu(sess, cfg: NodeConfig, routines: dict[str, RoutineEntry]) -> N
 
 def _io_control_menu(sess, cfg: NodeConfig, io_controls: dict[str, IoControlEntry]) -> None:
     from uds_local.client import UdsError
+    from uds_local.odj_codec import encode_fields
 
     names = sorted(io_controls.keys())
     _setup_completion(names + ["back", "list"])
@@ -589,9 +668,10 @@ def _io_control_menu(sess, cfg: NodeConfig, io_controls: dict[str, IoControlEntr
         )
 
         if io_entry and io_entry.input:
-            data = _prompt_routine_inputs(io_entry.input)
-            if data is None:
+            values = _prompt_field_values(io_entry.input)
+            if values is None:
                 continue
+            data = encode_fields(io_entry.input, values, io_entry.input_size)
         else:
             arg_raw = input("  Data bytes (hex, empty for none): ").strip()
             try:
@@ -639,18 +719,20 @@ def _dfu_menu(sess, cfg, artifacts_dir: Path | None, force: bool | None = None) 
 
 def _main_menu(sess, cfg: NodeConfig, artifacts_dir: Path | None, force: bool = False) -> None:
     _setup_completion([
-        "dids", "routine", "io-control", "board-parts", "clear-dtc",
-        "dfu", "session", "reset", "quit",
+        "dids", "write-did", "routine", "io-control", "board-parts", "clear-dtc",
+        "dfu", "dl-probe", "session", "reset", "quit",
     ])
 
     while True:
         _hdr(f"{cfg.name}  —  Main menu")
         _menu_item("dids", "Read DIDs interactively")
+        _menu_item("write-did", "Write a DID (0x2E) interactively")
         _menu_item("routine", "Run a routine control")
         _menu_item("io-control", "InputOutputControlByIdentifier (0x2F)")
         _menu_item("board-parts", "Read board part/serial DIDs (0xF012–0xF015)")
         _menu_item("clear-dtc", "ClearDiagnosticInformation (0xFFFFFF)")
         _menu_item("dfu", "Firmware update")
+        _menu_item("dl-probe", "Probe RequestDownload(addr,size) — map what the ECU accepts")
         _menu_item("session", "Switch diagnostic session")
         _menu_item("reset", "ECU hard reset")
         _menu_item("quit", "Disconnect and exit")
@@ -664,6 +746,8 @@ def _main_menu(sess, cfg: NodeConfig, artifacts_dir: Path | None, force: bool = 
             break
         elif cmd == "dids":
             _did_menu(sess, cfg, cfg.dids)
+        elif cmd == "write-did":
+            _did_write_menu(sess, cfg, cfg.dids)
         elif cmd == "routine":
             _routine_menu(sess, cfg, cfg.routines)
         elif cmd == "io-control":
@@ -674,12 +758,73 @@ def _main_menu(sess, cfg: NodeConfig, artifacts_dir: Path | None, force: bool = 
             _clear_dtc_cmd(sess)
         elif cmd == "dfu":
             _dfu_menu(sess, cfg, artifacts_dir, force=force)
+        elif cmd == "dl-probe":
+            _dl_probe_cmd(sess)
         elif cmd == "session":
             _session_cmd(sess)
         elif cmd == "reset":
             _reset_cmd(sess)
         elif cmd:
             _err(f"Unknown command: {cmd!r}")
+
+
+def _dl_probe_cmd(sess) -> None:
+    """Probe RequestDownload(addr, size) to map the ECU's accept envelope.
+
+    Optional programming setup (session/secAccess/moduleToProgram/erase), then single
+    RequestDownload frames per addr/size; no TransferData, and any accept is closed
+    with RequestTransferExit. Use with --log-file to see the 0x34 frame on the wire.
+    Separates a rejected download's cause: address bound vs size unit vs precondition.
+    """
+    from uds_local.client import UdsError
+
+    do_setup = input(
+        "  Run programming setup first (session/secAccess/moduleToProgram/erase)? [Y/n] "
+    ).strip().lower() not in ("n", "no")
+    if do_setup:
+        try:
+            sess.diagnostic_session(0x02)
+            print("  [ok] DiagnosticSessionControl(programming)")
+            sess.security_access(0)
+            print("  [ok] SecurityAccess(0)")
+            sess.module_to_program(0x00)
+            print("  [ok] moduleToProgram(0x00)")
+            sess.set_timeout(3.0)
+            try:
+                sess.routine_control(0xFF00)
+                print("  [ok] initializeEraseModule (RC 0xFF00)")
+            finally:
+                sess.set_timeout(2.0)
+        except UdsError as e:
+            _err(f"setup step NRC 0x{e.nrc:02X} ({e.nrc_name}) — probing anyway")
+        except Exception as e:
+            _err(f"setup error: {e}")
+
+    print("  Enter '<addr> <size>' in hex (e.g. '82000 100', '4000 10'). Blank to exit.")
+    while True:
+        try:
+            line = input("  dl-probe> ").strip()
+        except (EOFError, KeyboardInterrupt):
+            break
+        if not line:
+            break
+        parts = line.split()
+        try:
+            addr = int(parts[0], 16)
+            size = int(parts[1], 16)
+        except (ValueError, IndexError):
+            _err("format: <addr_hex> <size_hex>  (e.g. '82000 100')")
+            continue
+        try:
+            mbl = sess.request_download(addr, size)
+            print(f"    [ACCEPT] addr=0x{addr:X} size=0x{size:X}  -> maxBlockLen={mbl}")
+            # abort so the ECU isn't left mid-download
+            with contextlib.suppress(UdsError):
+                sess.request_transfer_exit()
+        except UdsError as e:
+            print(f"    [REJECT] addr=0x{addr:X} size=0x{size:X}  -> NRC 0x{e.nrc:02X} ({e.nrc_name})")
+        except Exception as e:
+            _err(f"error: {e}")
 
 
 def _session_cmd(sess) -> None:
@@ -759,8 +904,32 @@ def main() -> int:
                         help="Path to seed_artifacts_v2 (for DFU)")
     parser.add_argument("--force", action="store_true", default=False,
                         help="Skip identity mismatch check during DFU (also TM3_DFU_FORCE)")
+    parser.add_argument("--log-file",
+                        help="Write a verbose UDS wire log (TX/RX frames, RequestDownload "
+                             "size, NRCs) to this file. Survives the interactive display's "
+                             "line-clearing, unlike on-screen logs.")
+    parser.add_argument("--verbose", "-v", action="store_true", default=False,
+                        help="Also emit DEBUG logging to stderr.")
     _cfg.apply_defaults(parser)
     args = parser.parse_args()
+
+    # The status line overwrites in place; --log-file keeps the full UDS exchange
+    # (e.g. the exact 0x34 frame, to check whether size is in bytes or words).
+    if args.log_file or args.verbose:
+        _root = logging.getLogger()
+        _root.setLevel(logging.DEBUG)
+        if args.log_file:
+            _fh = logging.FileHandler(args.log_file, mode="w")
+            _fh.setLevel(logging.DEBUG)
+            _fh.setFormatter(logging.Formatter(
+                "%(asctime)s.%(msecs)03d %(name)s %(levelname)s %(message)s",
+                datefmt="%H:%M:%S"))
+            _root.addHandler(_fh)
+        if args.verbose:
+            _sh = logging.StreamHandler()
+            _sh.setLevel(logging.DEBUG)
+            _sh.setFormatter(logging.Formatter("%(name)s %(levelname)s %(message)s"))
+            _root.addHandler(_sh)
 
     if _cfg._ROOT is None:
         print(_c.error(

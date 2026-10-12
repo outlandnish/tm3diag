@@ -60,20 +60,6 @@ class Vcfront(Node):
             SimFrame("VCFRONT_LVPowerState", 0x221, 0.050, self.lv.frame),
         ]
 
-    def _vcleft_switch_status(self) -> bytearray:  # 0x3C2 = VCLEFT_switchStatus, mux0
-        # 0x3C2 is VCLEFT's, not VCFRONT's -- this node just sources it (a155 MIA member).
-        #
-        # The brake pedal switch is a PHYSICAL line the DI reads on its own GPIO. When
-        # GTW_brakeLineSwitchType == DI_VC_SHARED(0) that same line is shared with the VC, and
-        # the DI cross-checks its GPIO against the VC's report here. Disagreement makes the DI
-        # publish DI_brakePedalState = INVALID -- a live plausibility state, so NO DTC is set.
-        # (The signal doesn't exist pre-2022, which is why old firmware never did this.)
-        #
-        # So this must track the PHYSICAL switch at the DI, not the ESP/IBST CAN brake posture:
-        # if the pedal (or a bench jumper) is grounded, set brake_switch_pressed.
-        pressed = int(self.brake_switch_pressed)
-        return pack_le([(4, 1, pressed), (60, 1, pressed)], 8)  # index@0=0 -> mux0
-
     def _vehicle_status(self) -> bytearray:  # 0x3A1, 100ms, counter@52 checksum@56 magic 0xA4
         sigs = [
             (10, 3, 3),  # VCFRONT_diPowerOnState = DI_POWERED_ON_FOR_DRIVE

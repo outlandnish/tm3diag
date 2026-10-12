@@ -45,7 +45,7 @@ Shown when `--node` is omitted.
 | Name                       | Routine ID | Description                                                      |
 | -------------------------- | ---------- | ---------------------------------------------------------------- |
 | `erase`                    | `0xFF00`   | `initializeEraseModule` — EraseMemory (requires security access) |
-| `verify-crc`               | `0x0201`   | `checkModuleProgrammedCorrectly` — CRC verify                    |
+| `verify`                   | `0x0201`   | `checkModuleProgrammedCorrectly` — verify (CRC and/or signature) |
 | `check-component`          | `0x0202`   | `checkCorrectComponentAndRev`                                    |
 | `ota-wait`                 | `0x0540`   | `vcWaitForOTAMode` / `otaStateRoutineControl`                    |
 | `ibst-power`               | `0x0543`   | `ibstPowerControl` (requires security access)                    |

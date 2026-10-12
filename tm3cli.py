@@ -88,7 +88,7 @@ def _select_product() -> _cfg.FwPaths:
 
 _NAMED_ROUTINES: dict[str, tuple[int, str, bool]] = {
     "erase":              (0xFF00, "initializeEraseModule — EraseMemory", True),
-    "verify-crc":         (0x0201, "checkModuleProgrammedCorrectly — CRC verify", False),
+    "verify":             (0x0201, "checkModuleProgrammedCorrectly — verify (CRC and/or signature)", False),
     "check-component":    (0x0202, "checkCorrectComponentAndRev", False),
     "ota-wait":           (0x0540, "vcWaitForOTAMode / otaStateRoutineControl", False),
     "ibst-power":         (0x0543, "ibstPowerControl", True),

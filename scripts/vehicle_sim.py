@@ -81,6 +81,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[0]))  # scripts/: tesla_
 import scenario_signals  # noqa: E402
 import sim_core  # noqa: E402
 import sim_registry  # noqa: E402
+from bms.bms import BMS_LIMITS  # noqa: E402
 from tesla_frames import UI_SETTINGS  # noqa: E402
 from tesla_frames import (  # noqa: E402
     VEHICLE_POWER_STATE as _VEHICLE_POWER_STATE,
@@ -145,7 +146,7 @@ def _decode_0x118(data: bytes) -> str:
 # status bit is SET. The ESP node's builders assert the known
 # ones; the exact "valid" enum per field is not statically recoverable (stripped fw), so use
 # --set to bench-bisect the rest. Candidate fields (start:width, standard little-endian bit):
-#   0x105  13:1 14:1 15:1 + 33:1 34:1 35:1  (brake-torque a193/a194; gates wheel-speed a232)
+#   0x105  13:1 14:1 15:1 + 33:1 34:1 35:1  (a193/a194, a232; 34/35 = drive-torque limit valid)
 #   0x155  byte4 four 2-bit fields (bits0-7) + 40:1 41:1  (MC-press/steering a198)
 #   0x185  50:1 direction bit  (NB 52:4 = rolling counter, 56 = checksum -- don't --set them)
 def _parse_set_overrides(spec: str | None) -> dict[int, list[tuple[int, int, int]]]:
@@ -211,6 +212,10 @@ def _start_control_server(controller, port: int) -> ThreadingHTTPServer:
                     v = controller.set_carconfig(cmd["signal"], cmd["value"])
                 elif t == "brake":
                     v = controller.brake(cmd["pressed"], cmd.get("pressure"))
+                elif t == "torque_limit":
+                    v = controller.torque_limit(cmd.get("nm"))
+                elif t == "bms_limit":
+                    v = controller.bms_limit(cmd["field"], cmd["value"])
                 else:
                     return self._send(400, {"error": f"unknown command type {t!r}"})
             except (KeyError, ValueError) as e:
@@ -266,6 +271,14 @@ class _ControlFacade:
             raise KeyError("no brake-capable node selected (ESP/IBST/VCLEFT)")
         return {"pressed": bool(pressed), "pressure": pressure, "nodes": touched}
 
+    def torque_limit(self, nm):
+        """ESP 0x105 drive-torque limit in Nm; None = no limit."""
+        return self._n["ESP"].set_torque_limit(nm)
+
+    def bms_limit(self, field, value):
+        """BMS pack limit (BMS_LIMITS field) -> 0x2D2 / 0x252."""
+        return self._n["BMS"].set_limit(field, value)
+
     @property
     def carcfg(self):
         return self._n["GTW"].carcfg
@@ -297,6 +310,13 @@ class _ControlFacade:
             "brake_pressed": brake_pressed,
             "brake_pressure": esp.brake_pressure if esp is not None else None,
             "brake_controllable": bool(brake_nodes),
+            "torque_limit": esp.torque_limit if esp is not None else None,
+            "torque_limit_controllable": esp is not None,
+            "bms_limits": n["BMS"].limits() if "BMS" in n else {},
+            "bms_limits_schema": {
+                f: {k: s[k] for k in ("label", "signal", "unit", "range", "step")}
+                for f, s in BMS_LIMITS.items()
+            } if "BMS" in n else {},
         }
 
 
@@ -385,15 +405,6 @@ def main() -> None:
         action="store_true",
         dest="no_das",
         help="don't TX DAS_control 0x2B9 (provisional dasMIA source)",
-    )
-    p.add_argument(
-        "--vdc-esp",
-        action="store_true",
-        dest="vdc_esp",
-        help="TX the ESP VDC signal-status inputs 0x1E5 + 0x240 (idle content from a known-good "
-        "drive log). Firmware-confirmed NOT board-TX (PMR transmits neither) so no a066 collision; "
-        "supplies the DIR VDC-readiness ESP inputs that are absent on a DU-only bench. If a066 "
-        "canDataBusB appears, STOP -- something on the DU does transmit them.",
     )
     p.add_argument(
         "--no-ui",
@@ -673,27 +684,6 @@ def main() -> None:
     # BUS BINDING IS RIGID (firmware-confirmed, 12603 gen-26): each frame's bus is fixed by its
     # node, but the bench config's [bus] map can reassign a specific ID (different bench wiring).
     frames = sim_registry.collect_frames(nodes)  # each node inherits its own fw (set above)
-    if args.vdc_esp:
-        # ESP VDC signal-status inputs the DIR consumes (bits 0-4) but which nothing on a
-        # DU-only bench transmits. These are EXTERNAL inputs, NOT board-TX: the PMR party-TX
-        # set = {0x108,0x118,0x148,0x256,0x257,0x286}, no 0x1E5/0x240 TX or immediate, and the
-        # DIR RXes both. Idle payloads reproduce a captured party-bus idle trace (0x1E5 ctr0
-        # -> 00 0c..00 f2; 0x240 ctr0 -> 72 30). Opt-in until bench-confirmed.
-        _rate = sim_core.PARTY_RATE_S["ESP"]
-        frames.append(
-            sim_core.SimFrame(
-                "ESP_0x1E5_vdc", 0x1E5, _rate,
-                lambda: bytearray([0x00, 0x0C, 0, 0, 0, 0, 0, 0]),
-                53, 56, counter_width=2, bus="party",  # DIR reads (word3>>5)&3 = 2-bit @ byte6 b5-6
-            )
-        )
-        frames.append(
-            sim_core.SimFrame(
-                "ESP_0x240_vdc", 0x240, _rate,
-                lambda: bytearray([0x00, 0x30]),
-                8, 0, counter_width=4, bus="party",
-            )
-        )
     for f in frames:
         if f.can_id in bench.bus:
             f.bus = bench.bus[f.can_id]

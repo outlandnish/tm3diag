@@ -53,6 +53,19 @@
   .bar{height:8px;background:var(--bg);border:1px solid var(--border);border-radius:3px;overflow:hidden}
   .bar>span{display:block;height:100%;width:0;background:var(--accent);transition:width .12s}
 
+  /* HV power: centre-zero bar, regen (left, green) / discharge (right, amber) */
+  .hvp{display:grid;grid-template-columns:auto 1fr;gap:18px;align-items:center}
+  .hvp .num{font-size:40px;font-weight:700;line-height:1;font-variant-numeric:tabular-nums}
+  .hvp .num small{font-size:13px;color:var(--dim);font-weight:400;margin-left:4px}
+  .hvp .dir{font-size:10px;letter-spacing:.12em;text-transform:uppercase;margin-top:6px;color:var(--dim)}
+  .hvp.dis .num,.hvp.dis .dir{color:var(--warn)} .hvp.reg .num,.hvp.reg .dir{color:var(--ok)}
+  .zbar{position:relative;height:14px;background:var(--bg);border:1px solid var(--border);border-radius:3px}
+  .zbar::after{content:"";position:absolute;left:50%;top:-3px;bottom:-3px;width:1px;background:var(--dim)}
+  .zbar>span{position:absolute;top:0;bottom:0;width:0;transition:width .12s,left .12s}
+  .zbar>.d{left:50%;background:var(--warn)} .zbar>.r{right:50%;background:var(--ok)}
+  .zlim{display:flex;justify-content:space-between;color:var(--dim);font-size:10px;margin-top:4px}
+  .hvp-stats{color:var(--dim);font-size:11px;margin-top:8px;font-variant-numeric:tabular-nums}
+
   /* gear */
   .gears{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-top:6px}
   .gear{position:relative;background:var(--panel2);border:1px solid var(--border);border-radius:6px;
@@ -198,6 +211,21 @@
   </div>
 
   <div class="panel mt">
+    <h2>HV power</h2>
+    <div class="hvp" id="hvp">
+      <div>
+        <div class="num" id="hvp-kw">—<small>kW</small></div>
+        <div class="dir" id="hvp-dir">idle</div>
+      </div>
+      <div>
+        <div class="zbar"><span class="r" id="hvp-r"></span><span class="d" id="hvp-d"></span></div>
+        <div class="zlim"><span id="hvp-rmax">regen —</span><span id="hvp-dmax">drive —</span></div>
+        <div class="hvp-stats" id="hvp-stats"></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="panel mt">
     <h2>LV power <span id="lv-cur" style="color:var(--dim);font-weight:400"></span></h2>
     <div class="lv-btns" id="lv-btns"></div>
   </div>
@@ -209,6 +237,26 @@
       <span>Pressure <span id="brake-press-val" style="color:var(--dim)">0%</span></span>
       <input type="range" id="brake-press" min="0" max="100" step="1" value="0">
     </label>
+  </div>
+
+  <div class="panel mt">
+    <h2>ESP torque limit <span id="tq-cur" style="color:var(--dim);font-weight:400"></span></h2>
+    <button class="lv-btn" id="tq-btn" style="max-width:220px">Limit</button>
+    <label class="field" style="margin-top:12px">
+      <span>Drive torque <span id="tq-val" style="color:var(--dim)">0 Nm</span></span>
+      <input type="range" id="tq-limit" min="0" max="8190" step="10" value="0">
+    </label>
+    <p style="color:var(--dim);font-size:12px;margin:.4em 0 0">0x105, fwd + rev. Traction
+      control on only (VDC NORMAL, not rolls/dyno). Raising it may not restore torque until
+      P/N.</p>
+  </div>
+
+  <div class="panel mt">
+    <h2>BMS limits</h2>
+    <div class="settings" id="bms-limits"></div>
+    <p style="color:var(--dim);font-size:12px;margin:.4em 0 0">0x2D2 / 0x252. Regen current must
+      stay within the supply's sink rating; set max bus voltage a little above the supply. The DIR
+      clamps bus voltages to 210–470 V.</p>
   </div>
 
   <div class="panel mt">
@@ -306,6 +354,34 @@ brakeBtn.onclick = () => sendBrake(!brakeBtn.classList.contains("on"));
 brakePress.oninput = () => { brakePressVal.textContent = brakePress.value + "%"; };
 brakePress.onchange = () => { if(brakeBtn.classList.contains("on")) sendBrake(true); };
 
+// ---- ESP 0x105 drive-torque limit (button toggles limiting; slider sets Nm) ----
+const tqBtn = $("#tq-btn"), tqLimit = $("#tq-limit"), tqVal = $("#tq-val");
+function sendTorqueLimit(on){
+  const nm = on ? Number(tqLimit.value) : null;
+  post("/api/torque-limit", {nm})
+    .then(r => r && toast("Torque limit → " + (on ? nm + " Nm" : "none")));
+}
+tqBtn.onclick = () => sendTorqueLimit(!tqBtn.classList.contains("on"));
+tqLimit.oninput = () => { tqVal.textContent = tqLimit.value + " Nm"; };
+tqLimit.onchange = () => { if(tqBtn.classList.contains("on")) sendTorqueLimit(true); };
+
+// ---- BMS pack limits (built once from bms_limits_schema) ----
+let bmsBuilt = false;
+function buildBmsLimits(schema){
+  const box = $("#bms-limits"); box.innerHTML = "";
+  Object.entries(schema).forEach(([field, spec]) => {
+    const wrap = document.createElement("label"); wrap.className = "field";
+    const name = document.createElement("span"); name.textContent = `${spec.label} (${spec.unit})`;
+    const inp = document.createElement("input");
+    Object.assign(inp, {type: "number", min: spec.range[0], max: spec.range[1], step: spec.step});
+    inp.dataset.field = field; inp.title = spec.signal;
+    inp.onchange = () => post("/api/bms-limit", {field, value: Number(inp.value)})
+      .then(r => r && toast(`${spec.label} → ${inp.value} ${spec.unit}`));
+    wrap.append(name, inp); box.appendChild(wrap);
+  });
+  bmsBuilt = true;
+}
+
 // ---- drive settings (built once from ui_schema) ----
 function buildSettings(schema, values){
   const box = $("#settings"); box.innerHTML = "";
@@ -391,6 +467,41 @@ function render(s){
   }
   $("#brake-cur").textContent = bp == null ? ""
     : "· " + (bp ? (Math.round(s.brake_pressure ?? 0) + "%") : "released");
+
+  // HV power (+ discharge / - regen); bar halves scale to the DI's live limits (0x268)
+  const hp = s.hv_power || {}, kw = hp.power_kw;
+  const dmax = Math.max(Math.abs(hp.drive_max_kw ?? 0), 1), rmax = Math.max(Math.abs(hp.regen_max_kw ?? 0), 1);
+  const hvp = $("#hvp"), dead = 0.05;
+  hvp.classList.toggle("dis", kw != null && kw > dead);
+  hvp.classList.toggle("reg", kw != null && kw < -dead);
+  $("#hvp-kw").innerHTML = (kw == null ? "—" : Math.abs(kw).toFixed(kw && Math.abs(kw) < 10 ? 2 : 1)) + "<small>kW</small>";
+  $("#hvp-dir").textContent = kw == null ? "no data" : kw > dead ? "discharge" : kw < -dead ? "regen" : "idle";
+  $("#hvp-d").style.width = (kw > 0 ? Math.min(kw / dmax, 1) * 50 : 0) + "%";
+  $("#hvp-r").style.width = (kw < 0 ? Math.min(-kw / rmax, 1) * 50 : 0) + "%";
+  $("#hvp-rmax").textContent = "regen " + (hp.regen_max_kw == null ? "—" : Math.abs(hp.regen_max_kw) + " kW");
+  $("#hvp-dmax").textContent = "drive " + (hp.drive_max_kw == null ? "—" : hp.drive_max_kw + " kW");
+  const f = (v, u, d=0) => v == null ? "—" : v.toFixed(d) + " " + u;
+  $("#hvp-stats").textContent = `bus ${f(hp.bus_v, "V")} · dc ${f(hp.dc_a, "A", 1)} · DIR_elecPower ${f(hp.elec_kw, "kW", 1)}`;
+
+  // ESP torque limit
+  const tl = s.torque_limit, tqOn = tl != null;
+  tqBtn.classList.toggle("on", tqOn);
+  tqBtn.textContent = tqOn ? "Limiting" : "No limit";
+  tqBtn.disabled = tqLimit.disabled = !s.control || !s.torque_limit_controllable;
+  if(document.activeElement !== tqLimit && tqOn){
+    tqLimit.value = tl;
+    tqVal.textContent = Math.round(tl) + " Nm";
+  }
+  $("#tq-cur").textContent = s.torque_limit_controllable ? "· " + (tqOn ? Math.round(tl) + " Nm" : "none") : "";
+
+  // BMS pack limits
+  const bs = s.bms_limits_schema || {};
+  if(!bmsBuilt && Object.keys(bs).length) buildBmsLimits(bs);
+  $("#bms-limits").querySelectorAll("input").forEach(inp => {
+    inp.disabled = !s.control;
+    const v = (s.bms_limits || {})[inp.dataset.field];
+    if(document.activeElement !== inp && v != null) inp.value = v;
+  });
 
   // telltales
   const tells = $("#tells");

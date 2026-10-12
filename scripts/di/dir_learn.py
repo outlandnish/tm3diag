@@ -21,9 +21,15 @@ learns capture the table while coasting from ~470 to ~332 axle rpm with zero tor
 tripped (DI_dynoModeAvailable 0) or while DI_systemState is FAULT, and once more if START is
 refused with INVALID_DI_STATE. before/after/both force it; never turns it off.
 
+--node DIF runs the resolver learns on the front unit of an AWD pair (same ODIN scripts, same
+gates). Gear, traction mode and DI_systemState still come from the rear's 0x118, so the real
+DIR must be on the bus. The front is an induction motor: its 0x406 is a stub, so there is no
+offset/flux learn.
+
     python scripts/di/dir_learn.py [--url http://localhost:8765] [--learn offset]
     python scripts/di/dir_learn.py --learn all --rotor-temp auto
     python scripts/di/dir_learn.py --learn resolver --reset before
+    python scripts/di/dir_learn.py --node DIF --learn resolver-error
 
 Needs tm3web --control with vehicle_sim running (scenarios/drive-learn.toml).
 """
@@ -54,7 +60,30 @@ class Learn:
     needs_temp: bool = False
 
 
-_ROTOR = ("Gen3/tasks/PROC_DIR_X_ROTOR-OFFSET-LEARN", "DIAGCODE_START_ROTOR_LEARNING_ROUTINE",
+@dataclass(frozen=True)
+class Unit:
+    """The inverter under test and the frames it broadcasts (same layouts, per-unit IDs)."""
+    node: str
+    torque_id: int     # *_torque: axleSpeed 40|16 (0.1 rpm), torqueActual 27|13 (2 Nm)
+    hv_id: int         # *_hvStatus: vBat 0|10, motorCurrent 11|11
+    temp_id: int       # *_temperature: mux 0|3, statorT byte 3
+    oil_id: int        # *_oilPump: fluidT byte 3, QF bit 3
+    rotor_learn: bool  # PMSM: 0x406 offset/flux learn exists
+
+
+UNITS = {
+    "DIR": Unit("DIR", 0x108, 0x126, 0x315, 0x395, True),
+    "DIF": Unit("DIF", 0x186, 0x1A5, 0x376, 0x396, False),
+}
+DIR = UNITS["DIR"]
+
+
+def procedure(spec: Learn, unit: Unit = DIR) -> str | None:
+    """The learn's ODIN task for `unit` (Tesla ships PROC_DIR_X_* and PROC_DIF_X_*)."""
+    return spec.procedure and spec.procedure.replace("PROC_DIR_", f"PROC_{unit.node}_")
+
+
+_ROTOR =("Gen3/tasks/PROC_DIR_X_ROTOR-OFFSET-LEARN", "DIAGCODE_START_ROTOR_LEARNING_ROUTINE",
           "DIAGCODE_ROTOR_LEARNING_ROUTINE_RESULTS")
 TRACTION_ROLLS, TRACTION_DYNO = 4, 5
 # Spin targets: the learn job waits for the axle to pass its threshold (offset 443, resolver
@@ -86,6 +115,15 @@ RESOLVER_RESULT = {0: "LEARN_SUCCESS", 1: "TEST_FAILED", 2: "OFF_LIMITS", 3: "ST
 # (RELEASED) and the ESP per-wheel brake torques (0x185) are 0. Decoded by the firmware's
 # layout, not the DBC (which puts EPBL at 0x2A9).
 SPIN_IDS = (0x39D, 0x2A8, 0x2E8, 0x185, 0x108, 0x118, 0x128, 0x126)
+
+
+def spin_ids(unit: Unit = DIR) -> tuple:
+    return SPIN_IDS if unit is DIR else (0x39D, 0x2A8, 0x2E8, 0x185, unit.torque_id, 0x118,
+                                         0x128, unit.hv_id)
+
+
+def _ids_param(unit: Unit) -> dict:
+    return {"ids": ",".join(f"0x{i:X}" for i in spin_ids(unit))}
 # 0x128 DI_systemLimits: what caps drive torque/speed right now.
 _LIMIT_BITS = {0: "regenPower", 1: "iBat", 2: "vBatLow", 3: "vBatHigh", 4: "obstacle",
                5: "limp", 6: "GPO", 7: "shift", 8: "driveTorque", 9: "regenTorque",
@@ -104,8 +142,8 @@ _DI_STATE = {0: "UNAVAILABLE", 1: "IDLE", 2: "STANDBY", 3: "FAULT", 4: "ABORT", 
 DI_STATE_FAULT = 3
 
 
-def spin_check(frames: dict) -> dict:
-    """What the DIR's spin permit sees, from /api/frames' "frames" map."""
+def spin_check(frames: dict, unit: Unit = DIR) -> dict:
+    """What the unit's spin permit sees, from /api/frames' "frames" map."""
     def fresh(can_id):
         return [bytes.fromhex(c["data"]) for c in frames.get(f"0x{can_id:03X}", {}).values()
                 if c.get("age_s", 0) <= STALE_S]
@@ -126,12 +164,12 @@ def spin_check(frames: dict) -> dict:
         blockers.append("ESP 0x185 missing")
     elif any(torques):
         blockers.append("ESP 0x185 brake torque nonzero")
-    raw = next((int.from_bytes(d[5:7], "little", signed=True)  # DIR_axleSpeed 40|16, 0.1 rpm
-                for d in fresh(0x108) if len(d) >= 7), None)
+    raw = next((int.from_bytes(d[5:7], "little", signed=True)  # *_axleSpeed 40|16, 0.1 rpm
+                for d in fresh(unit.torque_id) if len(d) >= 7), None)
     axle = None if raw in (None, -0x8000) else raw * 0.1  # 0x8000 = SNA
-    # DIR_torqueActual 27|13 signed, 2 Nm. The learns need it back at exactly 0.
+    # *_torqueActual 27|13 signed, 2 Nm. The learns need it back at exactly 0.
     torque = None
-    for d in fresh(0x108):
+    for d in fresh(unit.torque_id):
         if len(d) >= 5:
             t = (int.from_bytes(d[:5], "little") >> 27) & 0x1FFF
             torque = (t - 0x2000 if t & 0x1000 else t) * 2
@@ -149,24 +187,24 @@ def spin_check(frames: dict) -> dict:
                 on.append(f"speed<={cap}kph({_SPEED_LIMIT_REASON.get(why, why)})")
             limits = ",".join(on) or "none"
             break
-    # 0x126 DIR_hvStatus (2022+): DIR_vBat 0|10 V, DIR_motorCurrent 11|11 A.
+    # *_hvStatus (2022+): vBat 0|10 V, motorCurrent 11|11 A.
     v_bat = i_motor = None
-    for d in fresh(0x126):
+    for d in fresh(unit.hv_id):
         if len(d) >= 3:
             v = int.from_bytes(d[:3], "little")
             v_bat, i_motor = v & 0x3FF, v >> 11 & 0x7FF
             break
     return {"blockers": blockers, "axle_rpm": axle, "traction": traction, "di_state": state,
             "dyno_available": dyno_ok, "torque_nm": torque, "limits": limits,
-            "v_bat": v_bat, "i_motor": i_motor}
+            "v_bat": v_bat, "i_motor": i_motor, "unit_alive": bool(fresh(unit.torque_id))}
 
 
 async def watch_spin_permit(http, url, stop: asyncio.Event, *, period_s=0.1, log=print,
-                            learn: Learn = LEARNS["offset"]) -> None:
+                            learn: Learn = LEARNS["offset"], unit: Unit = DIR) -> None:
     """Log each change in the spin permit, when the axle spins while it is blocked, the
     lift-off point and the once-a-second spin profile."""
     last, warned, traction_warned, last_state = None, False, False, None
-    params = {"ids": ",".join(f"0x{i:X}" for i in SPIN_IDS)}
+    params = _ids_param(unit)
     loop = asyncio.get_running_loop()
     next_speed_log, peak, lift_until = loop.time(), 0.0, 0.0
     while True:  # at least one check, even if the learn ends at once
@@ -175,7 +213,7 @@ async def watch_spin_permit(http, url, stop: asyncio.Event, *, period_s=0.1, log
                 if r.status != 200:
                     log(f"spin check unavailable (/api/frames: HTTP {r.status})")
                     return
-                chk = spin_check((await r.json(content_type=None)).get("frames", {}))
+                chk = spin_check((await r.json(content_type=None)).get("frames", {}), unit)
         except aiohttp.ClientError as e:
             log(f"spin check unavailable: {e}")
             return
@@ -193,7 +231,8 @@ async def watch_spin_permit(http, url, stop: asyncio.Event, *, period_s=0.1, log
                     f"motor {chk.get('i_motor')} A)")
             last_state = state
         if blockers and rpm is not None and abs(rpm) > FAIL_BRAKES_RPM and not warned:
-            log(f"!!! axle {rpm:.0f} rpm while blocked -> the DIR cancels the learn (brakes)")
+            log(f"!!! axle {rpm:.0f} rpm while blocked -> the {unit.node} cancels the learn "
+                "(brakes)")
             warned = True
         if rpm is not None:
             if abs(rpm) > learn.spin_rpm >= peak:
@@ -243,10 +282,10 @@ async def uds_op(http, url, op: str, args: dict | None = None, node: str = "DIR"
                         {"node": node, "op": op, "args": args or {}})).get("result") or {}
 
 
-async def _log_tp_health(http, url, log) -> None:
-    """Print the DIR keep-alive stats -- did WE stall, or did the DIR miss frames we sent?"""
+async def _log_tp_health(http, url, log, node: str = "DIR") -> None:
+    """Print the keep-alive stats -- did WE stall, or did the unit miss frames we sent?"""
     try:
-        async with http.get(url + "/api/uds-health", params={"node": "DIR"}) as r:
+        async with http.get(url + "/api/uds-health", params={"node": node}) as r:
             tp = (await r.json(content_type=None)).get("tp") if r.status == 200 else None
     except aiohttp.ClientError:
         tp = None
@@ -256,12 +295,13 @@ async def _log_tp_health(http, url, log) -> None:
             f"session {tp.get('session')} thread_alive {tp.get('thread_alive')} "
             f"phase {tp.get('phase')!r} interval {tp.get('interval_s')} s")
         if tp.get("thread_alive") is False:
-            log("!!! DIR TesterPresent keep-alive thread is NOT running -> FAIL_NO_TESTER_PRESENT")
+            log(f"!!! {node} TesterPresent keep-alive thread is NOT running -> "
+                "FAIL_NO_TESTER_PRESENT")
     else:
-        log("    TesterPresent: no DIR session in tm3web's ODIN backend")
+        log(f"    TesterPresent: no {node} session in tm3web's ODIN backend")
 
 
-_DU_ECUS = {"DIR", "DI", "PMR"}
+_DU_ECUS = {"DIR", "DI", "PMR", "DIF", "PMF"}
 
 
 async def _alerts(http, url) -> dict | None:
@@ -314,14 +354,13 @@ async def shift(http, url, gear, *, brake_settle_s=0.5, gear_timeout_s=8.0, brak
         log("brake on")
     try:
         if brake:
-            # The shift interlock goes by the DI's debounced brake vote, not the raw CAN
-            # brake: wait for DI_brakePedalState ON (older tm3web: just settle).
+            # Wait for ESP/IBST/VCLEFT to all read pressed on the bus (tm3web brake_vote; older
+            # tm3web: just settle). DI_brakePedalState is useless here: 2022 fw sends INVALID.
             await asyncio.sleep(brake_settle_s)
             deadline = loop.time() + BRAKE_VOTE_TIMEOUT_S
-            while (state := (await _dash(http, url)).get("brake_pedal_state", 1)) != 1:
+            while (vote := (await _dash(http, url)).get("brake_vote", "ON")) != "ON":
                 if loop.time() > deadline:
-                    log(f"DI_brakePedalState {state} (not ON) after {BRAKE_VOTE_TIMEOUT_S} s; "
-                        "shifting anyway")
+                    log(f"brake sources {vote} after {BRAKE_VOTE_TIMEOUT_S} s; shifting anyway")
                     break
                 await asyncio.sleep(0.05)
         deadline = loop.time() + gear_timeout_s
@@ -337,7 +376,7 @@ async def shift(http, url, gear, *, brake_settle_s=0.5, gear_timeout_s=8.0, brak
             if loop.time() > deadline:
                 raise TimeoutError(
                     f"DI_gear still {dash.get('gear')!r} {gear_timeout_s} s after {gear} "
-                    f"(DI_brakePedalState {dash.get('brake_pedal_state')})")
+                    f"(brake sources {dash.get('brake_sources')})")
             await asyncio.sleep(0.02)  # short: in D the creep builds while the brake is on
     finally:
         if brake:
@@ -347,15 +386,20 @@ async def shift(http, url, gear, *, brake_settle_s=0.5, gear_timeout_s=8.0, brak
 
 # Coast-down is over once the speed is back at creep; an un-learned offset keeps the motor
 # creeping (~2 km/h) in P/D, so it never reads 0 before the learn succeeds.
-async def wait_for_standstill(http, url, *, below_kph=3.0, hold_s=1.0, timeout_s=20.0,
-                              log=print) -> bool:
-    """True once DI_vehicleSpeed stays at/below `below_kph` for `hold_s`; False on timeout."""
+async def wait_for_standstill(http, url, *, below_kph=3.0, hold_s=1.0, timeout_s=300.0,
+                              progress_s=30.0, log=print) -> bool:
+    """True once DI_vehicleSpeed stays at/below `below_kph` for `hold_s`; False on timeout.
+    Logs the speed every `progress_s` while it coasts."""
     loop = asyncio.get_running_loop()
-    deadline = loop.time() + timeout_s
+    start = loop.time()
+    deadline, next_progress = start + timeout_s, start + progress_s
     still_since = speed = None
     while loop.time() < deadline:
         speed = (await _dash(http, url)).get("speed_kph")
         now = loop.time()
+        if now >= next_progress:
+            log(f"    still coasting: {speed} km/h after {now - start:.0f} s")
+            next_progress = now + progress_s
         if speed is not None and abs(speed) <= below_kph:
             still_since = still_since if still_since is not None else now
             if now - still_since >= hold_s:
@@ -379,13 +423,12 @@ def _describe(ev: dict) -> str | None:
     return None
 
 
-async def _spin_now(http, url) -> dict | None:
-    params = {"ids": ",".join(f"0x{i:X}" for i in SPIN_IDS)}
+async def _spin_now(http, url, unit: Unit = DIR) -> dict | None:
     try:
-        async with http.get(url + "/api/frames", params=params) as r:
+        async with http.get(url + "/api/frames", params=_ids_param(unit)) as r:
             if r.status != 200:
                 return None
-            return spin_check((await r.json(content_type=None)).get("frames", {}))
+            return spin_check((await r.json(content_type=None)).get("frames", {}), unit)
     except aiohttp.ClientError:
         return None
 
@@ -394,14 +437,15 @@ STILL_RPM = 1.0
 STILL_KPH = 0.3
 
 
-async def wait_spin_ok(http, url, *, still=False, hold_s=1.0, timeout_s=10.0, log=print) -> bool:
+async def wait_spin_ok(http, url, *, still=False, hold_s=1.0, timeout_s=10.0, log=print,
+                       unit: Unit = DIR) -> bool:
     """True once the spin permit is OK (and, with `still`, the axle below STILL_RPM) for
     `hold_s`. True if the check is unavailable (old tm3web)."""
     loop = asyncio.get_running_loop()
     deadline = loop.time() + timeout_s
     ok_since = chk = None
     while loop.time() < deadline:
-        chk = await _spin_now(http, url)
+        chk = await _spin_now(http, url, unit)
         if chk is None:
             log("spin check unavailable; starting without it")
             return True
@@ -457,28 +501,33 @@ RESET_BOOT_TIMEOUT_S = 30.0
 RESET_SETTLE_S = 2.0  # let the pre-reset 0x118 go stale before waiting for the DIR
 
 
-async def reset_dir(http, url, *, why: str, log=print) -> bool:
-    """ECUReset (hard) the DIR and wait for it to broadcast 0x118 again, out of FAULT. Clears
-    its latched states: the one-shot dyno latch, fault op-states behind INVALID_DI_STATE, a
-    stuck learn job."""
-    log(f"DIR ECU reset ({why})")
+async def reset_dir(http, url, *, why: str, log=print, unit: Unit = DIR) -> bool:
+    """ECUReset (hard) the unit and wait for it to come back: the DIR broadcasting 0x118 out
+    of FAULT; the DIF (0x118 is the rear's) broadcasting its torque frame again. Clears its
+    latched states: the one-shot dyno latch, fault op-states behind INVALID_DI_STATE, a stuck
+    learn job."""
+    log(f"{unit.node} ECU reset ({why})")
     try:
-        await uds_op(http, url, "ecu_reset", {"type": "hard"})
+        await uds_op(http, url, "ecu_reset", {"type": "hard"}, node=unit.node)
     except (RuntimeError, aiohttp.ClientError) as e:
-        log(f"DIR reset failed: {e}")
+        log(f"{unit.node} reset failed: {e}")
         return False
     await asyncio.sleep(RESET_SETTLE_S)
     loop = asyncio.get_running_loop()
     deadline = loop.time() + RESET_BOOT_TIMEOUT_S
     chk = None
     while loop.time() < deadline:
-        chk = await _spin_now(http, url)
+        chk = await _spin_now(http, url, unit)
         state = None if chk is None else chk.get("di_state")
-        if state is not None and state not in (0, DI_STATE_FAULT):
+        if unit is not DIR:
+            if chk is not None and chk.get("unit_alive"):
+                log(f"{unit.node} back: 0x{unit.torque_id:X} broadcasting")
+                return True
+        elif state is not None and state not in (0, DI_STATE_FAULT):
             log(f"DIR back: DI_systemState {_DI_STATE.get(state, state)}")
             return True
         await asyncio.sleep(0.2)
-    log(f"DIR not back {RESET_BOOT_TIMEOUT_S:.0f} s after reset: {chk}")
+    log(f"{unit.node} not back {RESET_BOOT_TIMEOUT_S:.0f} s after reset: {chk}")
     return False
 
 
@@ -539,7 +588,8 @@ CAL_DIDS = ("SPEED_SENSOR_ANGLE_OFFSET", "MOTOR_FLUX_REFERENCE", "RESOLVER_CALIB
 
 
 async def backup_cal_dids(http, url, *, node="DIR", log=print) -> Path | None:
-    """Read CAL_DIDS from `node` and save them to dir_cal_backup_<time>.json; None on failure."""
+    """Read CAL_DIDS from `node` and save them to <node>_cal_backup_<time>.json; None on
+    failure."""
     saved = {}
     for did in CAL_DIDS:
         try:
@@ -553,7 +603,7 @@ async def backup_cal_dids(http, url, *, node="DIR", log=print) -> Path | None:
             return None
         saved[did] = {"hex_id": res.get("hex_id"), "raw": res.get("raw"),
                       "fields": res.get("fields")}
-    path = Path(f"dir_cal_backup_{time.strftime('%Y%m%d-%H%M%S')}.json")
+    path = Path(f"{node.lower()}_cal_backup_{time.strftime('%Y%m%d-%H%M%S')}.json")
     path.write_text(json.dumps(saved, indent=1))
     for did, v in saved.items():
         shown = {k: val for k, val in (v["fields"] or {}).items() if k != "ANGLE_ERROR_TABLE"}
@@ -589,18 +639,13 @@ def parse_resolver_result(data: bytes) -> dict:
             "table_nonzero": sum(1 for v in struct.unpack_from(">92h", data, 0) if v)}
 
 
-PARK_WAIT_ROUNDS = 15  # x --standstill-timeout (20 s default): 5 min
+STANDSTILL_TIMEOUT_S = 300.0  # a free DU coasts from ~630 axle rpm for well over a minute
 
 
 async def _park(http, url, timing, standstill_timeout_s, log) -> None:
     log(">>> waiting for the motor to stop")
-    # Never shift to P while spinning: a free DU coasts for minutes. Keep waiting, then leave
-    # P to the operator.
-    for _ in range(PARK_WAIT_ROUNDS):
-        if await wait_for_standstill(http, url, timeout_s=standstill_timeout_s, log=log):
-            break
-        log("    still spinning: not shifting to P yet")
-    else:
+    # Never shift to P while spinning: wait out the coast, then leave P to the operator.
+    if not await wait_for_standstill(http, url, timeout_s=standstill_timeout_s, log=log):
         log("!!! motor still spinning: shift to P yourself once it has stopped")
         return
     try:
@@ -611,7 +656,8 @@ async def _park(http, url, timing, standstill_timeout_s, log) -> None:
 
 
 async def _run_odin(http, ws, url, learn: Learn, body: dict, *, timing, park, start_gear,
-                    standstill_timeout_s, log) -> tuple[dict, str | None, str | None]:
+                    standstill_timeout_s, log, unit: Unit = DIR
+                    ) -> tuple[dict, str | None, str | None]:
     """One ODIN learn procedure with the brake/shift choreography.
     Returns (run result, LEARN_RESULT, START_RESULTS_REASON if START was refused)."""
     in_drive = False
@@ -624,7 +670,7 @@ async def _run_odin(http, ws, url, learn: Learn, body: dict, *, timing, park, st
         in_drive = start_gear == "D"
         log(f"In {start_gear}; waiting for the spin permit"
             + ("" if in_drive else " and a still axle") + " before starting the learn")
-        if not await wait_spin_ok(http, url, still=not in_drive, log=log):
+        if not await wait_spin_ok(http, url, still=not in_drive, log=log, unit=unit):
             return {"exit_code": None, "passed": False}, None, None
         if not in_drive and not await set_traction(http, url, learn.traction, log=log):
             log("traction mode not confirmed; starting anyway (the learn will say why)")
@@ -632,7 +678,7 @@ async def _run_odin(http, ws, url, learn: Learn, body: dict, *, timing, park, st
     learn_result = refused = None
     shifted = False
     watch_stop = asyncio.Event()
-    watcher = None
+    watcher = park_task = None
     go = (f"Release the pedal and press the accelerator now: past {learn.spin_rpm:.0f} axle "
           f"rpm (under {learn.overspeed_rpm:.0f}), then lift off at once when told.")
     while not run_task.done():
@@ -640,6 +686,9 @@ async def _run_odin(http, ws, url, learn: Learn, body: dict, *, timing, park, st
             msg = await ws.receive(timeout=0.2)
         except TimeoutError:
             continue
+        except aiohttp.ClientError as e:  # tm3web went away; keep what the learn reported
+            log(f"tm3web connection lost: {e}")
+            break
         if msg.type != aiohttp.WSMsgType.TEXT:
             if msg.type in (aiohttp.WSMsgType.CLOSED, aiohttp.WSMsgType.ERROR):
                 break
@@ -653,26 +702,29 @@ async def _run_odin(http, ws, url, learn: Learn, body: dict, *, timing, park, st
         results = (ev.get("metadata") or {}).get("results") or {}
         if ev.get("metric") == learn.result_metric:
             learn_result = results.get("LEARN_RESULT")
-            await _log_tp_health(http, url, log)
+            await _log_tp_health(http, url, log, unit.node)
             watch_stop.set()
             if park and in_drive:
-                # The procedure now waits for P; only shift once the motor has stopped.
+                # The procedure now waits for P; only shift once the motor has stopped. Park in
+                # the background: the coast can outlast tm3web's 30 s ws heartbeat, and an
+                # unread ws misses its pings and gets closed.
                 log(f">>> learn finished ({learn_result})")
-                await _park(http, url, timing, standstill_timeout_s, log)
+                park_task = asyncio.create_task(
+                    _park(http, url, timing, standstill_timeout_s, log))
                 in_drive = False
         if ev.get("metric") == learn.start_metric and not shifted:
             shifted = True
             started = results.get("START_ROUTINE_RESULTS")
-            await _log_tp_health(http, url, log)
+            await _log_tp_health(http, url, log, unit.node)
             if started != "SUCCESSFUL":
                 refused = results.get("START_RESULTS_REASON") or str(started)
                 log(f"START {started!r} ({refused}): not shifting")
                 if refused in ("NO_OFFSET_CALIBRATION", "NO_FLUX_CALIBRATION"):
-                    log("    the DIR has no stored offset/flux calibration: restore it "
-                        "(0x306/0x309) or run --learn offset/all first")
+                    log(f"    the {unit.node} has no stored offset/flux calibration: restore "
+                        "it (0x306/0x309) or run --learn offset/all first")
                 continue
             watcher = asyncio.create_task(
-                watch_spin_permit(http, url, watch_stop, log=log, learn=learn))
+                watch_spin_permit(http, url, watch_stop, log=log, learn=learn, unit=unit))
             if in_drive:
                 log(">>> Learn running in D. " + go)
                 continue
@@ -690,7 +742,16 @@ async def _run_odin(http, ws, url, learn: Learn, body: dict, *, timing, park, st
     watch_stop.set()
     if watcher is not None:
         await watcher
-    return await run_task, learn_result, refused
+    if park_task is not None:
+        await park_task
+    try:
+        result = await run_task
+    except aiohttp.ClientError as e:
+        # The procedure's own exit is lost; the learn's result metric (if it came) still stands.
+        log(f"tm3web closed the ODIN run ({e!r}); LEARN_RESULT {learn_result}")
+        ok = learn_result == "SUCCESS"
+        result = {"exit_code": 0 if ok else None, "passed": ok, "disconnected": True}
+    return result, learn_result, refused
 
 
 START_WINDOW_S = 30.0
@@ -698,24 +759,25 @@ RESULTS_TIMEOUT_S = 90.0
 
 
 async def _run_resolver_dyno(http, url, learn: Learn, *, timing, park, standstill_timeout_s,
-                             log) -> tuple[dict, str | None]:
+                             log, unit: Unit = DIR) -> tuple[dict, str | None]:
     """LEGACY_RESOLVER_LEARNING (0x407): dyno in N, spin in D, then N and START until armed."""
     fail = {"exit_code": None, "passed": False}
+    node = unit.node
     try:
         await shift(http, url, "N", **timing)
     except (TimeoutError, RuntimeError, aiohttp.ClientError) as e:
         log(f"shift to N failed: {e}; not starting")
         return fail, None
-    if not await wait_spin_ok(http, url, still=True, log=log):
+    if not await wait_spin_ok(http, url, still=True, log=log, unit=unit):
         return fail, None
     if not await set_traction(http, url, TRACTION_DYNO, log=log):
         log("DYNO not confirmed: 0x407 START would be refused (try --reset before)")
         return fail, None
     try:
-        await uds_op(http, url, "session", {"mode": "extended"})
-        await uds_op(http, url, "tester_present", {"on": True})
+        await uds_op(http, url, "session", {"mode": "extended"}, node=node)
+        await uds_op(http, url, "tester_present", {"on": True}, node=node)
     except (RuntimeError, aiohttp.ClientError) as e:
-        log(f"DIR extended session failed: {e}")
+        log(f"{node} extended session failed: {e}")
         return fail, None
     try:
         await shift(http, url, "D", **timing)
@@ -726,12 +788,13 @@ async def _run_resolver_dyno(http, url, learn: Learn, *, timing, park, standstil
         "shifts to N there. Then lift off and let it coast.")
     loop = asyncio.get_running_loop()
     watch_stop = asyncio.Event()
-    watcher = asyncio.create_task(watch_spin_permit(http, url, watch_stop, log=log, learn=learn))
+    watcher = asyncio.create_task(
+        watch_spin_permit(http, url, watch_stop, log=log, learn=learn, unit=unit))
     result_name = None
     try:
         deadline = loop.time() + 60.0
         while True:  # wait for the spin
-            chk = await _spin_now(http, url) or {}
+            chk = await _spin_now(http, url, unit) or {}
             rpm = chk.get("axle_rpm")
             if rpm is not None and abs(rpm) >= learn.spin_rpm:
                 break
@@ -751,8 +814,8 @@ async def _run_resolver_dyno(http, url, learn: Learn, *, timing, park, standstil
         while True:
             try:
                 await uds_op(http, url, "routine_control",
-                             {"routine_id": f"{RID_RESOLVER_LEARN:04X}", "subtype": 1})
-                chk = await _spin_now(http, url) or {}
+                             {"routine_id": f"{RID_RESOLVER_LEARN:04X}", "subtype": 1}, node=node)
+                chk = await _spin_now(http, url, unit) or {}
                 log(f">>> 0x407 armed {loop.time() - t_n:.1f} s after N "
                     f"(axle {chk.get('axle_rpm')} rpm). Capturing {RESOLVER_CAPTURE_RPM[1]:.0f}"
                     f" -> {RESOLVER_CAPTURE_RPM[0]:.0f} rpm: no brake, no accelerator.")
@@ -761,11 +824,11 @@ async def _run_resolver_dyno(http, url, learn: Learn, *, timing, park, standstil
                 last_err = str(e)
             now = loop.time()
             if now >= next_err_log:
-                chk = await _spin_now(http, url) or {}
+                chk = await _spin_now(http, url, unit) or {}
                 log(f"    START refused ({last_err}) {now - t_n:.1f} s after N, "
                     f"axle {chk.get('axle_rpm')} rpm")
                 next_err_log = now + 1.0
-            rpm = (await _spin_now(http, url) or {}).get("axle_rpm")
+            rpm = (await _spin_now(http, url, unit) or {}).get("axle_rpm")
             if (rpm is not None and abs(rpm) < RESOLVER_START_RPM - 10) \
                     or now - t_n > START_WINDOW_S:
                 log(f"!!! 0x407 never armed ({now - t_n:.1f} s after N, axle {rpm} rpm): the "
@@ -778,7 +841,8 @@ async def _run_resolver_dyno(http, url, learn: Learn, *, timing, park, standstil
             await asyncio.sleep(0.5)
             try:
                 res = await uds_op(http, url, "routine_control",
-                                   {"routine_id": f"{RID_RESOLVER_LEARN:04X}", "subtype": 3})
+                                   {"routine_id": f"{RID_RESOLVER_LEARN:04X}", "subtype": 3},
+                                   node=node)
             except (RuntimeError, aiohttp.ClientError) as e:
                 log(f"    results: {e}")
                 continue
@@ -805,22 +869,27 @@ RESET_MODES = ("auto", "before", "after", "both", "never")
 
 
 async def run(url: str, *, learn: str = "offset", brake_settle_s=0.5, gear_timeout_s=8.0,
-              park=True, standstill_timeout_s=20.0, start_gear="N",
+              park=True, standstill_timeout_s=STANDSTILL_TIMEOUT_S, start_gear="N",
               learn_select: str | None = None, rotor_temp_c=None, backup=True,
-              reset: str = "auto", log=print) -> dict:
+              reset: str = "auto", node: str = "DIR", log=print) -> dict:
     """start_gear (rolls learns): gear to START in. "N" (default): the only gear where an
     un-learned offset doesn't creep the rotor (START refuses MOTOR_SPEED_DETECTED); D follows
     START with a fast brake release. "D": START in D. None: START in the current gear.
     learn_select overrides the learn's LEARN_SELECT; rotor_temp_c: see routine_params ("auto"
-    reads the stator, else oil, temperature from the bus before START). reset: RESET_MODES."""
+    reads the stator, else oil, temperature from the bus before START). reset: RESET_MODES.
+    node: the unit under test (UNITS)."""
     spec = LEARNS[learn]
+    unit = UNITS[node]
+    fail = {"exit_code": None, "passed": False}
+    if spec.learn_select is not None and not unit.rotor_learn:
+        log(f"{node} has no rotor offset/flux learn (induction motor; 0x406 is a stub)")
+        return fail
     if learn_select is None:
         learn_select = spec.learn_select
     url = url.rstrip("/")
     timing = {"brake_settle_s": brake_settle_s, "gear_timeout_s": gear_timeout_s, "log": log}
-    fail = {"exit_code": None, "passed": False}
     async with aiohttp.ClientSession() as http, http.ws_connect(url + "/ws/odin") as ws:
-        if backup and await backup_cal_dids(http, url, log=log) is None:
+        if backup and await backup_cal_dids(http, url, node=node, log=log) is None:
             log("calibration backup failed; not starting (--no-backup to skip)")
             return fail
         if rotor_temp_c == "auto":
@@ -829,36 +898,37 @@ async def run(url: str, *, learn: str = "offset", brake_settle_s=0.5, gear_timeo
                 log("no plausible stator or oil temperature on the bus; not starting "
                     "(pass --rotor-temp C)")
                 return fail
-        chk = await _spin_now(http, url) or {}
+        chk = await _spin_now(http, url, unit) or {}
         why = None
+        # 0x118 (state, dyno latch) is the DIR's: only an auto reason for resetting the DIR.
         if reset in ("before", "both"):
             why = "--reset " + reset
-        elif reset == "auto" and chk.get("di_state") == DI_STATE_FAULT:
+        elif reset == "auto" and unit is DIR and chk.get("di_state") == DI_STATE_FAULT:
             why = "DI_systemState FAULT"
-        elif reset == "auto" and spec.traction == TRACTION_DYNO \
+        elif reset == "auto" and unit is DIR and spec.traction == TRACTION_DYNO \
                 and chk.get("dyno_available") == 0:
             why = "dyno latched unavailable"
-        if why and not await reset_dir(http, url, why=why, log=log):
+        if why and not await reset_dir(http, url, why=why, log=log, unit=unit):
             return fail
         alerts_before = await alert_log_keys(http, url)
         if spec.procedure is None:
             result, learn_result = await _run_resolver_dyno(
                 http, url, spec, timing=timing, park=park,
-                standstill_timeout_s=standstill_timeout_s, log=log)
+                standstill_timeout_s=standstill_timeout_s, log=log, unit=unit)
         else:
-            body = {"procedure": spec.procedure}
+            body = {"procedure": procedure(spec, unit)}
             if over := routine_params(learn_select, rotor_temp_c):
                 body["routine_params"] = over
                 log(f"START params override: {over['ROTOR_LEARNING']}")
             kw = {"timing": timing, "park": park, "start_gear": start_gear,
-                  "standstill_timeout_s": standstill_timeout_s, "log": log}
+                  "standstill_timeout_s": standstill_timeout_s, "log": log, "unit": unit}
             result, learn_result, refused = await _run_odin(http, ws, url, spec, body, **kw)
             if refused == "INVALID_DI_STATE" and reset != "never" and await reset_dir(
-                    http, url, why="START refused INVALID_DI_STATE", log=log):
+                    http, url, why="START refused INVALID_DI_STATE", log=log, unit=unit):
                 result, learn_result, _ = await _run_odin(http, ws, url, spec, body, **kw)
         await log_du_alerts(http, url, alerts_before, log=log)
         if reset in ("after", "both"):
-            await reset_dir(http, url, why="--reset " + reset, log=log)
+            await reset_dir(http, url, why="--reset " + reset, log=log, unit=unit)
     log(f"exit {result.get('exit_code')} · LEARN_RESULT {learn_result}")
     return result
 
@@ -884,12 +954,15 @@ def main(argv=None, *, default_learn: str = "offset") -> int:
     p.add_argument("--learn", choices=list(LEARNS), default=default_learn,
                    help="offset (Tesla's default), flux, all (offset + flux), resolver-error "
                         "(0x409, rolls) or resolver (0x407, dyno)")
+    p.add_argument("--node", choices=list(UNITS), default="DIR",
+                   help="unit under test: DIR (rear) or DIF (AWD front; resolver learns only, "
+                        "the real DIR must be on the bus)")
     p.add_argument("--rotor-temp", type=_rotor_temp_arg, default=None,
                    help="rotor temperature in C for the START, or 'auto' (stator temperature, "
                         "else oil pump fluid temperature; cold-soaked unit only). Required for "
                         "--learn flux/all (the flux is corrected to 25 C with it)")
     p.add_argument("--reset", choices=RESET_MODES, default="auto",
-                   help="DIR ECU reset: auto (when a latched state would block the learn), "
+                   help="ECU reset of the unit: auto (when a latched state would block the learn), "
                         "before, after, both, never")
     p.add_argument("--spin-rpm", type=float, default=None,
                    help="axle rpm to reach before lifting off (default: the learn's target)")
@@ -900,11 +973,15 @@ def main(argv=None, *, default_learn: str = "offset") -> int:
     p.add_argument("--no-park", action="store_true", help="leave the shift to P to the operator")
     p.add_argument("--start-gear", choices=["N", "D", "current"], default="N",
                    help="rolls learns: gear to START in (default N: the rotor is still there)")
-    p.add_argument("--standstill-timeout", type=float, default=20.0,
-                   help="seconds per standstill check before P (retried; P only once stopped)")
+    p.add_argument("--standstill-timeout", type=float, default=STANDSTILL_TIMEOUT_S,
+                   help="max seconds to wait for the motor to stop before P (default 300); "
+                        "P is never requested while it still spins")
     p.add_argument("--no-backup", action="store_true",
                    help="skip saving the offset/flux/resolver DIDs before START")
     args = p.parse_args(argv)
+    if LEARNS[args.learn].learn_select is not None and not UNITS[args.node].rotor_learn:
+        p.error(f"{args.node} has no rotor offset/flux learn (induction motor): use "
+                "--learn resolver-error or resolver")
     if LEARNS[args.learn].needs_temp and args.rotor_temp is None:
         p.error("--learn flux/all needs --rotor-temp (the motor's actual temperature)")
     if args.spin_rpm is not None:
@@ -917,7 +994,7 @@ def main(argv=None, *, default_learn: str = "offset") -> int:
                                  start_gear=None if args.start_gear == "current"
                                  else args.start_gear,
                                  rotor_temp_c=args.rotor_temp, backup=not args.no_backup,
-                                 reset=args.reset))
+                                 reset=args.reset, node=args.node))
     except KeyboardInterrupt:
         asyncio.run(_cancel(args.url))
         return 130

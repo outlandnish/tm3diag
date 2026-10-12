@@ -52,8 +52,10 @@ log = logging.getLogger("tm3web")
 # --- dashboard: DI signals we surface as a driver HUD -----
 # Decoded every flush tick regardless of viewer subscriptions so the dashboard
 # always has fresh state. 0x118 DI_systemStatus, 0x257 DI_speed, 0x256 DIR_status,
-# 0x2B6 DI_chassisControlStatus (the real telltale lamps: VDC / TC / vehicle-hold).
-_DASH_IDS = (0x118, 0x257, 0x256, 0x2B6)
+# 0x2B6 DI_chassisControlStatus (the real telltale lamps: VDC / TC / vehicle-hold), and the
+# DI's brake-vote inputs: 0x145 ESP_status, 0x39D IBST_status, 0x3C2 VCLEFT_switchStatus.
+# + HV power: DIR_hvStatus 0x126 (vBat, dcCableCurrentEst), DIR_power 0x266, DI_systemPower 0x268
+_DASH_IDS = (0x118, 0x257, 0x256, 0x2B6, 0x145, 0x39D, 0x3C2, 0x126, 0x266, 0x268)
 
 # Active alert-matrix bits are surfaced as a faults panel. Names matching these
 # hints are bench HARDWARE faults (no motor / HV / resolver wired) — flagged so
@@ -271,6 +273,26 @@ def _record_alertlog(store: dict, dec, can_id: int, data: bytes, ts: float,
     ent["count"] += 1
 
 
+def _brake_sources(sig: dict[str, object]) -> dict[str, bool | None]:
+    """The DI's brake-vote inputs as seen on the bus: True pressed, False released, None
+    missing / not initialised / faulted. 2022+ DIRs always send DI_brakePedalState INVALID,
+    so these are the only view of the brake."""
+    def apply(name: str) -> bool | None:  # *_driverBrakeApply: 1 not applied, 2 applying
+        v = sig.get(name)
+        return {1: False, 2: True}.get(int(v)) if v is not None else None
+    vcl = sig.get("VCLEFT_brakeSwitchPressed")
+    return {"ESP": apply("ESP_driverBrakeApply"), "IBST": apply("IBST_driverBrakeApply"),
+            "VCLEFT": bool(vcl) if vcl is not None else None}
+
+
+def _brake_vote(sources: dict[str, bool | None]) -> str | None:
+    """ON / OFF when every source agrees, MISMATCH otherwise; None before any has arrived."""
+    vals = set(sources.values())
+    if vals == {None}:
+        return None
+    return {frozenset({True}): "ON", frozenset({False}): "OFF"}.get(frozenset(vals), "MISMATCH")
+
+
 def _build_dash_snapshot(
     sig: dict[str, object], sim_state: dict | None, faults: dict[str, bool] | None = None
 ) -> dict:
@@ -289,6 +311,8 @@ def _build_dash_snapshot(
     limp = as_int("DIR_sysLimpRequest")
     drive_blocked = as_int("DI_driveBlocked")
     brake = as_int("DI_brakePedalState")
+    brake_sources = _brake_sources(sig)
+    brake_vote = _brake_vote(brake_sources)
     epb = as_int("DI_epbRequest")
     regen = as_int("DI_regenLight")
     # DI_chassisControlStatus 0x2B6 — the actual telltale lamps.
@@ -311,14 +335,32 @@ def _build_dash_snapshot(
             "lit": bool(drive_blocked),
         },
         {"id": "limp", "label": "LIMP MODE", "level": "danger", "lit": limp == 1},
-        {"id": "brake", "label": "BRAKE", "level": "warn", "lit": brake in (2, 3)},
+        {"id": "brake", "label": "BRAKE", "level": "warn", "lit": brake_vote == "MISMATCH"},
         {"id": "parkBrake", "label": "PARK BRAKE", "level": "warn", "lit": bool(epb)},
         {"id": "regen", "label": "REGEN", "level": "info", "lit": regen == 1},
     ]
 
+    # HV power: + = discharge (drive), - = regen. V x I from 0x126 (0.1 A) is finer than
+    # DIR_elecPower's 0.5 kW steps; fall back to it when either is missing.
+    def fnum(name: str) -> float | None:
+        v = sig.get(name)
+        return float(v) if isinstance(v, (int, float)) and not isinstance(v, bool) else None
+
+    bus_v, dc_a, elec_kw = fnum("DIR_vBat"), fnum("DIR_dcCableCurrentEst"), fnum("DIR_elecPower")
+    power_kw = bus_v * dc_a / 1000.0 if bus_v is not None and dc_a is not None else elec_kw
+    hv_power = {
+        "bus_v": bus_v,
+        "dc_a": _num(dc_a),
+        "power_kw": _num(power_kw),
+        "elec_kw": elec_kw,
+        "drive_max_kw": fnum("DI_sysDrivePowerMax"),
+        "regen_max_kw": fnum("DI_sysRegenPowerMax"),
+    }
+
     st = sim_state or {}
     return {
         "connected": any(v is not None for v in (gear_raw, immo_raw, sys_raw)),
+        "hv_power": hv_power,
         "control": sim_state is not None,
         "commanded_gear": st.get("commanded_gear"),
         "speed_kph": _num(g("DI_vehicleSpeed")),
@@ -335,9 +377,16 @@ def _build_dash_snapshot(
         "lv_state": st.get("lv_state"),
         "lv_options": st.get("lv_options", []),
         "brake_pressed": st.get("brake_pressed"),
-        "brake_pedal_state": brake,  # DI_brakePedalState: what the DI concluded (0 OFF 1 ON 2 INVALID)
+        # DI_brakePedalState (0 OFF 1 ON 2 INVALID): the wired switch pre-2022, always 2 after.
+        "brake_pedal_state": brake,
+        "brake_sources": brake_sources,  # ESP / IBST / VCLEFT on the bus
+        "brake_vote": brake_vote,        # ON / OFF / MISMATCH / None
         "brake_pressure": st.get("brake_pressure"),
         "brake_controllable": st.get("brake_controllable", False),
+        "torque_limit": st.get("torque_limit"),  # ESP 0x105 drive-torque limit, Nm; None = none
+        "torque_limit_controllable": st.get("torque_limit_controllable", False),
+        "bms_limits": st.get("bms_limits", {}),  # BMS 0x2D2/0x252 pack limits
+        "bms_limits_schema": st.get("bms_limits_schema", {}),
         "ui": st.get("ui"),
         "ui_schema": st.get("ui_schema", {}),
     }
@@ -1127,6 +1176,16 @@ async def _api_brake(request: web.Request) -> web.Response:
     return await _forward_cmd(request, "brake")
 
 
+async def _api_torque_limit(request: web.Request) -> web.Response:
+    """POST {"nm": 0-8190 | null} — ESP 0x105 drive-torque limit (null = no limit)."""
+    return await _forward_cmd(request, "torque_limit")
+
+
+async def _api_bms_limit(request: web.Request) -> web.Response:
+    """POST {"field": "max_charge_current", "value": 10} — set a BMS pack limit (via sim)."""
+    return await _forward_cmd(request, "bms_limit")
+
+
 async def _api_carconfig(request: web.Request) -> web.Response:
     """GET the GTW_carConfig schema (from vehicle_sim); POST {"signal","value"} to set."""
     if request.method == "GET":
@@ -1206,6 +1265,8 @@ def _build_app(
     app.router.add_post("/api/ui", _api_ui)
     app.router.add_post("/api/lv", _api_lv)
     app.router.add_post("/api/brake", _api_brake)
+    app.router.add_post("/api/torque-limit", _api_torque_limit)
+    app.router.add_post("/api/bms-limit", _api_bms_limit)
     app.router.add_get("/api/carconfig", _api_carconfig)
     app.router.add_post("/api/carconfig", _api_carconfig)
     app.router.add_get("/ws", _ws_handler)

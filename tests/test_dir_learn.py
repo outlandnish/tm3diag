@@ -18,14 +18,17 @@ def _fast(monkeypatch, tmp_path):
 def _fake_tm3web(start_results=("SUCCESSFUL",), start_reason="INVALID_DI_STATE",
                  gear_delay_s=0.15, coast_s=0.3, learn="offset", di_state=2, dyno_available=1,
                  standby_after_s=0.3, spin_to=700.0, coast_rpm_per_tick=8.0, did_fail=False,
-                 dir_fault=False):
+                 dir_fault=False, disconnect=False):
     """A tm3web + DIR that follows the requested gear/traction/brake. In dyno + D the operator
     "spins" the axle to `spin_to`; in N it coasts down. 0x407 START is accepted once the car
     has been in N for `standby_after_s` and the axle is above the gate. `dir_fault`: the DIR
-    faults in D (DI_systemState FAULT + an a016 alertLog) and the learn ends FAIL_DI_FAULT."""
+    faults in D (DI_systemState FAULT + an a016 alertLog) and the learn ends FAIL_DI_FAULT.
+    `disconnect`: tm3web drops the ws and the ODIN run right after the learn's result. The
+    DIF (AWD front) broadcasts the same frames at its own IDs, with vBat 351 V."""
     spec = dir_learn.LEARNS[learn]
     st = {"calls": [], "gear": "P", "brake": False, "speed": 0.0, "rpm": 0.0, "traction": 0,
           "state": di_state, "dyno": dyno_available, "ws": set(), "ui": [], "uds": [],
+          "uds_nodes": set(), "did_nodes": set(),
           "t_n": None, "polls": 0, "starts": list(start_results), "runs": 0,
           # tm3web's /api/alerts: an old DIR entry, a DI entry that gets logged again, and a
           # non-DU fault that must not be reported
@@ -94,6 +97,7 @@ def _fake_tm3web(start_results=("SUCCESSFUL",), start_reason="INVALID_DI_STATE",
         body = await request.json()
         op, args = body["op"], body.get("args") or {}
         st["uds"].append((op, args.get("subtype")))
+        st["uds_nodes"].add(body["node"])
         if op == "ecu_reset":
             st["state"], st["dyno"], st["traction"] = 2, 1, 0
             return web.json_response({"result": {"sent": "11 01"}})
@@ -113,6 +117,7 @@ def _fake_tm3web(start_results=("SUCCESSFUL",), start_reason="INVALID_DI_STATE",
         if did_fail:
             return web.json_response({"error": "NRC 0x31"}, status=400)
         body = await request.json()
+        st["did_nodes"].add(body["node"])
         return web.json_response({"hex_id": "0x0306", "raw": "00", "fields": {body["did"]: 0}})
 
     async def frames(_request):  # a healthy spin permit + the DIR's live state
@@ -122,9 +127,10 @@ def _fake_tm3web(start_results=("SUCCESSFUL",), start_reason="INVALID_DI_STATE",
         b118[2] = st["state"]
         b118[5] = st["traction"] | st["dyno"] << 3
         b126 = (350 | 47 << 11).to_bytes(3, "little") + bytes(5)  # DIR_vBat 350 V, 47 A
+        b1a5 = (351 | 47 << 11).to_bytes(3, "little") + bytes(5)  # DIF_vBat 351 V
         good = {"0x39D": "a00a010000", "0x2A8": "0100000000000000", "0x2E8": "0100000000000000",
                 "0x185": "0000000000000000", "0x108": b108.hex(), "0x118": b118.hex(),
-                "0x126": b126.hex()}
+                "0x126": b126.hex(), "0x186": b108.hex(), "0x1A5": b1a5.hex()}
         return web.json_response(
             {"frames": {k: {"can0": {"data": v, "age_s": 0.05}} for k, v in good.items()}})
 
@@ -177,6 +183,12 @@ def _fake_tm3web(start_results=("SUCCESSFUL",), start_reason="INVALID_DI_STATE",
         asyncio.get_running_loop().create_task(coast())
         await broadcast({"type": "metric", "metric": spec.result_metric, "result_code": 2,
                          "metadata": {"results": {"LEARN_RESULT": learn_result}}})
+        await broadcast({"type": "trace", "depth": 0, "message": "teardown: waiting for P"})
+        if disconnect:
+            for ws in list(st["ws"]):
+                await ws.close()
+            request.transport.abort()
+            return web.json_response({})
         if ok:  # teardown waits for P
             ok = await wait_for(lambda: st["gear"] == "P" and not st["brake"], tries=150)
         ok = ok and learn_result == "SUCCESS"
@@ -364,17 +376,94 @@ def _park(monkeypatch, standstill):
     return calls, lines
 
 
-def test_park_waits_for_the_motor_to_stop_before_p(monkeypatch):
-    calls, lines = _park(monkeypatch, [False, False, True])
-    assert calls == ["P"]
-    assert lines.count("    still spinning: not shifting to P yet") == 2
+def test_park_shifts_to_p_once_the_motor_has_stopped(monkeypatch):
+    calls, lines = _park(monkeypatch, [True])
+    assert calls == ["P"] and lines[-1] == ">>> In P."
 
 
 def test_park_never_shifts_to_p_while_still_spinning(monkeypatch):
-    monkeypatch.setattr(dir_learn, "PARK_WAIT_ROUNDS", 3)
-    calls, lines = _park(monkeypatch, [False] * 3)
+    calls, lines = _park(monkeypatch, [False])
     assert calls == []
     assert lines[-1].startswith("!!! motor still spinning: shift to P yourself")
+
+
+def _standstill(monkeypatch, speeds, **kw):
+    """wait_for_standstill against DI_vehicleSpeed readings `speeds` (the last one repeats)."""
+    seq, lines = list(speeds), []
+
+    async def dash(*_a):
+        return {"speed_kph": seq.pop(0) if len(seq) > 1 else seq[0]}
+
+    monkeypatch.setattr(dir_learn, "_dash", dash)
+    ok = asyncio.run(dir_learn.wait_for_standstill(None, "u", log=lines.append, **kw))
+    return ok, lines
+
+
+def test_standstill_needs_the_speed_held_low(monkeypatch):
+    ok, _ = _standstill(monkeypatch, [20.0, 2.0, 9.0, 1.0], hold_s=0.2)
+    assert ok
+
+
+def test_standstill_logs_the_coast_and_gives_up(monkeypatch):
+    ok, lines = _standstill(monkeypatch, [16.0], timeout_s=0.5, progress_s=0.2)
+    assert not ok
+    assert any(line.startswith("    still coasting: 16.0 km/h") for line in lines)
+    assert lines[-1] == "motor not confirmed stopped after 0.5 s (speed_kph 16.0)"
+
+
+def _shift(monkeypatch, votes, **kw):
+    """shift() to D against tm3web brake_vote readings `votes` (the last one repeats)."""
+    seq, calls, lines = list(votes), [], []
+    st = {"gear": "P"}
+
+    async def dash(*_a):
+        vote = seq.pop(0) if len(seq) > 1 else seq[0]
+        return {"gear": st["gear"], **({} if vote is None else {"brake_vote": vote})}
+
+    async def post(_h, _u, path, body):
+        calls.append((path, body))
+        if path == "/api/gear":
+            st["gear"] = body["value"]
+
+    monkeypatch.setattr(dir_learn, "_dash", dash)
+    monkeypatch.setattr(dir_learn, "_post", post)
+    monkeypatch.setattr(dir_learn, "BRAKE_VOTE_TIMEOUT_S", 0.3)
+    asyncio.run(dir_learn.shift(None, "u", "D", brake_settle_s=0, log=lines.append, **kw))
+    return calls, lines
+
+
+def test_shift_waits_until_esp_ibst_vcleft_read_pressed(monkeypatch):
+    calls, lines = _shift(monkeypatch, ["OFF", "MISMATCH", "ON"])
+    assert [c[0] for c in calls] == ["/api/brake", "/api/gear", "/api/brake"]
+    assert not any("shifting anyway" in line for line in lines)
+
+
+def test_shift_goes_ahead_when_the_brake_sources_disagree(monkeypatch):
+    calls, lines = _shift(monkeypatch, ["MISMATCH"])
+    assert "brake sources MISMATCH after 0.3 s; shifting anyway" in lines
+    assert ("/api/gear", {"value": "D"}) in calls
+
+
+def test_shift_just_settles_on_an_older_tm3web(monkeypatch):
+    calls, lines = _shift(monkeypatch, [None])  # no brake_vote in the snapshot
+    assert [c[0] for c in calls] == ["/api/brake", "/api/gear", "/api/brake"]
+    assert not any("shifting anyway" in line for line in lines)
+
+
+def test_parking_does_not_stall_the_ws():
+    # The coast outlasts tm3web's ws heartbeat: park in the background and keep reading the ws.
+    app, st = _fake_tm3web(coast_s=0.3)
+    result, lines = _run(app)
+    assert lines.index("teardown: waiting for P") < lines.index(">>> In P.")
+    assert result["passed"]
+
+
+def test_tm3web_dropping_the_run_keeps_the_learn_result():
+    app, st = _fake_tm3web(disconnect=True)
+    result, lines = _run(app)
+    assert result == {"exit_code": 0, "passed": True, "disconnected": True}
+    assert any(line.startswith("tm3web closed the ODIN run") for line in lines)
+    assert st["gear"] == "P"  # still parked once the motor stopped
 
 
 # -- resets -------------------------------------------------------------------------------
@@ -460,6 +549,75 @@ def test_resolver_learn_stops_if_dyno_is_not_confirmed():
     assert not any(u[0] == "routine_control" for u in st["uds"])
     assert any("DYNO not confirmed" in line for line in lines)
     assert not result["passed"]
+
+
+# -- DIF (AWD front) -------------------------------------------------------------------------
+
+def test_dif_resolver_error_learn_runs_on_the_dif(tmp_path):
+    app, st = _fake_tm3web(learn="resolver-error")
+    result, lines = _run(app, learn="resolver-error", node="DIF")
+    assert st["body"] == {"procedure": "Gen3/tasks/PROC_DIF_X_RESOLVER-ERROR-LEARN"}
+    assert st["did_nodes"] == {"DIF"}
+    assert next(tmp_path.glob("dif_cal_backup_*.json"))
+    assert any("vBat 351 V" in line for line in lines)  # DIF_hvStatus, not the DIR's
+    assert result["passed"]
+
+
+def test_dif_dyno_resolver_learn_talks_to_the_dif():
+    app, st = _fake_tm3web(learn="resolver")
+    result, _ = _run(app, learn="resolver", node="DIF")
+    assert ("routine_control", 3) in st["uds"]
+    assert st["uds_nodes"] == {"DIF"}
+    assert result["passed"]
+
+
+def test_dif_invalid_di_state_resets_the_dif():
+    app, st = _fake_tm3web(learn="resolver-error",
+                           start_results=("FAILED_INCORRECT_CONDITIONS", "SUCCESSFUL"))
+    result, lines = _run(app, learn="resolver-error", node="DIF")
+    assert st["uds_nodes"] == {"DIF"} and ("ecu_reset", None) in st["uds"]
+    assert "DIF back: 0x186 broadcasting" in lines
+    assert result["passed"]
+
+
+def test_a_dir_fault_does_not_reset_the_dif():
+    # 0x118 is the rear's: its FAULT is no reason to reset the front.
+    app, st = _fake_tm3web(learn="resolver-error", di_state=3)
+    result, _ = _run(app, learn="resolver-error", node="DIF")
+    assert not st["uds"]
+    assert result["passed"]
+
+
+@pytest.mark.parametrize("learn", ["offset", "flux", "all"])
+def test_dif_has_no_rotor_learn(learn):
+    app, st = _fake_tm3web()
+    result, lines = _run(app, learn=learn, node="DIF", rotor_temp_c=20.0)
+    assert st["runs"] == 0 and st["calls"] == [] and not st["did_nodes"]
+    assert any("no rotor offset/flux learn" in line for line in lines)
+    assert not result["passed"]
+    with pytest.raises(SystemExit):
+        dir_learn.main(["--node", "DIF", "--learn", learn, "--rotor-temp", "20"])
+
+
+def test_procedure_names_follow_the_unit():
+    dif = dir_learn.UNITS["DIF"]
+    assert dir_learn.procedure(dir_learn.LEARNS["offset"]) == \
+        "Gen3/tasks/PROC_DIR_X_ROTOR-OFFSET-LEARN"
+    assert dir_learn.procedure(dir_learn.LEARNS["resolver-error"], dif) == \
+        "Gen3/tasks/PROC_DIF_X_RESOLVER-ERROR-LEARN"
+    assert dir_learn.procedure(dir_learn.LEARNS["resolver"], dif) is None  # raw UDS
+
+
+def test_spin_check_reads_the_units_own_frames():
+    b = bytearray(8)
+    b[5:7] = (2000).to_bytes(2, "little")  # 200 rpm
+    f = _frames(**{"0x108": "0000000000e803", "0x186": b.hex()})  # DIR 100 rpm, DIF 200 rpm
+    dif = dir_learn.UNITS["DIF"]
+    assert dir_learn.spin_check(f)["axle_rpm"] == 100.0
+    assert dir_learn.spin_check(f, dif)["axle_rpm"] == 200.0
+    assert dir_learn.spin_check(f, dif)["unit_alive"]
+    assert not dir_learn.spin_check(_frames(), dif)["unit_alive"]
+    assert "DIF" in dir_learn._DU_ECUS and "PMF" in dir_learn._DU_ECUS
 
 
 # -- pure helpers -------------------------------------------------------------------------

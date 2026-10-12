@@ -17,6 +17,8 @@ when the matching availability status bit is SET, so these builders assert those
 """
 from __future__ import annotations
 
+import time
+
 from sim_core import PARTY_RATE_S, Node, SimFrame, clamp_pct
 from tesla_frames import (
     DI_BRAKE_SWITCH_ID,
@@ -24,7 +26,7 @@ from tesla_frames import (
     J1850Frame,
     di_brake_switch_pressed,
     gtw_brake_line_switch_type,
-    gtw_wheel_type,
+    gtw_chassis_type,
     normalize_brake_line_switch_type,
     pack_le,
 )
@@ -44,46 +46,68 @@ _BAR_PER_PCT = 1.0           # bench mapping: 100% pedal -> 100 bar master-cyl p
 
 # ESP_wheelSpeeds 0x175 (ETH DBC): FrL@0 FrR@13 ReL@26 ReR@39, 13 bits, 0.042 km/h, 0x1FFF SNA.
 # wheel_speeds="axle" reports the rear wheels turning with DIR_axleSpeed (0x108 @40 s16, 0.1 rpm),
-# as a real ESP would with the car on a lift; "zero" = stationary.
-# Tire size follows GTW_carConfig GTW_wheelType (0x7FF mux3), rim inches per the DBC value names.
+# as a real ESP would with the car on a lift (rolls learns); "road" turns all four, a car driving
+# (normal traction: TC/active damping expect it); "zero" = stationary.
+# Speed uses the tire circumference the ESP is calibrated with: one value per chassis (GTW_chassisType,
+# 0x7FF mux3), the same for every wheel size (2022 ESP calibration: 2136 mm on every Model 3 config,
+# 2276 mm on every Model Y). A real ESP adapts this to the fitted tires over time.
 _DIR_TORQUE_ID = 0x108
-_WHEEL_SPEEDS = ("zero", "axle")
-_WHEEL_TYPE_RIM_IN = {
-    0: 18, 18: 18, 22: 18, 24: 18,                 # PINWHEEL_18 (+ cap kit / refresh)
-    1: 19, 4: 19, 5: 19, 17: 19, 20: 19, 21: 19, 27: 19,  # STILETTO/GEMINI/APOLLO/ZEROG 19
-    2: 20, 3: 20, 14: 20, 15: 20, 19: 20, 23: 20,  # STILETTO/INDUCTION/ZEROG/UBERTURBINE 20
-    16: 21,                                        # UBERTURBINE_21
-}
-_TIRE_CIRCUMFERENCE_M = {  # stock fitment, circumference = pi * (rim + 2 * sidewall)
-    18: 2.101,  # 235/45R18
-    19: 2.107,  # 235/40R19
-    20: 2.113,  # 235/35R20
-    21: 2.236,  # 255/35R21
-}
+_WHEEL_SPEEDS = ("zero", "axle", "road")
+_ESP_CIRCUMFERENCE_M = {2: 2.136, 3: 2.276}  # 3_CHASSIS, Y_CHASSIS
 _KPH_PER_LSB = 0.042
 
 
-def _esp_0x175_wheelspeeds(rear_kph: float | None) -> bytearray:
-    raw = 0x1FFF if rear_kph is None else min(round(abs(rear_kph) / _KPH_PER_LSB), 0x1FFE)
-    return pack_le([(26, 13, raw), (39, 13, raw)])
+def _wheel_raw(kph: float | None) -> int:  # 0x175 raw per wheel; 0x1FFF SNA
+    return 0x1FFF if kph is None else min(round(abs(kph) / _KPH_PER_LSB), 0x1FFE)
 
 
-def _esp_0x105_valid() -> bytearray:  # 0x105: brake torque=0 + MC pressure=0 bar + availability
+def _esp_0x175_wheelspeeds(rear_kph: float | None, front_kph: float | None = 0.0) -> bytearray:
+    f, r = _wheel_raw(front_kph), _wheel_raw(rear_kph)
+    return pack_le([(0, 13, f), (13, 13, f), (26, 13, r), (39, 13, r)])
+
+
+# 0x105 word0 @0 / word1 @16: the ESP's drive-torque limits (13-bit signed, 2 Nm) for forward /
+# reverse. With their valid bits set (34 fwd, 35 rev) traction control caps drive torque at them,
+# so 0 holds a DU in D at 0 Nm (hums); an idle ESP sends no limit. Raw max = 8190 Nm, above the
+# DIR's 7400 Nm ceiling. Applies only with traction control on (VDC NORMAL, not rolls/dyno); once
+# it bites, raising it again may not restore torque until the gear passes through P/N.
+_ESP_TORQUE_LIMIT_MAX = 0x0FFF
+_ESP_TORQUE_NM_PER_LSB = 2.0
+ESP_TORQUE_LIMIT_MAX_NM = _ESP_TORQUE_LIMIT_MAX * _ESP_TORQUE_NM_PER_LSB
+
+
+def _torque_limit_raw(nm: float | None) -> int:
+    if nm is None:
+        return _ESP_TORQUE_LIMIT_MAX
+    return max(0, min(round(nm / _ESP_TORQUE_NM_PER_LSB), _ESP_TORQUE_LIMIT_MAX))
+
+
+def _esp_0x105(bar: float = 0.0, torque_limit_nm: float | None = None) -> bytearray:
+    # 0x105: torque limits + MC pressure + avail. MC pressure must match 0x38D's
+    # ESP_brakeMasterCylPress (same 0.3 bar/-30 scale): the DIR reads both, and a mismatch raises
+    # DI_a198 vdcEspMCPressAndSteering.
+    limit = _torque_limit_raw(torque_limit_nm)
     return pack_le(
         [
+            (0, 13, limit),
+            (16, 13, limit),
             (13, 1, 1),
             (14, 1, 1),
             (15, 1, 1),  # word0 status -> DIR ESP signal-status bits 4/5/6 (signal available)
             (33, 1, 1),
             (34, 1, 1),
             (35, 1, 1),  # word2 status -> DIR ESP signal-status bits 7/8/9
-            (36, 10, 0x64),  # MC pressure 10-bit: raw 0x64 = 0 bar
+            (36, 10, round((bar + 30.0) / 0.3)),  # MC pressure 10-bit: raw 0x64 = 0 bar
         ]
     )
 
 
-def _esp_0x155_valid() -> bytearray:  # 0x155: availability (feeds a232 velocity est + a198)
-    return pack_le([(40, 1, 1), (41, 1, 1)])  # word2 bits 8/9 -> DIR ESP signal-status bits 14/15
+# 0x155 (not in the ETH DBC): per-wheel 8-bit rolling pulse counters FrL@0 FrR@8 ReL@16 ReR@24
+# (mod 255, 0xFF = SNA), per-wheel 2-bit direction @32/34/36/38 (1 = backward, 0 = forward),
+# availability bits 40/41 (a232 velocity estimator + a198). Vehicle hold flags WHEEL_SPDS_INVAL
+# when 0x175 speeds move but the pulses don't. Pulses advance from the 0x175 speed actually sent,
+# at a fixed ~17.4 mm per pulse (unconfirmed): ~123 pulses/rev at 2.136 m.
+_M_PER_PULSE = 0x4737 * 4 / 2**22
 
 
 def _esp_0x185_brake_torques() -> bytearray:
@@ -122,15 +146,23 @@ class Esp(Node):
         self.esp_fault_lamp = False
         self.wheel_speeds = "zero"
         self._axle_rpm = 0.0
-        self._rim_in = 18  # until GTW_carConfig mux3 arrives
+        self._circumference_m = _ESP_CIRCUMFERENCE_M[2]  # Model 3 until GTW_carConfig mux3 arrives
+        self._pulses = [0.0] * 4  # 0x155 FrL FrR ReL ReR
+        # 0x155 direction code while rolling forward (scenario key forward_direction). Backward = 1
+        # is firmware-pinned; forward is not (0 or 2) -- standstill always sends 0.
+        self.forward_direction = 0
+        self._pulse_t: float | None = None
+        self.torque_limit: float | None = None  # 0x105 drive-torque limit, Nm; None = no limit
 
     def frames(self) -> list[SimFrame]:
         rate = PARTY_RATE_S[self.name]
         return [
             SimFrame("ESP_status", 0x145, rate, self._esp_status, 8, 0, bus="party"),
             SimFrame("ESP_0x11D", 0x11D, rate, _esp_0x11d_valid, 8, 0, bus="party"),
-            SimFrame("ESP_0x105", 0x105, rate, _esp_0x105_valid, 52, 56, bus="party"),
-            SimFrame("ESP_0x155", 0x155, rate, _esp_0x155_valid, 52, 56, bus="party"),
+            SimFrame("ESP_0x105", 0x105, rate,
+                     lambda: _esp_0x105(self._brake_bar(), self.torque_limit),
+                     52, 56, bus="party"),
+            SimFrame("ESP_0x155", 0x155, rate, self._esp_wheel_rotation, 52, 56, bus="party"),
             SimFrame("ESP_wheelSpeeds", 0x175, rate, self._esp_wheel_speeds, 52, 56, bus="party"),
             SimFrame(
                 "ESP_0x185_brakeTorques", 0x185, rate, _esp_0x185_brake_torques,
@@ -140,12 +172,11 @@ class Esp(Node):
         ]
 
     def _brake_bar(self) -> float:
-        if self.brake_pressure is not None:
-            pct = self.brake_pressure
-        elif self.brake == "applied":
-            pct = _APPLIED_DEFAULT_PCT
-        else:
-            pct = 0.0
+        # Pressure only while applied: a slider left at 29% after release must not keep telling
+        # the DI the brake is pressed (it then refuses drive torque).
+        if self.brake != "applied":
+            return 0.0
+        pct = self.brake_pressure if self.brake_pressure is not None else _APPLIED_DEFAULT_PCT
         return pct * _BAR_PER_PCT
 
     def _esp_party3(self) -> bytearray:  # 0x38D payload (CRC@0 + counter@8 filled by J1850Frame)
@@ -198,11 +229,32 @@ class Esp(Node):
         self.brake_pressure = clamp_pct(pressure)
         return key
 
+    def _wheel_kph(self) -> tuple[float | None, float | None]:  # (front, rear); None = SNA
+        rpm = self._axle_rpm if self.wheel_speeds in ("axle", "road") else 0.0
+        # DIR_axleSpeed SNA -> the turning wheels SNA too
+        kph = None if rpm is None else rpm * self._circumference_m * 60.0 / 1000.0
+        return (kph if self.wheel_speeds == "road" else 0.0), kph
+
     def _esp_wheel_speeds(self) -> bytearray:  # 0x175
-        rpm = self._axle_rpm if self.wheel_speeds == "axle" else 0.0
-        if rpm is None:  # DIR_axleSpeed SNA: report the rears SNA too
-            return _esp_0x175_wheelspeeds(None)
-        return _esp_0x175_wheelspeeds(rpm * _TIRE_CIRCUMFERENCE_M[self._rim_in] * 60.0 / 1000.0)
+        front, rear = self._wheel_kph()
+        return _esp_0x175_wheelspeeds(rear, front)
+
+    def _esp_wheel_rotation(self) -> bytearray:  # 0x155
+        now = time.monotonic()
+        dt = 0.0 if self._pulse_t is None else now - self._pulse_t
+        self._pulse_t = now
+        rpm = self._axle_rpm if self.wheel_speeds in ("axle", "road") else 0.0
+        direction = 1 if rpm is not None and rpm < 0 else (self.forward_direction if rpm else 0)
+        front, rear = self._wheel_kph()
+        sigs = [(40, 1, 1), (41, 1, 1)]
+        for i, kph in enumerate((front, front, rear, rear)):
+            raw = _wheel_raw(kph)
+            if raw != 0x1FFF:  # SNA: hold the counters
+                # the quantized 0x175 speed, so the DIR's pulse distance matches what it reads
+                m = raw * _KPH_PER_LSB / 3.6 * dt
+                self._pulses[i] = (self._pulses[i] + m / _M_PER_PULSE) % 255
+            sigs += [(8 * i, 8, int(self._pulses[i])), (32 + 2 * i, 2, direction if raw else 0)]
+        return pack_le(sigs)
 
     def rx_handlers(self):
         # Mirror the DI's wired brake switch (0x1D6) into ESP brake posture -- but only in
@@ -226,9 +278,9 @@ class Esp(Node):
         t = gtw_brake_line_switch_type(data)
         if t is not None:
             self.brake_line_switch_type = t
-        w = gtw_wheel_type(data)
-        if w is not None:
-            self._rim_in = _WHEEL_TYPE_RIM_IN.get(w, 18)
+        c = gtw_chassis_type(data)
+        if c is not None:
+            self._circumference_m = _ESP_CIRCUMFERENCE_M.get(c, _ESP_CIRCUMFERENCE_M[2])
 
     def set_abs_event(self, event: str) -> str:
         """Driver externality: ESP_absBrakeEvent2 (none|front_rear|front|rear). Anything but
@@ -238,6 +290,17 @@ class Esp(Node):
             raise ValueError(f"ESP abs_event must be one of {list(_ABS_EVENT)}")
         self.abs_event = key
         return key
+
+    def set_torque_limit(self, nm) -> float | None:
+        """0x105 fwd + rev drive-torque limit in Nm (0..8190, 2 Nm steps); None = no limit."""
+        if nm is None or (isinstance(nm, str) and nm.strip().lower() in ("", "none", "max")):
+            self.torque_limit = None
+        else:
+            v = float(nm)
+            if not 0 <= v <= ESP_TORQUE_LIMIT_MAX_NM:
+                raise ValueError(f"ESP torque_limit must be 0..{ESP_TORQUE_LIMIT_MAX_NM:.0f} Nm")
+            self.torque_limit = v
+        return self.torque_limit
 
     def set_stability(self, state: str) -> str:
         """Driver externality: ESP_stabilityControlSts2 (init|on|engaged|faulted)."""
@@ -249,11 +312,13 @@ class Esp(Node):
 
     def configure(self, **s) -> None:
         # scenario keys: brake, abs_event, stability, standstill_skid, qf_in_spec,
-        #                abs_fault_lamp, ebd_fault_lamp, esp_fault_lamp, wheel_speeds
+        #                abs_fault_lamp, ebd_fault_lamp, esp_fault_lamp, wheel_speeds,
+        #                torque_limit (Nm)
         for key, setter in (
             ("brake", self.set_brake),
             ("abs_event", self.set_abs_event),
             ("stability", self.set_stability),
+            ("torque_limit", self.set_torque_limit),
         ):
             val = s.pop(key, None)
             if val is not None:
@@ -269,6 +334,11 @@ class Esp(Node):
             if ws not in _WHEEL_SPEEDS:
                 raise ValueError(f"ESP wheel_speeds must be one of {list(_WHEEL_SPEEDS)}")
             self.wheel_speeds = ws
+        fd = s.pop("forward_direction", None)
+        if fd is not None:
+            if int(fd) not in (0, 2):
+                raise ValueError("ESP forward_direction must be 0 or 2")
+            self.forward_direction = int(fd)
         lt = s.pop("brake_line_switch_type", None)
         if lt is not None:
             self.brake_line_switch_type = normalize_brake_line_switch_type(lt)

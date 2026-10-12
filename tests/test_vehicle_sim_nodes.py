@@ -80,9 +80,11 @@ GOLDEN: dict[tuple[int, str], tuple] = {
     (0x39D, "vehicle"): (0.010, 8, 0, 4, 5),        # ibst (2022.45.15 variant)
     # 0x392 stays in the inventory but reassigns EPAS3P_alertMatrix (2020, epas3p) ->
     # BMS_packConfig (2022, bms); newest target sources it from bms (GOLDEN 0x392 above).
-    # undocumented PCS-context frames
+    # undocumented PCS-context frame
     (0x13D, "vehicle"): (0.010, None, None, 4, 6),
-    (0x2B2, "vehicle"): (0.100, None, None, 4, 5),
+    # BMS_energyStatus (bms; the 2020 baseline sends a 5-byte stand-in).
+    (0x2B2, "vehicle"): (0.100, None, None, 4, 8),
+    (0x3B2, "vehicle"): (0.100, None, None, 4, 8),  # BMS_log2 (2022+; PCS_a022 member)
     # HVP (High Voltage Processor): commands the PCS + owns the contactors.
     # Both plain (no counter/checksum in 2020 fw), 10ms, on the vehicle bus.
     (0x22A, "vehicle"): (0.010, None, None, 4, 4),
@@ -272,7 +274,7 @@ def test_collect_frames_accepts_a_node_subset():
     reg = sim_registry
     frames = reg.collect_frames(reg.instantiate([reg.BY_NAME["BMS"], reg.BY_NAME["CP"]], _ctx()))
     assert {f.can_id for f in frames} == {
-        0x132, 0x212, 0x252, 0x2D2, 0x312, 0x452, 0x392, 0x210, 0x21D, 0x25D,
+        0x132, 0x212, 0x252, 0x2D2, 0x312, 0x452, 0x392, 0x2B2, 0x3B2, 0x210, 0x21D, 0x25D,
     }
 
 
@@ -450,7 +452,7 @@ def test_select_nodes_sim_is_a_case_insensitive_whitelist():
     nodes = sim_registry.select_nodes(sim=["bms", "cp"])
     assert {n.name for n in nodes} == {"BMS", "CP"}
     assert _ids(nodes) == {
-        0x132, 0x212, 0x252, 0x2D2, 0x312, 0x452, 0x392, 0x210, 0x21D, 0x25D,
+        0x132, 0x212, 0x252, 0x2D2, 0x312, 0x452, 0x392, 0x2B2, 0x3B2, 0x210, 0x21D, 0x25D,
     }
 
 
@@ -1125,6 +1127,59 @@ def test_bms_2022_variant_uses_2022_dbc_scaling():
     assert iunf * 0.05 - 822.0 == pytest.approx(0.0)
 
 
+def _pages(frame, n):
+    return [int.from_bytes(frame.frame(), "little") for _ in range(n)]
+
+
+def test_0x2b2_is_bms_energy_status_from_2022():
+    # BMS owns 0x2B2 at every revision. 2020 DBC has no 0x2B2 -> the old PCS bench's 5-byte
+    # stand-in; 2022+ DBC: BMS_energyStatus.
+    reg = sim_registry
+    unk = reg.BY_NAME["UNKNOWN"](_ctx())
+    bms = reg.BY_NAME["BMS"](_ctx())
+    for fw in ("2020.8.1", "2022.45.15", "2026.8.3"):
+        assert 0x2B2 not in {f.can_id for f in unk.frames_for(fw)}, fw
+    f20 = {f.can_id: f for f in bms.frames_for("2020.8.1")}[0x2B2]
+    assert bytes(f20.frame()) == bytes(5)
+    f22 = {f.can_id: f for f in bms.frames_for("2022.45.15")}[0x2B2]
+    m0, m1, again = _pages(f22, 3)
+    assert [p & 3 for p in (m0, m1, again)] == [0, 1, 0]  # mux alternates 0/1
+    assert (m0 >> 16 & 0xFFFF) * 0.02 == pytest.approx(75.0)  # nominalFullPackEnergy
+    assert (m1 >> 48 & 0xFFFF) * 0.02 == pytest.approx(15.0)  # energyToChargeComplete
+    assert len(f22.frame()) == 8
+    for fw in ("2024.8.9", "2026.8.3"):  # mux 2 (display energy) from 2024
+        pages = _pages({f.can_id: f for f in bms.frames_for(fw)}[0x2B2], 4)
+        assert [p & 3 for p in pages] == [0, 1, 2, 0], fw
+        assert (pages[2] >> 8 & 0xFFFF) * 0.02 == pytest.approx(60.0), fw  # remainingDisplay
+
+
+def test_0x3b2_bms_log2_cac1_page_per_fw():
+    bms = sim_registry.BY_NAME["BMS"](_ctx())
+    assert 0x3B2 not in {f.can_id for f in bms.frames_for("2020.8.1")}
+    # 2022: mux @0|6, cacAvg @6|13, cacMaxBrickId @56|7. 2024+ (probed): mux @0|7, @8|13, @57|7.
+    for fw, mux_w, avg_at, max_id_at in (
+        ("2022.45.15", 6, 6, 56), ("2024.8.9", 7, 8, 57), ("2026.8.3", 7, 8, 57),
+    ):
+        f = {f.can_id: f for f in bms.frames_for(fw)}[0x3B2]
+        v = int.from_bytes(f.frame(), "little")
+        assert len(f.frame()) == 8, fw
+        assert v & ((1 << mux_w) - 1) == 0, fw  # CAC1
+        assert (v >> avg_at & 0x1FFF) * 0.1 == pytest.approx(220.0), fw
+        assert (v >> max_id_at & 0x7F) + 1 == 96, fw
+
+
+def test_0x312_is_multiplexed_on_2026_only():
+    bms = sim_registry.BY_NAME["BMS"](_ctx())
+    # 2020 through 2024 share the flat layout: minPackTemperature @44|9 (0.25, -25).
+    for fw in ("2020.8.1", "2022.45.15", "2024.8.9"):
+        v = _pages({f.can_id: f for f in bms.frames_for(fw)}[0x312], 1)[0]
+        assert (v >> 44 & 0x1FF) * 0.25 - 25 == pytest.approx(25.0), fw
+    m0, m1 = _pages({f.can_id: f for f in bms.frames_for("2026.8.3")}[0x312], 2)
+    assert (m0 & 3, m1 & 3) == (0, 1)
+    assert (m0 >> 32 & 0x3FF) * 0.2 - 40 == pytest.approx(25.0)  # minPackTemperature
+    assert (m0 >> 43 & 0x7FF) * 0.1 - 40 == pytest.approx(25.0)  # maxPackTemperature
+
+
 def test_bms_pack_voltage_mirrors_the_measured_bus():
     # BMS_packVoltage (0x132 @0|16, 0.01 V) = DIR_vBat, else a real PCS's 0x2B4, else 0 V.
     import time
@@ -1192,7 +1247,8 @@ def test_rx_handler_registration_builds_the_dispatch_table():
     assert set(reg.BY_NAME["HVP"](_ctx()).rx_handlers()) == {0x3A1}
     assert set(reg.BY_NAME["EPB"](_ctx()).rx_handlers()) == {0x118}
     assert set(reg.BY_NAME["VCSEC"](_ctx()).rx_handlers()) == {0x276}
-    assert reg.BY_NAME["RCM"](_ctx()).rx_handlers() == {}
+    # RCM derives its longitudinal accel from DIR_axleSpeed (0x108).
+    assert set(reg.BY_NAME["RCM"](_ctx()).rx_handlers()) == {0x108}
     # The engine's global {id: [handlers]} table: 0x3A1 fans to BOTH BMS and HVP.
     table: dict[int, list] = {}
     for n in reg.instantiate(reg.NODES, _ctx()):
@@ -1294,8 +1350,12 @@ def test_learn_scenario_is_drive_plus_the_learn_ui_state():
     learn, nodes, _ = _load_scenario("drive-learn.toml")
     for attr in ("fw", "real", "absent"):
         assert getattr(learn, attr) == getattr(drive, attr)
-    extra = ("UI", "ESP", "BMS")
-    assert {k: v for k, v in learn.scenario.items() if k not in extra} == drive.scenario
+    # drive.toml starts braked (ESP/IBST/VCLEFT); the learn doesn't: dir_learn owns the brake,
+    # and an applied IBST blocks its spin permit.
+    extra = ("UI", "ESP", "BMS", "IBST", "VCLEFT")
+    assert {k: v for k, v in learn.scenario.items() if k not in extra} == \
+        {k: v for k, v in drive.scenario.items() if k not in extra}
+    assert "IBST" not in learn.scenario and "VCLEFT" not in learn.scenario
     assert learn.scenario["ESP"] == {"wheel_speeds": "axle"}  # rear wheels follow the axle
     assert learn.scenario.get("BMS", {}) == {}  # min_bus_voltage only when a pack needs it
     ui = next(n for n in nodes if n.name == "UI").uicfg

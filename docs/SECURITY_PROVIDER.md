@@ -112,6 +112,20 @@ def bus_bucket(bus_name: str, salt: str) -> str:
 BUS_NAMES: list[str]  # optional: candidate bus names for bucket resolution
 ```
 
+## `.bin` decrypt provider
+
+Used by `decode_bin.py` (and everything that loads an encrypted `.compact.json.bin`
+or `.odj.bin` through it). Set `TM3_BIN_PROVIDER` to a module name or a `.py` path,
+or drop a gitignored `bin_decrypt_impl.py` next to `decode_bin.py`; `TM3_BIN_KEY`
+is passed through as `key`. With neither, loading a `.bin` raises
+`RuntimeError`; plain `.json` files are unaffected. The module (or the object
+returned by its `get_bin_decrypt_provider()`) exposes:
+
+```python
+def decrypt_bin(data: bytes, key: str) -> object:
+    """Return the decoded object (dict) for the raw bytes of a .bin file."""
+```
+
 ## Minimal skeleton
 
 A provider that implements nothing is valid:

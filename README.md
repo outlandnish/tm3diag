@@ -68,7 +68,7 @@ If you have a firmware image, extract it with `unsquash_firmware.py`, then set `
 TM3_ROOT=/path/to/squashfs-root
 ```
 
-If your firmware's `.compact.json` and ODJ files are encrypted `.bin` files, you'll also need the decryption key in your `. env` as `TM3_BIN_KEY`
+If your firmware's `.compact.json` and ODJ files are encrypted `.bin` files, you'll also need `TM3_BIN_KEY` and a `.bin` decrypt provider (`TM3_BIN_PROVIDER`) in your `.env` — see [docs/SECURITY_PROVIDER.md](docs/SECURITY_PROVIDER.md).
 
 ### 4. Security / immobilizer provider (optional)
 

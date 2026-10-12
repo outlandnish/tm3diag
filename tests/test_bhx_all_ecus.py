@@ -5,6 +5,7 @@ One test ID per BHX file; skipped when the seed_artifacts_v2 directory is absent
 
 from __future__ import annotations
 
+import os
 import zlib
 from pathlib import Path
 
@@ -12,7 +13,8 @@ import pytest
 
 import bhx
 
-_ARTIFACTS = Path("/home/outlandnish/dev/tm3/deploy/seed_artifacts_v2")
+# Opt-in: rev-specific expectations, so point it at a matching seed_artifacts_v2.
+_ARTIFACTS = Path(os.environ.get("TM3_TEST_ARTIFACTS", "/nonexistent"))
 _ALL_BHX = sorted(_ARTIFACTS.rglob("*.bhx")) if _ARTIFACTS.is_dir() else []
 
 pytestmark = pytest.mark.skipif(

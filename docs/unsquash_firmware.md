@@ -88,21 +88,14 @@ Tools that need the firmware dump (`tm3cli.py`, `dfu.py`, `tm3uds.py`) will auto
 
 ## Step 3 — Decryption key (if needed)
 
-On some builds the compact DB and ODJ files are stored as encrypted `.bin` files alongside the plain `.json` versions. If you see only `.json.bin` files under `opt/odin/data/`, you need the decryption key.
-
-The key is a base64-encoded constant stored inside the `odin` binary shipped with the firmware. To extract it:
-
-1. Pull `opt/odin/odin` from the extraction
-2. Decompile it with `pyinstxtractor` + `pycdc`
-3. Find the constant `C` in `odin/platforms/binary_metadata_utils.py`
-
-Then set it in `.env`:
+On some builds the compact DB and ODJ files are stored as encrypted `.bin` files alongside the plain `.json` versions. If you see only `.json.bin` files under `opt/odin/data/`, you need a key you are lawfully entitled to use and a `.bin` decrypt provider. This project ships neither:
 
 ```bash
 TM3_BIN_KEY=<base64-encoded value>
+TM3_BIN_PROVIDER=<module or path/to/provider.py>
 ```
 
-`dump_odin.py` automates the pyinstxtractor + pycdc step — see [dump_odin.md](dump_odin.md).
+See [SECURITY_PROVIDER.md](SECURITY_PROVIDER.md) for the provider interface.
 
 ## Verifying the extraction
 

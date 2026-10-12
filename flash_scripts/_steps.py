@@ -13,7 +13,7 @@ from ._constants import (
     _BOARD_INFO_DIDS,
     _RC_CHECK_REV,
     _RC_ERASE,
-    _RC_VERIFY_CRC,
+    _RC_VERIFY,
     _SECURITY_SEED_LEVEL,
     FLASH_COUNT_LIMITS,
 )
@@ -200,25 +200,48 @@ def step_module_to_program(sess: UdsSession, ctx: FlashContext) -> None:
     """Set extended timeout then select CPU/flash region (WDBI 0x0102)."""
     from uds_local.client import UdsError
     ctx.display.set_detail(f"Module selection (WDBI 0x0102 = 0x{ctx.module_byte:02X})")
+    # set_detail() overwrites the display line; mirror selects/NRCs to the log.
+    _log.info("moduleToProgram: WDBI 0x0102 = 0x%02X", ctx.module_byte)
     sess.set_timeout(ctx.erase_timeout)
     try:
         sess.module_to_program(ctx.module_byte)
+        _log.info("moduleToProgram: 0x%02X ACCEPTED", ctx.module_byte)
     except UdsError as e:
+        _log.warning(
+            "moduleToProgram: 0x%02X -> NRC 0x%02X (%s)",
+            ctx.module_byte, e.nrc, e.nrc_name,
+        )
         if ctx.fallback_module_byte is not None and e.nrc in (0x10, 0x31):
             ctx.display.set_detail(
                 f"Module selection: NRC 0x{e.nrc:02X} — retrying with"
                 f" fallback 0x{ctx.fallback_module_byte:02X}"
             )
+            _log.info(
+                "moduleToProgram: retrying with fallback 0x%02X",
+                ctx.fallback_module_byte,
+            )
             try:
                 sess.module_to_program(ctx.fallback_module_byte)
                 ctx.module_byte = ctx.fallback_module_byte
+                _log.info(
+                    "moduleToProgram: fallback 0x%02X ACCEPTED", ctx.fallback_module_byte
+                )
             except UdsError as e2:
                 ctx.display.set_detail(
                     f"Module selection: fallback also failed NRC 0x{e2.nrc:02X} — continuing"
                 )
+                _log.warning(
+                    "moduleToProgram: fallback 0x%02X ALSO failed NRC 0x%02X (%s)"
+                    " — selector unchanged, continuing",
+                    ctx.fallback_module_byte, e2.nrc, e2.nrc_name,
+                )
         else:
             ctx.display.set_detail(
                 f"Module selection: NRC 0x{e.nrc:02X} ({e.nrc_name}) — not supported, continuing"
+            )
+            _log.warning(
+                "moduleToProgram: NRC 0x%02X (%s), no fallback — continuing",
+                e.nrc, e.nrc_name,
             )
 
 
@@ -244,9 +267,19 @@ def _request_download_with_module_fallback(
     the download. Attempted once, for the first segment only.
     """
     from uds_local.client import UdsError
+    _log.info(
+        "RequestDownload: addr=0x%08X size=%d (selector 0x%02X)",
+        address, size, ctx.module_byte,
+    )
     try:
-        return sess.request_download(address, size)
+        max_block = sess.request_download(address, size)
+        _log.info("RequestDownload: ACCEPTED maxBlockLen=%d", max_block)
+        return max_block
     except UdsError as e:
+        _log.warning(
+            "RequestDownload: addr=0x%08X selector=0x%02X -> NRC 0x%02X (%s)",
+            address, ctx.module_byte, e.nrc, e.nrc_name,
+        )
         if (
             e.nrc not in (0x31, 0x22)
             or ctx.fallback_module_byte is None
@@ -258,8 +291,26 @@ def _request_download_with_module_fallback(
             f"re-selecting module 0x{ctx.module_byte:02X} -> "
             f"fallback 0x{ctx.fallback_module_byte:02X} and retrying"
         )
-        sess.module_to_program(ctx.fallback_module_byte)
+        _log.info(
+            "RequestDownload fallback: re-selecting module 0x%02X -> 0x%02X",
+            ctx.module_byte, ctx.fallback_module_byte,
+        )
+        # The fallback must itself be accepted by moduleToProgram; otherwise the
+        # retry runs on the stale selector and gets NRC 0x22. Check before erasing.
+        try:
+            sess.module_to_program(ctx.fallback_module_byte)
+        except UdsError as e_sel:
+            _log.error(
+                "RequestDownload fallback: moduleToProgram(0x%02X) REJECTED NRC 0x%02X"
+                " (%s) — this bootloader does not accept that selector; not retrying"
+                " (would give NRC 0x22 on a stale selector). Re-raising original.",
+                ctx.fallback_module_byte, e_sel.nrc, e_sel.nrc_name,
+            )
+            raise e from e_sel
         ctx.module_byte = ctx.fallback_module_byte
+        _log.info("RequestDownload fallback: moduleToProgram(0x%02X) ACCEPTED",
+                  ctx.fallback_module_byte)
+        # Erase is module-scoped — the freshly selected module needs its own erase.
         sess.start_tester_present()
         try:
             sess.set_timeout(ctx.erase_timeout)
@@ -267,7 +318,12 @@ def _request_download_with_module_fallback(
         finally:
             sess.set_timeout(3.0)
             sess.stop_tester_present()
-        return sess.request_download(address, size)
+        max_block = sess.request_download(address, size)
+        _log.info(
+            "RequestDownload retry (selector 0x%02X): ACCEPTED maxBlockLen=%d",
+            ctx.module_byte, max_block,
+        )
+        return max_block
 
 
 def step_transfer_loop(sess: UdsSession, ctx: FlashContext) -> None:
@@ -349,8 +405,8 @@ def step_transfer_loop_inter_shdr(sess: UdsSession, ctx: FlashContext) -> None:
 
         is_last = seg_idx == len(segments) - 1
         if not is_last:
-            display.set_detail("[inter-SHDR] CRC check...")
-            sess.routine_control(_RC_VERIFY_CRC)
+            display.set_detail("[inter-SHDR] Verify...")
+            sess.routine_control(_RC_VERIFY)
             display.set_detail("[inter-SHDR] Revision check...")
             sess.routine_control(_RC_CHECK_REV)
             display.set_detail("[inter-SHDR] Re-auth...")
@@ -363,23 +419,29 @@ def step_transfer_loop_inter_shdr(sess: UdsSession, ctx: FlashContext) -> None:
     display.set_detail(f"Transfer complete  {_bar(total_bytes, total_bytes)}")
 
 
-def step_verify_crc(sess: UdsSession, ctx: FlashContext) -> None:
-    """RC 0x0201 checkModuleProgrammedCorrectly.
+def step_verify(sess: UdsSession, ctx: FlashContext) -> None:
+    """RC 0x0201 checkModuleProgrammedCorrectly — post-flash verify.
 
-    Device replies 71 01 02 01 <status>: 0x00 = CRC MATCH, 0x04 = CRC MISMATCH
-    (both UDS positive responses, so routine_control() does not raise on a
-    mismatch). Status is read and logged; non-fatal.
+    Legacy bootloaders check the image's embedded CRC-32; secure bootloaders
+    (e.g. 2026+ PMR) also enforce a signature and rollback check, so a failure
+    is not necessarily a CRC mismatch.
+
+    Device replies 71 01 02 01 <status>: 0x00 = OK; non-zero = verify failed
+    (0x04 CRC mismatch, 0x06 blank slot, or signature/rollback rejection). All
+    are UDS positive responses, so routine_control() does not raise. Status is
+    read and logged; non-fatal.
     """
-    ctx.display.set_detail("CRC check (RC 0x0201)...")
-    resp = sess.routine_control(_RC_VERIFY_CRC)
+    ctx.display.set_detail("Verify (RC 0x0201)...")
+    resp = sess.routine_control(_RC_VERIFY)
     status = resp[0] if resp else None
     if status == 0x00:
-        ctx.display.set_detail("CRC check: status=0x00 (MATCH)")
+        ctx.display.set_detail("Verify: status=0x00 (OK)")
     else:
-        msg = (f"CRC check: status={f'0x{status:02X}' if status is not None else 'EMPTY'} "
-               f"(0x04=MISMATCH; expected 0x00). raw={resp.hex() if resp else '<none>'}")
+        msg = (f"Verify FAILED: status={f'0x{status:02X}' if status is not None else 'EMPTY'} "
+               f"(non-zero = CRC mismatch, or signature/rollback rejection on secure "
+               f"bootloaders; expected 0x00). raw={resp.hex() if resp else '<none>'}")
         ctx.display.set_detail(msg)
-        _log.warning("step_verify_crc: %s", msg)
+        _log.warning("step_verify: %s", msg)
 
 
 def step_check_rev(sess: UdsSession, ctx: FlashContext) -> None:

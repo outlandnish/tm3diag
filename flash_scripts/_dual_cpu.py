@@ -28,8 +28,8 @@ from ._steps import (
     step_security_access,
     step_sleep_300ms,
     step_transfer_loop,
+    step_verify,
     step_verify_comp_fw,
-    step_verify_crc,
     step_wait_for_bootloader,
 )
 
@@ -42,21 +42,24 @@ _PCS_PRIMARY_TYPES = frozenset({"pcs", "pm", "pms", "pmr", "pmrs"})
 _PCS_SECONDARY_TYPES = frozenset({"pcscpu2", "di", "dis", "dir", "dirs"})
 
 # Fallback module bytes for secondary-CPU / secondary-region flashes — tried if
-# the primary byte gets NRC 0x10/0x31/0x22. The two known secondary-select bytes
-# are 0x0C (the node-table value) and 0x04; which one a given bootloader accepts is firmware-dependent, so
-# we lead with one and fall back to the other.
-_SECONDARY_MODULE_FALLBACK: dict[str, int] = {
-    "pcscpu2": 0x04,
-    "di": 0x04,
-    "dis": 0x04,
-    "dir": 0x04,
-    "dirs": 0x04,
-    # PCS/PM-family bootloader images (secondary-region writes)
-    "pcsbl": 0x04,
-    "pcscpu2bl": 0x04,
-    "pmbl": 0x04,
-    "pmfbl": 0x04,
-    "pmrbl": 0x04,
+# the primary byte gets NRC 0x10/0x31/0x22. None = no fallback.
+#
+# The PM-family bootloader accepts only 0x00 or 0x0C as moduleToProgram (0x04 is
+# rejected and leaves the old selector set), and accepts the secondary region
+# under 0x0C. Falling back to 0x04 would only turn a recoverable NRC 0x31 into a
+# terminal 0x22, so no fallback is registered: a real 0x31 surfaces as itself.
+_SECONDARY_MODULE_FALLBACK: dict[str, int | None] = {
+    "pcscpu2": None,
+    "di": None,
+    "dis": None,
+    "dir": None,
+    "dirs": None,
+    # PCS/PM-family bootloader images (selector 0x05, see _ecu_map)
+    "pcsbl": None,
+    "pcscpu2bl": None,
+    "pmbl": None,
+    "pmfbl": None,
+    "pmrbl": None,
 }
 
 
@@ -156,7 +159,7 @@ def run_pcs_dual_cpu(
     step_module_to_program(sess, ctx)
     step_erase(sess, ctx)
     step_transfer_loop(sess, ctx)
-    step_verify_crc(sess, ctx)
+    step_verify(sess, ctx)
 
     # ---- CPU1 / primary second ----
     display.set_header(f"flash {primary_entry.dest_name} (primary, "
@@ -168,7 +171,7 @@ def run_pcs_dual_cpu(
     step_module_to_program(sess, ctx)
     step_erase(sess, ctx)
     step_transfer_loop(sess, ctx)
-    step_verify_crc(sess, ctx)
+    step_verify(sess, ctx)
     step_check_rev(sess, ctx)
 
     step_ecu_reset(sess, ctx)

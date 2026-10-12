@@ -573,8 +573,11 @@ The bu agent recognizes `fw_type=2` as a bootloader file and erases/rewrites
 the bootloader sector instead of the app slot. After the trailing reset the
 ECU boots into the new bootloader.
 
-Module byte is `0x00` for all `*bl` nodes (same as the
-corresponding `*bu`).
+Module byte is `0x00` for every single-CPU `*bl` and every `*bu`. The dual-CPU
+PCS/PM-family `*bl` (`pcsbl`/`pcscpu2bl`/`pmbl`/`pmfbl`/`pmrbl`) instead sends
+**`0x05`** via WDBI `0x0102` — the updater's bootloader-program mode. The updater
+accepts only `0x05` (bootloader) or `0x0C` (app, CPU2-routed); sending `0x0C` for
+a bootloader image selects app mode and targets the wrong bank.
 
 #### Complete bootloader-update sequence
 
@@ -912,7 +915,10 @@ Failures: `wrongBlockSequenceCounter (0x73)`, `transferDataSuspended (0x71)`
 ← 71 01 02 01 <status>
 ```
 
-ECU recomputes CRC of flashed image against trailing CRC word in payload.
+A verify, not just a CRC check. Legacy bootloaders recompute the CRC of the
+flashed image against the trailing CRC word in the payload. Secure bootloaders
+(e.g. 2026+ PMR) also enforce a signature and rollback check, so a non-zero
+`status` can mean an unsigned / wrongly-signed / rolled-back image.
 `status` must be `0x00`.
 
 ---
@@ -1074,7 +1080,7 @@ Byte   Field
 | `BHX_INVALID_GLOBAL_HEADER`     | File doesn't start with valid `GHDR` magic+version    |
 | `BHX_INVALID_SEGMENT_HEADER`    | SHDR magic/version unrecognized                       |
 | `BHX_READ_FILE_FAILED_A/B/C/D`  | Short read from BHX file                              |
-| `INCORRECT_MODULE_PROGRAMMED`   | Routine `0x0201` returned non-zero status             |
+| `INCORRECT_MODULE_PROGRAMMED`   | Verify routine `0x0201` failed (CRC and/or signature) |
 | `INCORRECT_COMPONENT_AND_REV`   | Routine `0x0202` returned non-zero status             |
 | `FLASH_COUNT_LIMIT_EXCEEDED`    | DID `0xF100` at or over per-ECU limit                 |
 

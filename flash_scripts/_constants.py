@@ -1,9 +1,9 @@
 """Constants used by step functions and the dual-CPU runner."""
 
 # Routine IDs (RoutineControl 0x31)
-_RC_ERASE      = 0xFF00  # initializeEraseModule
-_RC_VERIFY_CRC = 0x0201  # checkModuleProgrammedCorrectly
-_RC_CHECK_REV  = 0x0202  # checkCorrectComponentAndRev
+_RC_ERASE     = 0xFF00  # initializeEraseModule
+_RC_VERIFY    = 0x0201  # checkModuleProgrammedCorrectly (verify: CRC and/or signature)
+_RC_CHECK_REV = 0x0202  # checkCorrectComponentAndRev
 
 # DIDs read for logging during step_board_info (not validated, failure ignored)
 _BOARD_INFO_DIDS = (0xF012, 0xF013, 0xF014, 0xF015)

@@ -91,7 +91,7 @@ from ._steps import (  # noqa: F401
     step_transfer_loop_inter_shdr,
     step_vcright_ota_prep,
     step_vendor_preflight,
+    step_verify,
     step_verify_comp_fw,
-    step_verify_crc,
     step_wait_for_bootloader,
 )

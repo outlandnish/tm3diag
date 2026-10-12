@@ -245,15 +245,13 @@ BL_PARENT_ECUS: tuple[str, ...] = (
 # to request only the files that exist.
 
 
-# PCS/PM-family parents are dual-CPU (CPU1 primary + CPU2 secondary). For these,
-# the bootloader IMAGE (`*bl`) payload targets the CPU2/secondary flash region
-# (SHDR addr 0x82000 — sector 1, just above the never-erased sector-0 bootloader),
-# NOT the CPU1 app base (0x88000). So the `*bl` flash must select the secondary
-# module byte (0x0C) — selecting CPU1 (0x00) and then RequestDownload @ 0x82000
-# is an address/module mismatch the bootloader rejects with NRC 0x22
-# (conditionsNotCorrect). The `*bu` (updater agent) still goes to the CPU1 app
-# slot (0x88000) with module 0x00. Single-CPU parents keep 0x00 for both.
-# (pcscpu2 is itself the secondary side, so its bl is also a secondary-region write.)
+# PCS/PM-family parents are dual-CPU (CPU1 primary + CPU2 secondary). The updater
+# (`*bu`) accepts two WDBI 0x0102 selectors: 0x05 = bootloader-program mode and
+# 0x0C = app mode (CPU2-routed). The bootloader image (`*bl`) must use 0x05; 0x0C
+# would select app mode and write the image to the wrong bank. No fallback is
+# registered for `*bl`: if an older bootloader rejects 0x05, surface that NRC.
+# The `*bu` still flashes to the CPU1 app slot (0x88000) with 0x00. Single-CPU
+# parents keep 0x00 for both. (pcscpu2bl's own selector is unverified.)
 _PCS_FAMILY_BL_PARENTS: frozenset[str] = frozenset(
     {"pcs", "pcscpu2", "pm", "pmf", "pmr"}
 )
@@ -264,7 +262,8 @@ def _add_bootloader_entries(table: dict[str, _Entry]) -> None:
         updater = (
             SCRIPT_BL_UPDATER_VCFRONT if parent == "vcfront" else SCRIPT_BL_UPDATER
         )
-        bl_module = 0x0C if parent in _PCS_FAMILY_BL_PARENTS else 0x00
+        # 0x05 = bootloader-program mode; see note above.
+        bl_module = 0x05 if parent in _PCS_FAMILY_BL_PARENTS else 0x00
         table[f"{parent}bu"] = (updater, 0x00)
         table[f"{parent}bl"] = (SCRIPT_BL, bl_module)
 

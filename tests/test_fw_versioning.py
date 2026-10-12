@@ -179,11 +179,14 @@ def test_2022_variant_adds_exactly_the_fw_confirmed_new_ids():
     # Nodes with a 2022.45.15 variant add ONLY firmware-confirmed 2022-new IDs (absent in the
     # 2020 DIR): DAS 0x289/0x39B (party) + BMS 0x452, CMP 0x2A7, APP 0x25C, CP 0x25D,
     # UI 0x3B3 UI_vehicleControl2 + 0x353 UI_status (UI_developmentCar -> dyno bypass) (vehicle).
+    # Plus BMS 0x3B2 BMS_log2, a 2022 PCS bmsMIA (PCS_a022) member.
     # Everything else is baseline, so this is the exact 2020->2022 delta; nothing is dropped
     # between those two (2026 IS the first revision that drops one -- see the next test).
     # 0x392 is NOT in the delta: it reassigns owner across fw (epas3p EPAS3P_alertMatrix in 2020 ->
     # bms BMS_packConfig in 2022) but stays in the inventory at both targets.
-    assert ids_2022 - ids_2020 == {0x289, 0x39B, 0x452, 0x2A7, 0x25C, 0x25D, 0x3B3, 0x353}
+    assert ids_2022 - ids_2020 == {
+        0x289, 0x39B, 0x452, 0x2A7, 0x25C, 0x25D, 0x3B3, 0x353, 0x3B2,
+    }
     assert ids_2020 - ids_2022 == set()
     assert 0x392 in ids_2020 and 0x392 in ids_2022, "0x392 must persist across the reassignment"
     assert ids_2020, "expected a non-empty simulated inventory"

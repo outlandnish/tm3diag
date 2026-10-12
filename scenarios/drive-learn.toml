@@ -41,3 +41,6 @@ service_mode = "on"        # UI_serviceMode 0x284: learn START reason NOT_IN_SER
 
 [scenario.ESP]
 wheel_speeds = "axle"      # 0x175 rear wheels follow DIR_axleSpeed (car on a lift); "zero" = old behavior
+
+[scenario.DAS]
+acc_state = "ACC_CANCEL_GENERIC_SILENT"   # manual control

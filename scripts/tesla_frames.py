@@ -114,11 +114,12 @@ def vcfront_hv_charge_enable(data, muxed: bool):
     return bool((d >> 1) & 1) if d & 1 else None
 
 
-def gtw_wheel_type(data):
-    """GTW_carConfig 0x7FF mux3 -> raw GTW_wheelType (@48|7), or None if not the mux3 page."""
+def gtw_chassis_type(data):
+    """GTW_carConfig 0x7FF mux3 -> raw GTW_chassisType (@18|3; 4 bits from 2026, values 2/3 fit
+    either way), or None if not the mux3 page."""
     d = bytes(data)
-    if len(d) >= 7 and d[0] == 3:
-        return d[6] & 0x7F
+    if len(d) >= 3 and d[0] == 3:
+        return (int.from_bytes(d[:3], "little") >> 18) & 7
     return None
 
 
@@ -283,6 +284,9 @@ STOPPING_MODE = {"standard": 0, "creep": 1, "hold": 2}
 MOTOR_ON_MODE = {"normal": 0, "front": 1, "rear": 2}
 WINCH_MODE = {"idle": 0, "enter": 1, "exit": 2}
 TRACTION_MODE = {"normal": 0, "slip_start": 1, "rolls": 4, "dyno": 5}
+# UI_regenTorqueMax (2022+ 0x334 @16|5, 5 %/LSB). Scales lift-off regen torque AND the demand the
+# DI checks its regen power limit against for DI_a201 decelTorqueLimited (~64 kW at 100 %).
+REGEN_TORQUE_MAX = {f"{p}%": p for p in range(0, 101, 5)}
 
 
 @dataclass
@@ -296,6 +300,7 @@ class UiConfig:
     winch_mode: int = 0  # UI_winchModeRequest: IDLE
     trailer_mode: int = 0  # UI_trailerMode: OFF
     traction_mode: int = 0  # UI_tractionControlMode: NORMAL
+    regen_torque_max: int = 100  # UI_regenTorqueMax, % (2022+ layout only)
     service_mode: int = 0  # UI_serviceMode (0x284): the DI's rotor/resolver-learn start gate
     development_car: int = 0  # UI_developmentCar (0x353): DIR dyno-inhibit BYPASS (dyno not one-shot)
     # GUI_factoryModeLimitOverride: no CAN bit of its own; lifts UI_limitMode SERVICE -> NORMAL
@@ -355,7 +360,7 @@ def ui_powertrain_control_2022(c: UiConfig) -> bytearray:  # 0x334, DLC8, 2022.4
             (0, 5, 31),  # UI_systemPowerLimit  = SNA
             (5, 2, c.pedal_map),  # UI_pedalMap
             (8, 6, 63),  # UI_systemTorqueLimit = SNA
-            (16, 5, 20),  # UI_regenTorqueMax    = 100 %
+            (16, 5, c.regen_torque_max // 5),  # UI_regenTorqueMax, 5 %/LSB
             (21, 2, ui_limit_mode(c)),  # UI_limitMode
             (24, 2, c.motor_on_mode),  # UI_motorOnMode
             (30, 2, c.stopping_mode),  # UI_stoppingMode
@@ -397,6 +402,7 @@ UI_SETTINGS: dict[str, dict] = {
     "stopping_mode": {"label": "Stopping mode", "options": dict(STOPPING_MODE)},
     "motor_on_mode": {"label": "Motor on mode", "options": dict(MOTOR_ON_MODE)},
     "traction_mode": {"label": "Traction control", "options": dict(TRACTION_MODE)},
+    "regen_torque_max": {"label": "Regen torque max", "options": dict(REGEN_TORQUE_MAX)},
     "winch_mode": {"label": "Winch mode", "options": dict(WINCH_MODE)},
     "track_mode": {"label": "Track mode", "options": {"on": 1, "off": 2}},
     "trailer_mode": {"label": "Trailer mode", "options": {"off": 0, "on": 1}},

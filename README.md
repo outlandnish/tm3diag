@@ -50,6 +50,14 @@ sudo ip link set can0 type can bitrate 500000
 sudo ip link set can0 up
 ```
 
+For offline testing without hardware, use a virtual interface:
+
+```bash
+sudo modprobe vcan
+sudo ip link add dev vcan0 type vcan
+sudo ip link set vcan0 up
+```
+
 ### 3. Firmware dump (optional)
 
 Some tools (`tm3cli.py`, `dfu.py`, `tm3uds.py`) can decode signal names and validate routines when pointed at an extracted Tesla firmware squashfs.
@@ -89,6 +97,10 @@ To generate a DBC:
 ```bash
 python candata_to_dbc.py dbc        # writes Model3_ETH.<rev>.dbc, ~1-2 min
 ```
+
+The build also probes every message through the emulated decoder one payload bit at a time (`vapi_probe.py`), so a layout the static recovery missed or got wrong comes out as the firmware decodes it; `--no-probe` skips that step.
+
+Set `TM3_VAPI=0` to force the layout path (DBC / `compact.json`) instead of the emulated decoder.
 
 ## Tools
 

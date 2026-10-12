@@ -6,7 +6,8 @@ bit-layout (start bit / width / scale / offset). The per-revision
 ``Model3_ETH.compact.json`` has the bit-layout but is stripped down each release
 (2022.45.15: 140 messages vs 446 in the .so). This tool overlays the .so catalog
 with compact.json layout; .so signals with no layout donor land in a coverage
-report rather than the DBC.
+report rather than the DBC. Every message is then probed through the emulated
+decoder one payload bit at a time (``vapi_probe``); that layout outranks donors.
 
 Usage:
     # just dump the .so catalog as compact-schema JSON
@@ -242,6 +243,111 @@ def enrich(cat: so_candata.SoCatalog, donors: list[dict], *,
     return enriched_db, report
 
 
+_MUX_KEYS = ("mux_id", "is_muxer")
+
+
+def _bits(sig: dict) -> set[int]:
+    from vapi_probe import _motorola
+    st, w = sig["start_position"], sig["width"]
+    if sig.get("endianness", "LITTLE") == "BIG":
+        return set(_motorola(st, w))
+    return set(range(st, st + w))
+
+
+def _clashes(a: dict, b: dict) -> bool:
+    """Two signals share a bit on a page they can both appear on."""
+    pa, pb = a.get("mux_id"), b.get("mux_id")
+    if pa is not None and pb is not None and pa != pb:
+        return False
+    return bool(_bits(a) & _bits(b))
+
+
+def apply_probes(db: dict, report: dict, cat: so_candata.SoCatalog, probes: dict) -> dict:
+    """Overlay ``vapi_probe`` results onto an enriched db, in place.
+
+    A probed layout is the firmware's own decode, so it replaces a donor's where they differ.
+    Gaps it fills leave the report; gaps in a probed message that the decoder never stored
+    are tagged ``not_stored`` -- catalog names with nothing behind them. Returns the counts.
+    """
+    by_id = {m["message_id"]: (n, m) for n, m in db["messages"].items()}
+    filled: set[tuple[str, str]] = set()
+    probed_names: dict[str, set[str]] = {}
+    corrected = dropped = 0
+    for mid, p in probes.items():
+        if mid not in by_id:
+            continue
+        mname, msg = by_id[mid]
+        probed_names[mname] = p.stored
+        so_sigs = cat.messages.get(mname, {}).get("signals", {})
+        if p.muxer:
+            for s in msg["signals"].values():
+                s.pop("is_muxer", None)
+        # Without a mux of its own the probe saw page 0 only, so it cannot overrule a donor's.
+        cmp_keys = (*_LAYOUT_KEYS, *_MUX_KEYS) if p.muxer else _LAYOUT_KEYS
+        for sname, lay in p.signals.items():
+            old = msg["signals"].get(sname)
+            if old is None or not _has_layout(old):
+                filled.add((mname, sname))
+            elif any(old.get(k) != lay.get(k) for k in cmp_keys):
+                corrected += 1
+            new = {k: v for k, v in (old or {}).items()
+                   if not (p.muxer and k in _MUX_KEYS)}
+            new.update(_merge_signal(so_sigs.get(sname, {}), lay))
+            msg["signals"][sname] = new
+        # A donor layout the decoder never confirmed loses to one it did.
+        probed = [msg["signals"][n] for n in p.signals]
+        for sname in [n for n, s in msg["signals"].items()
+                      if n not in p.signals and _has_layout(s)]:
+            if any(_clashes(msg["signals"][sname], s) for s in probed):
+                del msg["signals"][sname]
+                dropped += 1
+    gaps = []
+    not_stored = 0
+    for g in report["gaps"]:
+        if (g["message"], g["signal"]) in filled:
+            continue
+        stored = probed_names.get(g["message"])
+        if stored is not None and g["signal"] not in stored:
+            g["not_stored"] = True
+            not_stored += 1
+        gaps.append(g)
+    report["gaps"] = gaps
+    report["signals_enriched"] += len(filled)
+    report["signals_gapped"] = len(gaps)
+    report["probe"] = {"messages": len(probes), "filled": len(filled),
+                       "corrected": corrected, "dropped": dropped,
+                       "not_stored": not_stored}
+    return report["probe"]
+
+
+def _probe_all(db: dict, report: dict, cat, vlib: Path, lib: Path, workers: int) -> None:
+    """Probe every catalog message. Not just the gapped ones: a donor layout nobody probed can
+    still be wrong (DAS_controlDistance at 2x) or claim bits the firmware never stores."""
+    import vapi_emu
+    import vapi_layout
+    import vapi_probe
+
+    targets = {db["messages"][n]["message_id"]: n for n in cat.messages if n in db["messages"]}
+    hints = {}
+    for mid, n in targets.items():
+        mux = [s for s in db["messages"][n]["signals"].values()
+               if s.get("is_muxer") and _has_layout(s)]
+        if len(mux) == 1:
+            hints[mid] = (mux[0]["start_position"], mux[0]["width"])
+    keymap, _cat = vapi_layout.catalog_index(lib)
+    pool = vapi_emu.VapiPool(vlib, workers)
+    try:
+        probes = vapi_probe.probe_messages(targets, pool.run_many, keymap,
+                                           progress=_progress, hints=hints)
+    finally:
+        pool.close()
+        _progress_done()
+    n = apply_probes(db, report, cat, probes)
+    print(f"  probe: {n['messages']} messages -> {n['filled']} gaps filled, "
+          f"{n['corrected']} layouts corrected, {n['dropped']} donor layouts dropped, "
+          f"{n['not_stored']} catalog signals never stored", file=sys.stderr)
+
+
 def _write_report(report: dict, path: Path) -> None:
     lines = [
         f"# ETH DBC coverage report -- {report['lib']} (bus {report['bus']})",
@@ -252,6 +358,17 @@ def _write_report(report: dict, path: Path) -> None:
         f"signals with layout     : {report['signals_enriched']}",
         f"signals WITHOUT layout  : {report['signals_gapped']}",
         f"donor-only messages     : {report['donor_only_messages']}",
+    ]
+    if report.get("probe"):
+        p = report["probe"]
+        lines += [
+            f"probed messages         : {p['messages']}",
+            f"  gaps filled           : {p['filled']}",
+            f"  layouts corrected     : {p['corrected']}",
+            f"  donor layouts dropped : {p['dropped']} (overlapped a probed signal)",
+            f"  never stored          : {p['not_stored']} (catalog-only names)",
+        ]
+    lines += [
         "",
         "## layout source per message (message -> donor : #signals):",
     ]
@@ -268,7 +385,7 @@ def _write_report(report: dict, path: Path) -> None:
     by_msg: dict[str, list[str]] = {}
     for g in report["gaps"]:
         by_msg.setdefault(f"{g['message']} (0x{g['message_id']:X})", []).append(
-            g["signal"])
+            g["signal"] + ("  (never stored)" if g.get("not_stored") else ""))
     for mkey in sorted(by_msg):
         lines.append(f"\n{mkey}")
         for s in sorted(by_msg[mkey]):
@@ -410,6 +527,13 @@ def cmd_dbc(args) -> None:
                   file=sys.stderr)
     enriched_db, report = enrich(cat, donors, prefer_order=args.prefer_order)
     enriched_db["dbc_version"] = rev
+    # Then check everything against the decoder itself, one bit at a time.
+    if not args.no_vapi and not args.no_probe:
+        vlib = args.vapi or next((p for p in lib.parent.glob("libQtCarVAPI.so*")
+                                  if p.suffix not in ("", ".1")), None)
+        if vlib and Path(vlib).exists():
+            import config as _cfg
+            _probe_all(enriched_db, report, cat, Path(vlib), lib, _cfg.VAPI_WORKERS)
 
     # Cross-link alerts: annotate each logged signal with the alert(s) that log it.
     if not args.no_alerts:
@@ -467,6 +591,8 @@ def main(argv: list[str] | None = None) -> None:
                          "(default: sibling of the catalog lib)")
     pd.add_argument("--no-vapi", action="store_true",
                     help="skip VAPI layout recovery; use compact.json donors only")
+    pd.add_argument("--no-probe", action="store_true",
+                    help="skip probing every message through the emulated libQtCarVAPI")
     pd.add_argument("--prefer-order", action="store_true",
                     help="per message, take layout from the first donor that "
                          "has it (current-rev fidelity) instead of the richest "

@@ -40,3 +40,45 @@ chassis_type = "3_CHASSIS"   # Model 3; Y_CHASSIS for a Model Y
 # e.g.  [scenario.SCCM]  gear = "D"  (held at standstill; watch DI_gear on 0x118).
 [scenario.VCFRONT]
 lv_power_state = "drive"
+
+# All four wheels follow DIR_axleSpeed, as if driving: with traction control on, zero wheel speeds
+# under a spinning motor trip active damping (DIR_a014) and the VDC (DI_a199/a200/a215/a232).
+[scenario.ESP]
+brake = "released"         # all three brake sources agree (IBST/VCLEFT below)
+wheel_speeds = "road"
+forward_direction = 0      # 0x155 wheel direction code rolling forward: 0 or 2 (backward = 1)
+
+[scenario.IBST]
+brake = "released"
+
+[scenario.VCLEFT]
+brake_switch_pressed = false  # must agree with ESP/IBST; the dashboard brake toggles all three
+
+[scenario.DAS]
+acc_state = "ACC_CANCEL_GENERIC_SILENT"   # manual control; "ACC_ON" claims cruise (acted on only with GTW autopilot != NONE)
+
+# BMS_maxChargeCurrent caps regen current; 0 (the default) = no regen, safe on a PSU that can't
+# sink current. Raise it only with a pack or a sinking supply, and keep it within the supply's sink
+# rating: regen faster than the supply absorbs spikes the bus (DI_a021, then DIR_a021 HW bus OV).
+# BMS_maxBusVoltage is the DI's regen voltage ceiling (default 400 V): set it a little above the
+# supply voltage. BMS_maxRegenPower (default 60 kW) caps regen power.
+# Discharge limits (defaults 500 A / 150 kW) should match the supply: drawing past its current
+# limit sags the bus and it overshoots on recovery (DIR_a021 HW bus OV on acceleration).
+# Conservative bench defaults for a ~350 V lab supply of unknown rating; raise from the dash.
+# Discharge power stays >= 2 kW (below it the DI raises a125 noBatteryPower).
+[scenario.BMS]
+max_charge_current = 0       # A  (no regen until the bus is clamped in hardware)
+max_regen_power = 0.5        # kW
+max_bus_voltage = 370        # V
+max_discharge_current = 10   # A
+max_discharge_power = 3      # kW
+
+# UI_regenTorqueMax (%, 5 % steps) scales lift-off regen torque and the DI's regen demand (~64 kW
+# at 100 %). DI_a201 decelTorqueLimited holds while BMS regen power < 0.85 x demand; keep
+# 0.85 x 64 kW x pct below max_regen_power (e.g. 10 % -> ~5.4 kW).
+[scenario.UI]
+regen_torque_max = 10
+
+# RCM_verticalAccel is gravity-compensated (0, the default): +/-9.81 trips DI_a216 VERT_ACCEL.
+# [scenario.RCM]
+# vertical_accel = 0

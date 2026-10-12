@@ -6,10 +6,10 @@ DLC>=8 arrival clears bmsMIA regardless of payload; content is a drive-ready pac
 
 from __future__ import annotations
 
+import itertools
 import time
-from functools import partial
 
-from sim_core import BASELINE_FW, Node, SimFrame
+from sim_core import BASELINE_FW, Node, SimFrame, zeros
 from tesla_frames import pack_le, vcfront_hv_charge_enable
 
 # DBC scaling that moved 2020.8.1 -> 2022.45.15 (layouts unchanged). 2020 LSBs on a 2022 DI read
@@ -54,7 +54,7 @@ def _bms_hvBusStatus_2026(s=_SCALE_2022, v=0.0) -> bytearray:  # 0x132, DLC **6*
     )
 
 
-def _bms_powerAvailable_2026(s=_SCALE_2022) -> bytearray:  # 0x252, 100ms -> drive-ready
+def _bms_powerAvailable_2026(s=_SCALE_2022, regen_kw=60.0, dis_kw=150.0) -> bytearray:  # 0x252
     # 2026.8.3 re-lays 0x252: BMS_powerLimitsState moved @48|1 -> @42|1 (and
     # BMS_notEnoughPowerForHeatPump @42 -> @52, BMS_totalHvPowerBudget @43|9 is new, replacing
     # BMS_hvacPowerBudget). Leaving powerLimitsState at 48 would land it inside
@@ -63,29 +63,37 @@ def _bms_powerAvailable_2026(s=_SCALE_2022) -> bytearray:  # 0x252, 100ms -> dri
     # kW/LSB scales, so the a125 noBatteryPower inputs are untouched.
     return pack_le(
         [
-            (0, 16, 60.0 / 0.01),  # BMS_maxRegenPower      ~60
-            (16, 16, 150.0 / s["dis_p"]),  # BMS_maxDischargePower  ~150
+            (0, 16, regen_kw / 0.01),  # BMS_maxRegenPower
+            (16, 16, dis_kw / s["dis_p"]),  # BMS_maxDischargePower
             (42, 1, 1),  # BMS_powerLimitsState = POWER_CALCULATED_FOR_DRIVE (was @48)
         ]
     )
 
 
-def _bms_powerAvailable(s=_SCALE_2020) -> bytearray:  # 0x252, 100ms  -> drive-ready
+def _bms_powerAvailable(s=_SCALE_2020, regen_kw=60.0, dis_kw=150.0) -> bytearray:  # 0x252
     return pack_le(
         [
-            (0, 16, 60.0 / 0.01),  # BMS_maxRegenPower      ~60
-            (16, 16, 150.0 / s["dis_p"]),  # BMS_maxDischargePower  ~150
+            (0, 16, regen_kw / 0.01),  # BMS_maxRegenPower
+            (16, 16, dis_kw / s["dis_p"]),  # BMS_maxDischargePower
             (48, 1, 1),  # BMS_powerLimitsState = POWER_CALCULATED_FOR_DRIVE
         ]
     )
 
 
-def _bms_driveLimits(s=_SCALE_2020, v_min=300.0) -> bytearray:  # 0x2D2, 100ms
+def _bms_driveLimits(s=_SCALE_2020, v_min=300.0, i_chg=0.0, v_max=400.0,
+                     i_dis=500.0) -> bytearray:  # 0x2D2
     return pack_le(
         [
             (0, 16, v_min / s["bus_v"]),  # BMS_minBusVoltage (DIR clamps to >= 210 V)
-            (16, 16, 400.0 / s["bus_v"]),  # BMS_maxBusVoltage      400 V
-            (48, 14, 500.0 / s["dis_i"]),  # BMS_maxDischargeCurrent ~500 A
+            # BMS_maxBusVoltage: the DI's regen voltage ceiling (DIR clamps 210..470 V); in D/R a
+            # measured bus above it (+ margin) raises DI_a021. Keep it just above the supply.
+            (16, 16, v_max / s["bus_v"]),
+            # BMS_maxChargeCurrent (0.1 A, both revs): the DIR's regen current limit. 0 = no regen,
+            # the safe default for a bench PSU that can't sink current.
+            (32, 14, min(i_chg / 0.1, 0x3FFF)),
+            # BMS_maxDischargeCurrent: keep within the supply's rating -- a DI drawing past the
+            # supply's current limit sags the bus, then overshoots it (DIR_a021 HW bus OV).
+            (48, 14, min(i_dis / s["dis_i"], 0x3FFF)),
         ]
     )
 
@@ -108,6 +116,118 @@ def _bms_thermalStatus() -> bytearray:  # 0x312, 1000ms
             (17, 9, (25 - (-25)) / 0.25),  # BMS_inletActiveCoolTargetT 25 C
             (44, 9, (25 - (-25)) / 0.25),  # BMS_minPackTemperature     25 C
             (53, 9, (25 - (-25)) / 0.25),  # BMS_maxPackTemperature     25 C
+        ]
+    )
+
+
+def _mux_pages(*pages):
+    """Builder that cycles through ``pages`` (zero-arg builders), one per call."""
+    it = itertools.cycle(pages)
+    return lambda: next(it)()
+
+
+def _t25(c: float) -> float:  # 0.25 degC/LSB, -25 offset
+    return (c + 25) / 0.25
+
+
+# 0x312 on 2026.8.3 is multiplexed (BMS_thermalStatusMultiplexer @0|2) and fully re-laid; the
+# pack temps moved to mux 0 @32|10 (0.2, -40) / @43|11 (0.1, -40). Mux 1 limit values are
+# plausible placeholders, not captured.
+def _bms_thermalStatus_2026_m0() -> bytearray:
+    return pack_le(
+        [
+            (0, 2, 0),
+            (2, 9, _t25(25)),  # BMS_inletActiveCoolTargetT 25 C
+            (11, 9, _t25(25)),  # BMS_inletPassiveTargetT    25 C
+            (20, 9, _t25(25)),  # BMS_inletActiveHeatTargetT 25 C
+            (32, 10, (25 + 40) / 0.2),  # BMS_minPackTemperature 25 C
+            (43, 11, (25 + 40) / 0.1),  # BMS_maxPackTemperature 25 C
+        ]
+    )
+
+
+def _bms_thermalStatus_2026_m1() -> bytearray:
+    return pack_le(
+        [
+            (0, 2, 1),
+            (2, 9, _t25(-20)),  # BMS_coldStagnationLimit     -20 C
+            (11, 9, _t25(45)),  # BMS_hotStagnationLimit       45 C
+            (20, 9, _t25(60)),  # BMS_hotCellTempLimit         60 C
+            (32, 9, _t25(35)),  # BMS_activeCoolCellReferenceT 35 C
+            (41, 9, _t25(20)),  # BMS_activeHeatCellTargetT    20 C
+        ]
+    )
+
+
+# 0x2B2 BMS_energyStatus (2022+ DBC; absent from the 2020 DBC). Multiplexed @0|2. The 2022 PCS
+# supervises it (PCS_a022 bmsMIA, with 0x3B2). Sent at 100 ms, not the DBC 2 s, as PCS liveness.
+_PACK_KWH, _REMAIN_KWH = 75.0, 60.0
+
+
+def _bms_energyStatus_m0() -> bytearray:
+    return pack_le(
+        [
+            (0, 2, 0),
+            (16, 16, _PACK_KWH / 0.02),  # BMS_nominalFullPackEnergy
+            (32, 16, _REMAIN_KWH / 0.02),  # BMS_nominalEnergyRemaining
+            (48, 16, _REMAIN_KWH / 0.02),  # BMS_idealEnergyRemaining
+        ]
+    )
+
+
+def _bms_energyStatus_m1() -> bytearray:
+    return pack_le(
+        [
+            (0, 2, 1),
+            (16, 16, 3.0 / 0.01),  # BMS_energyBuffer 3 kWh
+            (32, 16, _REMAIN_KWH / 0.02),  # BMS_expectedEnergyRemaining
+            (48, 16, (_PACK_KWH - _REMAIN_KWH) / 0.02),  # BMS_energyToChargeComplete
+        ]
+    )
+
+
+# 0x3B2 BMS_log2: the 2022 PCS's other PCS_a022 bmsMIA member. Sent as the mux 0 (CAC1) page
+# only, at 100 ms rather than the DBC 30 s, as PCS liveness. Brick capacities are plausible
+# Model 3 values, not captured. By 2024.8.9 the mux is 7 bits and page 0 is re-laid.
+_CAC_AH = (220.0, 218.0, 222.0)  # avg, min, max
+_CAC_BRICK = (1, 96)  # min, max brick id (raw = id - 1)
+
+
+def _bms_log2_cac1() -> bytearray:
+    avg, lo, hi = _CAC_AH
+    return pack_le(
+        [
+            (0, 6, 0),  # BMS_log2MuxId = CAC1
+            (6, 13, avg / 0.1),  # BMS_cacAvg
+            (19, 13, lo / 0.1),  # BMS_cacMin
+            (32, 7, _CAC_BRICK[0] - 1),  # BMS_cacMinBrickId
+            (40, 13, hi / 0.1),  # BMS_cacMax
+            (56, 7, _CAC_BRICK[1] - 1),  # BMS_cacMaxBrickId
+        ]
+    )
+
+
+def _bms_log2_cac1_2026() -> bytearray:
+    avg, lo, hi = _CAC_AH
+    return pack_le(
+        [
+            (0, 7, 0),  # BMS_log2MuxId = CAC1 (7-bit by 2024)
+            (8, 13, avg / 0.1),  # BMS_cacAvg
+            (24, 13, lo / 0.1),  # BMS_cacMin
+            (37, 7, _CAC_BRICK[0] - 1),  # BMS_cacMinBrickId
+            (44, 13, hi / 0.1),  # BMS_cacMax
+            (57, 7, _CAC_BRICK[1] - 1),  # BMS_cacMaxBrickId
+        ]
+    )
+
+
+def _bms_energyStatus_m2() -> bytearray:  # mux 2 (display energy), new by 2024.8.9
+    return pack_le(
+        [
+            (0, 2, 2),
+            (8, 16, _REMAIN_KWH / 0.02),  # BMS_energyRemainingDisplay
+            (24, 16, _REMAIN_KWH / 0.02),  # BMS_energyRemainingTDisplay
+            (52, 11, 100 * _REMAIN_KWH / _PACK_KWH / 0.05),  # BMS_userFacingSoe %
         ]
     )
 
@@ -168,6 +288,26 @@ _BMS_STATUS_MODES_2026 = {
 }
 
 
+# Live-adjustable pack limits (scenario keys + tm3web dash). The DIR clamps both bus voltages to
+# 210..470 V; BMS_maxBusVoltage is its regen voltage ceiling, BMS_maxChargeCurrent its regen current.
+BMS_LIMITS: dict[str, dict] = {
+    "min_bus_voltage": {"label": "Min bus voltage", "signal": "BMS_minBusVoltage",
+                        "unit": "V", "range": (0.0, 1300.0), "step": 1},
+    "max_bus_voltage": {"label": "Max bus voltage", "signal": "BMS_maxBusVoltage",
+                        "unit": "V", "range": (0.0, 1300.0), "step": 1},
+    "max_charge_current": {"label": "Max charge (regen) current", "signal": "BMS_maxChargeCurrent",
+                           "unit": "A", "range": (0.0, 1638.3), "step": 1},
+    "max_regen_power": {"label": "Max regen power", "signal": "BMS_maxRegenPower",
+                        "unit": "kW", "range": (0.0, 655.35), "step": 0.5},
+    # Drive side: match the supply. Below ~2 kW the DI raises a125 noBatteryPower.
+    "max_discharge_current": {"label": "Max discharge current",
+                              "signal": "BMS_maxDischargeCurrent",
+                              "unit": "A", "range": (0.0, 2450.0), "step": 1},
+    "max_discharge_power": {"label": "Max discharge power", "signal": "BMS_maxDischargePower",
+                            "unit": "kW", "range": (0.0, 650.0), "step": 0.5},
+}
+
+
 class Bms(Node):
     name = "BMS"
 
@@ -175,6 +315,11 @@ class Bms(Node):
         super().__init__(ctx)
         self.mode = "drive"  # drive | dcdc | charge — driver externality (BMS_status 0x212)
         self.min_bus_voltage = 300.0
+        self.max_charge_current = 0.0  # A, BMS_maxChargeCurrent
+        self.max_bus_voltage = 400.0  # V, BMS_maxBusVoltage
+        self.max_regen_power = 60.0  # kW, BMS_maxRegenPower
+        self.max_discharge_current = 500.0  # A, BMS_maxDischargeCurrent
+        self.max_discharge_power = 150.0  # kW, BMS_maxDischargePower
         self._hv: dict[str, tuple[float, float]] = {}  # source -> (volts, monotonic time)
 
     def _pack_v(self) -> float:
@@ -187,33 +332,57 @@ class Bms(Node):
 
     def frames(self) -> list[SimFrame]:
         # Proven bench set. Only 0x212 + 0x312 exist in the 2020 DIR; 0x132/0x252/0x2D2 are
-        # 2022-new but harmless on a 2020 DU (no handler -> filtered).
-        return self._frames(_SCALE_2020)
+        # 2022-new but harmless on a 2020 DU (no handler -> filtered). 0x2B2 (not in the 2020
+        # DBC) is 5 zero bytes as 2020 PCS BMS liveness.
+        return [
+            *self._frames(_SCALE_2020),
+            SimFrame("BMS_0x2B2", 0x2B2, 0.100, zeros(5)),
+        ]
 
     def _frames(self, s) -> list[SimFrame]:
         return [
             SimFrame("BMS_hvBusStatus", 0x132, 0.010, lambda: _bms_hvBusStatus(s, self._pack_v())),
             SimFrame("BMS_status", 0x212, 0.100, self._bms_status),
-            SimFrame("BMS_powerAvailable", 0x252, 0.100, partial(_bms_powerAvailable, s)),
+            SimFrame("BMS_powerAvailable", 0x252, 0.100,
+                     lambda: _bms_powerAvailable(s, self.max_regen_power,
+                                                 self.max_discharge_power)),
             SimFrame("BMS_driveLimits", 0x2D2, 0.100,
-                     lambda: _bms_driveLimits(s, self.min_bus_voltage)),
+                     lambda: _bms_driveLimits(s, self.min_bus_voltage, self.max_charge_current,
+                                              self.max_bus_voltage, self.max_discharge_current)),
             SimFrame("BMS_thermalStatus", 0x312, 1.000, _bms_thermalStatus),
         ]
 
     def _frames_2022(self) -> list[SimFrame]:
         """2022.45.15: the baseline set at 2022 DBC scaling (``_SCALE_2022``), plus two
         bmsMIA (a092) members absent in the 2020 DIR: BMS_limits 0x452 and BMS_packConfig
-        0x392 (reassigned from EPAS3P_alertMatrix; epas3p drops it in its 2022 variant)."""
+        0x392 (reassigned from EPAS3P_alertMatrix; epas3p drops it in its 2022 variant). Also
+        the PCS_a022 bmsMIA members BMS_energyStatus 0x2B2 and BMS_log2 0x3B2."""
         return [
             *self._frames(_SCALE_2022),
             SimFrame("BMS_limits", 0x452, 0.100, _bms_limits_0x452),
             SimFrame("BMS_packConfig", 0x392, 1.000, _bms_packConfig_0x392),
+            SimFrame("BMS_energyStatus", 0x2B2, 0.100,
+                     _mux_pages(_bms_energyStatus_m0, _bms_energyStatus_m1)),
+            SimFrame("BMS_log2", 0x3B2, 0.100, _bms_log2_cac1),
         ]
 
+    def _frames_2024(self) -> list[SimFrame]:
+        """2024.8.9: the 2022 set with 0x3B2 page 0 already at its 2026 layout (7-bit mux) and
+        0x2B2's mux 2 added. Both read out of the 2024 crackMessage by bit-probing; every other
+        frame here decodes at its 2022 position."""
+        repl = {
+            0x2B2: SimFrame("BMS_energyStatus", 0x2B2, 0.100,
+                            _mux_pages(_bms_energyStatus_m0, _bms_energyStatus_m1,
+                                       _bms_energyStatus_m2)),
+            0x3B2: SimFrame("BMS_log2", 0x3B2, 0.100, _bms_log2_cac1_2026),
+        }
+        return [repl.get(f.can_id, f) for f in self._frames_2022()]
+
     def _frames_2026(self) -> list[SimFrame]:
-        """2026.8.3: the 2022 set with the three re-laid frames swapped in. 0x2D2 BMS_driveLimits
-        is identical across 2022->2026 in BOTH layout and scaling, and 0x312/0x392/0x452 are
-        unchanged, so those carry over untouched. Scaling stays ``_SCALE_2022`` -- no BMS LSB
+        """2026.8.3: the 2022 set with the re-laid frames swapped in. 0x2D2 BMS_driveLimits is
+        identical across 2022->2026 in BOTH layout and scaling; 0x392 only gained fields the sim
+        leaves 0, and 0x452 is not in any DBC, so those carry over. 0x312 is now multiplexed,
+        0x2B2 gains a mux 2 and 0x3B2 re-lays page 0. Scaling stays ``_SCALE_2022`` -- no BMS LSB on the DIR's frames
         moved between 2022.45.15 and 2026.8.3 (checked against both DBCs), so the a125
         noBatteryPower calibration that _SCALE_2022 exists for still holds."""
         s = _SCALE_2022
@@ -222,8 +391,16 @@ class Bms(Node):
                             lambda: _bms_hvBusStatus_2026(s, self._pack_v())),
             0x212: SimFrame("BMS_status", 0x212, 0.100, self._bms_status_2026),
             0x252: SimFrame(
-                "BMS_powerAvailable", 0x252, 0.100, partial(_bms_powerAvailable_2026, s)
+                "BMS_powerAvailable", 0x252, 0.100,
+                lambda: _bms_powerAvailable_2026(s, self.max_regen_power,
+                                                 self.max_discharge_power),
             ),
+            0x312: SimFrame("BMS_thermalStatus", 0x312, 1.000,
+                            _mux_pages(_bms_thermalStatus_2026_m0, _bms_thermalStatus_2026_m1)),
+            0x2B2: SimFrame("BMS_energyStatus", 0x2B2, 0.100,
+                            _mux_pages(_bms_energyStatus_m0, _bms_energyStatus_m1,
+                                       _bms_energyStatus_m2)),
+            0x3B2: SimFrame("BMS_log2", 0x3B2, 0.100, _bms_log2_cac1_2026),
         }
         return [repl.get(f.can_id, f) for f in self._frames_2022()]
 
@@ -231,6 +408,7 @@ class Bms(Node):
         return {
             BASELINE_FW: self.frames,
             "2022.45.15": self._frames_2022,
+            "2024.8.9": self._frames_2024,
             "2026.8.3": self._frames_2026,
         }
 
@@ -242,13 +420,29 @@ class Bms(Node):
         self.mode = key
         return key
 
+    def set_limit(self, field: str, value) -> float:
+        """Live-set one of BMS_LIMITS (dash / scenario)."""
+        if field not in BMS_LIMITS:
+            raise ValueError(f"BMS limit must be one of {list(BMS_LIMITS)}")
+        lo, hi = BMS_LIMITS[field]["range"]
+        v = float(value)
+        if not lo <= v <= hi:
+            raise ValueError(f"BMS {field} must be {lo:g}..{hi:g} {BMS_LIMITS[field]['unit']}")
+        setattr(self, field, v)
+        return v
+
+    def limits(self) -> dict[str, float]:
+        return {f: getattr(self, f) for f in BMS_LIMITS}
+
     def configure(self, **s) -> None:
-        """Scenario keys: mode, min_bus_voltage."""
+        """Scenario keys: mode + BMS_LIMITS (min/max_bus_voltage, max_charge_current,
+        max_regen_power)."""
         mode = s.pop("mode", None)
         if mode is not None:
             self.set_mode(mode)
-        if (v := s.pop("min_bus_voltage", None)) is not None:
-            self.min_bus_voltage = float(v)
+        for field in BMS_LIMITS:
+            if (v := s.pop(field, None)) is not None:
+                self.set_limit(field, v)
         super().configure(**s)
 
     def rx_handlers(self):

@@ -76,7 +76,8 @@ class Ui(Node):
 
     def _frames_2022(self) -> list[SimFrame]:
         # 2022.45.15 adds 0x3B3 UI_vehicleControl2 as a uiMIA a088 member (absent in the 2020 DIR).
-        # DLC8, arrival-only; zeros(8) clears the MIA. Drive-state-gated.
+        # DLC8, arrival clears the MIA. Drive-state-gated. The DIR reads UI_summonState @16|2
+        # (0 SNA = missing, 3 ACTIVE = brake-state mismatch): send IDLE (1) like a parked car.
         #
         # 0x353 UI_status is supervised separately and IS read: UI_developmentCar (@bit40) is the
         # dyno-inhibit bypass (=1 keeps dyno latched, =0 makes it one-shot per cycle), so it is
@@ -88,7 +89,8 @@ class Ui(Node):
         pt = SimFrame("UI_powertrainControl", 0x334, 0.100, self.ui_pt_2022.frame)
         return [
             *[pt if f.can_id == 0x334 else f for f in self.frames()],
-            SimFrame("UI_vehicleControl2", 0x3B3, 0.100, zeros(8)),
+            SimFrame("UI_vehicleControl2", 0x3B3, 0.100,
+                     lambda: pack_le([(16, 2, 1)])),  # UI_summonState = IDLE
             SimFrame("UI_status", 0x353, 0.100, partial(_ui_status, c)),
         ]
 

@@ -26,6 +26,7 @@ alerts/
 security_impl.py
 uds_local/security_impl.py
 uds_local/immobilizer.py
+bin_decrypt_impl.py
 scripts/di/immobilizer_handshake.py
 # Additional local operational/firmware artifacts (kept out of the public tree)
 scripts/di/immo_l04.py

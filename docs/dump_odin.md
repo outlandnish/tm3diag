@@ -1,8 +1,7 @@
 # dump_odin.py — Extract and decompile the odin binary
 
 `opt/odin/odin` in a firmware squashfs is a PyInstaller-frozen ELF. The CAN
-signal/interface definitions, the `.bin` decryption constant, and the alert-name
-hash recipe live inside it — the loose JSON (compact DB, `bus-alerts-map.json`)
+signal/interface definitions live inside it — the loose JSON (compact DB, `bus-alerts-map.json`)
 is *derived* and may be redacted, so the binary is the authoritative source.
 
 ```

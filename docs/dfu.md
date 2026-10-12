@@ -18,5 +18,10 @@ python dfu.py --node PCS --channel vcan0 --artifacts ~/seed_artifacts_v2 --force
 | `--interface`, `-i` | `TM3_INTERFACE`     | python-can interface type               |
 | `--artifacts`, `-a` | `TM3_ARTIFACTS_DIR` | Path to `seed_artifacts_v2` directory   |
 | `--force`           | —                   | Proceed despite BHX identity mismatches |
+| `--dry-run`         | —                   | Print the flash plan, send nothing      |
+| `--log-file [PATH]` | —                   | Write the full flash trace (bare flag: `dfu-<node>-<pid>.log`) |
+| `--verbose`, `-v`   | —                   | Echo the flash trace to stderr          |
+
+When RAM apps (e.g. `pmramapp`) match, dfu asks: app only (default), app + RAM app, or RAM app only.
 
 The tool reads `signed_metadata_map.tsv` from the artifacts directory to select the correct firmware file for the connected ECU's identity.

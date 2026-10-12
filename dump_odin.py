@@ -2,23 +2,13 @@
 """Extract and decompile the odin PyInstaller binary from a firmware root.
 
 odin (opt/odin/odin) is a PyInstaller-frozen ELF holding the CAN signal/
-interface definitions, the .bin decryption constant, and the alert-name hash
-recipe.
-
-The .bin decryption key (TM3_BIN_KEY in .env) is the base64 constant ``C`` in
-    <out>/src/.../odin/platforms/binary_metadata_utils.py
-Decode of ``binary_metadata_reader`` there: salt = first 16 bytes of the file,
-key = PBKDF2-HMAC-SHA256(base64decode(C), salt, 123456 iters, 32 bytes) then
-Fernet-decrypt + ``pickle.loads``. To validate a build / refresh the key:
-    grep -rn "^C = " <out>/src/.../odin_extracted/platforms/binary_metadata_utils.py
-and compare against TM3_BIN_KEY in .env (see .env.example).
+interface definitions.
 
 Usage:
   python dump_odin.py <firmware_root> [--out DIR] [--tools DIR] [--no-decompile]
 
 Example:
-  python dump_odin.py /home/outlandnish/dev/tesla-fw/2026.8.3.ice \\
-      --out ~/dev/odin-dumps/2026.8.3
+  python dump_odin.py /path/to/firmware-root --out ~/dev/odin-dumps/2026.8.3
 """
 
 from __future__ import annotations
@@ -280,8 +270,6 @@ def main() -> None:
     print(f"\nDone. Output under {out}")
     print("Grep the decompiled tree for signal/interface defs, e.g.:")
     print(f"  grep -rl 'accelPedal\\|DIR_torque\\|vcPcsDCDC' {out}/src")
-    print("The .bin decryption key (TM3_BIN_KEY in .env) is constant C in:")
-    print(f"  grep -rn '^C = ' {out}/src/*/odin/platforms/binary_metadata_utils.py")
 
 
 if __name__ == "__main__":

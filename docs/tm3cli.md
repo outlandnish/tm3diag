@@ -32,10 +32,12 @@ Shown when `--node` is omitted.
 | Command       | Description                                                                        |
 | ------------- | ---------------------------------------------------------------------------------- |
 | `dids`        | Read DIDs by name (tab complete) or hex ID; auto-decodes fields from ODJ           |
+| `write-did`   | WriteDataByIdentifier (0x2E): ODJ fields prompted per field, else raw hex; confirmed before send |
 | `routine`     | Run a routine by name or hex ID (see named routines below)                         |
 | `board-parts` | Read board part/serial DIDs `0xF012`–`0xF015`, `0xF030`/`0xF031`                  |
 | `clear-dtc`   | ClearDiagnosticInformation group `0xFFFFFF` (UDS 0x14)                             |
 | `dfu`         | Full firmware update using `dfu.py` phases (identity → select → preflight → flash) |
+| `dl-probe`    | Probe RequestDownload(addr, size) accept/NRC without transferring data            |
 | `session`     | Switch diagnostic session                                                          |
 | `reset`       | ECU hard reset                                                                     |
 | `quit`        | Disconnect and exit                                                                |

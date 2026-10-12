@@ -1,12 +1,14 @@
 """Tests for uds/metadata.py."""
 
+import os
 from pathlib import Path
 
 import pytest
 
 from uds_local.metadata import FirmwareEntry, find_firmware, load_metadata, packed_key_from_f180
 
-_TSV = Path("/home/outlandnish/dev/tm3/deploy/seed_artifacts_v2/signed_metadata_map.tsv")
+# Opt-in: rev-specific expectations, so point it at a matching seed_artifacts_v2.
+_TSV = Path(os.environ.get("TM3_TEST_ARTIFACTS", "/nonexistent")) / "signed_metadata_map.tsv"
 
 pytestmark = pytest.mark.skipif(
     not _TSV.exists(),

@@ -17,18 +17,16 @@ Firmware root and paths come from `.env` (see `.env.example`), so a bare
 `python dump_alerts.py` works once configured:
 
 - `TM3_ROOT` — squashfs root of a firmware extraction (default firmware root).
-
-The alert IDs in the map are stored as `sha256(alert_str + salt)` and the bus
-buckets as `sha256(bus_name + salt)`, with the per-file salt read from the map
-itself. Because the alert strings also appear in the clear in the firmware (the
-`alertd` binary and `libQtCarAlerts.so`), the hashes reverse without a key.
+- `TM3_ALERT_HASH_PROVIDER` — the alert-hash provider (module name or `.py`
+  path; `--provider` overrides). This build ships no hash recipe; without a
+  provider the tool exits. Interface: [SECURITY_PROVIDER.md](SECURITY_PROVIDER.md#alert-hash-provider).
 
 ## How it works
 
 The plaintext alert catalogue is reusable across builds; the per-file salts are
 not. The tool keeps a growing catalogue (`--catalog`) and reverses a build by
-running every known alert string through `sha256(str + salt)` for that file's
-salt. Anything still unresolved is recovered by scraping the firmware image for
+running every known alert string through the provider's `alert_hash` for that
+file's salt. Anything still unresolved is recovered by scraping the firmware image for
 alert-shaped strings (`--scrape`, default on; the `alertd` binary is the richest
 source), and each newly-confirmed string is folded back into the catalogue.
 

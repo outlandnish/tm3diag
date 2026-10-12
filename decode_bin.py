@@ -1,16 +1,10 @@
-"""Decrypt odin .bin files from a firmware squashfs extraction.
+"""Decrypt odin .bin files (ODJ and compact CAN DB) from a firmware extraction.
 
-Both ODJ (UDS diagnostic object) and DEJ (compact CAN message database)
-files share the same envelope:
-
-    [16-byte random salt][Fernet token]
-
-Key derivation (from odin/platforms/binary_metadata_utils.py):
-    password = base64.b64decode(C)   # hardcoded in firmware
-    key = urlsafe_b64encode(
-        PBKDF2HMAC(SHA256, 32, salt, 123456).derive(password)
-    )
-    plaintext = pickle.loads(Fernet(key).decrypt(token))
+This build ships no decryption recipe. Decryption is delegated to a provider
+exposing ``decrypt_bin(data: bytes, key: str) -> object``; ``key`` is
+``TM3_BIN_KEY``. Resolution: ``TM3_BIN_PROVIDER`` (importable module name or
+``.py`` path), else a local gitignored ``bin_decrypt_impl`` module, else fail
+closed. See docs/SECURITY_PROVIDER.md. Plain ``.json`` files need neither.
 
 Usage:
     python decode_bin.py <firmware_data_dir>
@@ -23,52 +17,63 @@ Defaults to the paths in config.py (TM3_ODJ_DIR / TM3_ETH_COMPACT).
 from __future__ import annotations
 
 import argparse
-import base64
+import importlib
+import importlib.util
 import json
 import os
-import pickle
 from pathlib import Path
-
-from cryptography.fernet import Fernet
-from cryptography.hazmat.backends import default_backend
-from cryptography.hazmat.primitives import hashes
-from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
 
 import config  # type: ignore[import-untyped]
 
+_PROVIDER_ENV = "TM3_BIN_PROVIDER"
+_LOCAL = "bin_decrypt_impl"  # gitignored drop-in
+_KEY_ENV = "TM3_BIN_KEY"
+_DOC = "docs/SECURITY_PROVIDER.md"
 
-def _get_password() -> bytes:
-    val = os.environ.get("TM3_BIN_KEY")
-    if not val:
+_provider_cache: object | None = None
+
+
+def _load_provider():
+    """Return the .bin decrypt provider (cached). Fails closed with RuntimeError."""
+    global _provider_cache
+    if _provider_cache is not None:
+        return _provider_cache
+    spec = os.environ.get(_PROVIDER_ENV)
+    if not spec:
+        try:
+            spec = importlib.util.find_spec(_LOCAL) and _LOCAL
+        except ImportError:
+            spec = None
+    if not spec:
         raise RuntimeError(
-            "TM3_BIN_KEY is not set. "
-            "Extract it from a firmware squashfs at "
-            "opt/odin/odin (PyInstaller bundle) → "
-            "odin/platforms/binary_metadata_utils.py constant C, "
-            "then add TM3_BIN_KEY=<value> to your .env file."
+            f"No .bin decrypt provider configured. This build ships no decryption recipe; "
+            f"set {_PROVIDER_ENV} to a module exposing decrypt_bin(data, key). See {_DOC}."
         )
-    return base64.b64decode(val.encode())
-
-
-def _get_key(salt: bytes) -> bytes:
-    password = _get_password()
-    kdf = PBKDF2HMAC(
-        algorithm=hashes.SHA256(),
-        length=32,
-        salt=salt,
-        iterations=123456,
-        backend=default_backend(),
-    )
-    return base64.urlsafe_b64encode(kdf.derive(password))
+    path = Path(spec).expanduser()
+    try:
+        if path.suffix == ".py" or path.exists():
+            if not path.is_file():
+                raise ImportError(f"no such file: {path}")
+            mspec = importlib.util.spec_from_file_location("bin_decrypt_provider", path)
+            mod = importlib.util.module_from_spec(mspec)
+            mspec.loader.exec_module(mod)
+        else:
+            mod = importlib.import_module(spec)
+    except ImportError as exc:
+        raise RuntimeError(f"{_PROVIDER_ENV}={spec!r} could not be loaded ({exc}). See {_DOC}.") from exc
+    if hasattr(mod, "get_bin_decrypt_provider"):
+        mod = mod.get_bin_decrypt_provider()
+    if not callable(getattr(mod, "decrypt_bin", None)):
+        raise RuntimeError(f".bin decrypt provider is missing decrypt_bin(). See {_DOC}.")
+    _provider_cache = mod
+    return mod
 
 
 def decode_bin(path: Path) -> object:
-    data = path.read_bytes()
-    salt = data[:16]
-    token = data[16:]
-    key = _get_key(salt)
-    plaintext = Fernet(key).decrypt(token)
-    return pickle.loads(plaintext)
+    key = os.environ.get(_KEY_ENV)
+    if not key:
+        raise RuntimeError(f"{_KEY_ENV} is not set (see .env.example).")
+    return _load_provider().decrypt_bin(path.read_bytes(), key)
 
 
 def load_json(path: Path) -> dict:

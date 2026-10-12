@@ -95,6 +95,37 @@ The framework imports these lazily from
 Keystore, challenge_response`); the seam resolves them from your provider at call
 time and fails closed otherwise.
 
+## Alert-hash provider
+
+Used only by `dump_alerts.py` to reverse `bus-alerts-map.json`. Separate from the
+two surfaces above: set `TM3_ALERT_HASH_PROVIDER` (or `--provider`) to a module
+name or a `.py` path. Unset, the tool exits. The module (or the object returned
+by its `get_alert_hash_provider()`) exposes:
+
+```python
+def alert_hash(alert_str: str, salt: str) -> str:
+    """Return the map hash (lowercase hex) of a full alert string under a map's salt."""
+
+def bus_bucket(bus_name: str, salt: str) -> str:
+    """Return the bucket hash (lowercase hex) of a bus name under a map's salt."""
+
+BUS_NAMES: list[str]  # optional: candidate bus names for bucket resolution
+```
+
+## `.bin` decrypt provider
+
+Used by `decode_bin.py` (and everything that loads an encrypted `.compact.json.bin`
+or `.odj.bin` through it). Set `TM3_BIN_PROVIDER` to a module name or a `.py` path,
+or drop a gitignored `bin_decrypt_impl.py` next to `decode_bin.py`; `TM3_BIN_KEY`
+is passed through as `key`. With neither, loading a `.bin` raises
+`RuntimeError`; plain `.json` files are unaffected. The module (or the object
+returned by its `get_bin_decrypt_provider()`) exposes:
+
+```python
+def decrypt_bin(data: bytes, key: str) -> object:
+    """Return the decoded object (dict) for the raw bytes of a .bin file."""
+```
+
 ## Minimal skeleton
 
 A provider that implements nothing is valid:

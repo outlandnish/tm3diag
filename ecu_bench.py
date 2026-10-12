@@ -26,7 +26,6 @@ Live state shared between control verbs and frame builders lives in
 
 from __future__ import annotations
 
-import contextlib
 import threading
 import time
 from collections.abc import Callable
@@ -52,6 +51,14 @@ class Frame:
     builder: Callable[[BenchState], bytes | list[int]] | None = None
     signals: dict[str, float | int] | Callable[[BenchState], dict[str, float | int]] | None = None
     enabled: bool = True
+    # Logical bus this frame transmits on: "vehicle" (default), "party", "charge".
+    # Single-ECU benches (di.py/pcs.py) leave it "vehicle" and open only one bus.
+    bus: str = "vehicle"
+    # Optional post-send hook called with the send's ok/fail. The node-centric bench wires this
+    # to SimFrame.note_send so a FAILED send (local ENOBUFS drop) rolls the rolling counter back
+    # -> a frame that never reached the wire doesn't consume a counter value, keeping the on-wire
+    # sequence gapless so the DIR's counter check resyncs immediately (no MIA blip).
+    on_result: Callable[[bool], None] | None = None
 
 
 @dataclass
@@ -68,8 +75,10 @@ class BenchSpec:
     """Everything an ECU module hands to ecu_bench.run().
 
     ``on_init(state)`` runs once after the BenchState is created, before the
-    scheduler starts — use it to seed default vars and to return control verbs
-    (a dict of {name: callable} merged into ``controls``).
+    scheduler starts — use it to seed default vars and to return the control
+    verbs (it may return a dict of {name: callable} that is merged into
+    ``controls``). This lets control verbs close over the live BenchState
+    instead of a placeholder.
     """
     name: str
     frames: list[Frame]
@@ -77,8 +86,8 @@ class BenchSpec:
     immo: ImmoSpec | None = None
     db_path: str | None = None     # override CAN DB path (else config default)
     on_init: Callable[[BenchState], dict[str, Callable[..., Any]] | None] | None = None
-    # When True, run an RX listener that decodes every inbound frame into
-    # state.signals.
+    # When True, run an RX listener that decodes every inbound frame via the CAN
+    # DB into state.signals (for closed-loop control like precharge).
     listen: bool = True
     # Optional hook for non-DB raw frames (e.g. IVT-S 0x521-0x523 int32 fields):
     # rx_hook(state, can_id, data) -> may write into state.signals directly.
@@ -93,11 +102,33 @@ class BenchState:
     bench. ``send`` transmits a raw frame.
     """
 
-    def __init__(self, bus: can.BusABC, db: CanDatabase) -> None:
-        self.bus = bus
+    def __init__(
+        self, bus: can.BusABC, db: CanDatabase,
+        buses: dict[str, can.BusABC] | None = None,
+    ) -> None:
+        self.bus = bus  # primary (vehicle) bus -- backward-compatible single-bus handle
+        # Logical bus name -> python-can bus. Single-ECU benches pass nothing and get
+        # {"vehicle": bus}; multi-bus callers (vehicle_sim) pass the full map.
+        self.buses = buses or {"vehicle": bus}
         self.db = db
         self.vars: dict[str, Any] = {}
+        # Per-bus TX health. A dead bus (no peer / miswired / unterminated) fails every
+        # send; counting ok/err makes that visible instead of silently swallowed.
+        self.tx_ok: dict[str, int] = {}
+        self.tx_err: dict[str, int] = {}
+        # Per-arbitration-ID tx-error tally -- so a spike can be attributed to specific
+        # frame(s) (a few IDs = something specific; all of them = a bus event).
+        self.tx_err_by_id: dict[int, int] = {}
+        # Worst CONSECUTIVE drop run per ID (reset by any success). This -- not the raw total --
+        # is what trips a group2 MIA: a run of back-to-back drops leaves a gap in that member's
+        # stream longer than the DIR's staleness window. A high total but max-run 1 is harmless
+        # (scattered); a max-run of several is a MIA blip. ``_tx_err_run_cur`` is the live run.
+        self.tx_err_run_max: dict[int, int] = {}
+        self._tx_err_run_cur: dict[int, int] = {}
+        self._tx_lock = threading.Lock()
         # Latest decoded value per signal name, populated by the RX listener.
+        # Builders/controls read this for closed-loop behavior (e.g. precharge
+        # waiting on a measured voltage, watching DI_immobilizerState).
         self.signals: dict[str, float | int] = {}
         self._lock = threading.Lock()
 
@@ -117,27 +148,56 @@ class BenchState:
     def encode(self, msg: int | str, **signals: float | int) -> bytes:
         return self.db.encode_frame(msg, signals)
 
-    def send(self, can_id: int, data: bytes | list[int]) -> None:
+    def send(self, can_id: int, data: bytes | list[int], bus: str = "vehicle") -> bool:
+        """Transmit a raw frame on ``bus``. Returns True on success, False on a CAN send error
+        (so the scheduler can roll a rolling counter back for a dropped frame)."""
         msg = can.Message(
             arbitration_id=can_id,
             data=bytes(data),
             is_extended_id=False,
         )
-        with contextlib.suppress(can.CanError):
-            self.bus.send(msg)
+        target = self.buses.get(bus, self.bus)  # unknown/unopened bus -> vehicle (bridged)
+        try:
+            target.send(msg)  # non-blocking: a stalled TX drops (counted below), never blocks
+            ok = True
+        except can.CanError:
+            ok = False
+        with self._tx_lock:
+            counter = self.tx_ok if ok else self.tx_err
+            counter[bus] = counter.get(bus, 0) + 1
+            if ok:
+                self._tx_err_run_cur[can_id] = 0  # success ends any current drop run
+            else:
+                self.tx_err_by_id[can_id] = self.tx_err_by_id.get(can_id, 0) + 1
+                run = self._tx_err_run_cur.get(can_id, 0) + 1
+                self._tx_err_run_cur[can_id] = run
+                if run > self.tx_err_run_max.get(can_id, 0):
+                    self.tx_err_run_max[can_id] = run
+        return ok
 
 
 class Scheduler:
-    """Runs each enabled Frame on its own interval in a single timer thread."""
+    """Runs each enabled Frame on its own interval in a single timer thread.
 
-    def __init__(self, state: BenchState, frames: list[Frame]) -> None:
+    A single thread ticks at the GCD-ish base interval and emits each frame when
+    due, which keeps the TX cadence steady without one thread per frame.
+    """
+
+    def __init__(
+        self, state: BenchState, frames: list[Frame],
+        on_emit: Callable[[int, bytes, str], None] | None = None,
+    ) -> None:
         self._state = state
         self._frames = [f for f in frames if f.enabled]
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
-        # base tick = min interval, floored at 5 ms
+        # Optional hook called with (can_id, data, bus) after each frame is sent. The
+        # node-centric bench uses it to dispatch every sim-node broadcast to the OTHER
+        # nodes' on_rx (inter-node reactive comms), in addition to putting it on the wire.
+        self._on_emit = on_emit
+        # Nominal base cadence (for display only); the run loop is deadline-driven, not ticked.
         intervals = [f.interval_ms for f in self._frames] or [10]
-        self._tick_ms = max(5, min(intervals))
+        self._tick_ms = max(1, min(intervals))
 
     def _payload(self, f: Frame) -> bytes | list[int] | None:
         if f.builder is not None:
@@ -147,18 +207,50 @@ class Scheduler:
             return self._state.db.encode_frame(f.can_id, sig)
         return None
 
+    def _stagger(self) -> dict[int, float]:
+        """Phase offset (seconds) per frame so frames sharing a (bus, period) are spread
+        EVENLY across that period instead of all firing at once. Without it, N same-rate
+        frames burst together every period -> the target ECU sees an N-frame spike that can
+        overrun a throttled RX path (e.g. the DIR's CANB IPC relay -> no-ACK tx errors);
+        staggering gives a smooth, evenly-spaced arrival (and steadier rolling counters)."""
+        groups: dict[tuple, list[Frame]] = {}
+        for f in self._frames:
+            groups.setdefault((f.bus, f.interval_ms), []).append(f)
+        offsets: dict[int, float] = {}
+        for (_bus, interval_ms), fs in groups.items():
+            step = (interval_ms / 1000.0) / len(fs)
+            for j, f in enumerate(fs):
+                offsets[id(f)] = step * j
+        return offsets
+
     def _run(self) -> None:
-        next_due = {id(f): 0.0 for f in self._frames}
-        tick = self._tick_ms / 1000.0
+        # Deadline-driven: each frame fires at its own next-due time (initially phase-offset),
+        # and we sleep until the soonest -- so same-period frames don't clump into a burst.
+        start = time.monotonic()
+        offsets = self._stagger()
+        next_due = {id(f): start + offsets[id(f)] for f in self._frames}
         while not self._stop.is_set():
             now = time.monotonic()
+            soonest = None
             for f in self._frames:
-                if now >= next_due[id(f)]:
+                due = next_due[id(f)]
+                if now >= due:
                     payload = self._payload(f)
                     if payload is not None:
-                        self._state.send(f.can_id, payload)
-                    next_due[id(f)] = now + f.interval_ms / 1000.0
-            self._stop.wait(tick)
+                        ok = self._state.send(f.can_id, payload, bus=f.bus)
+                        if f.on_result is not None:
+                            f.on_result(ok)  # e.g. roll a dropped frame's counter back
+                        if self._on_emit is not None:
+                            self._on_emit(f.can_id, bytes(payload), f.bus)
+                    due += f.interval_ms / 1000.0
+                    if due <= now:  # fell behind -> resync (don't burst to catch up)
+                        due = now + f.interval_ms / 1000.0
+                    next_due[id(f)] = due
+                if soonest is None or due < soonest:
+                    soonest = due
+            # Sleep until the next frame is due, capped so stop() stays responsive.
+            delay = 0.005 if soonest is None else min(max(soonest - time.monotonic(), 0.0), 0.05)
+            self._stop.wait(delay or 0.0005)
 
     def start(self) -> None:
         if self._thread and self._thread.is_alive():
@@ -217,7 +309,8 @@ class _ImmoResponder(can.Listener):
 class _RxCacheListener(can.Listener):
     """Decode every inbound frame via the CAN DB into ``state.signals``.
 
-    Runs an optional ``rx_hook`` first for raw/non-DB frames.
+    Runs an optional ``rx_hook`` first for raw/non-DB frames. Closed-loop control
+    verbs (e.g. precharge waiting on a measured voltage) read state.signals.
     """
 
     def __init__(self, state: BenchState,
@@ -253,6 +346,7 @@ def _make_shell_namespace(state: BenchState, spec: BenchSpec,
         "frames": spec.frames,
         "scheduler": sched,
     }
+    # Bind each control verb so the user calls e.g. gear("D"), pedal(25).
     ns.update(spec.controls)
 
     def help_() -> None:
@@ -276,14 +370,28 @@ def _sig(fn: Callable) -> str:
 
 
 def run(spec: BenchSpec, channel: str, interface: str = "socketcan",
-        *, interactive: bool = True) -> None:
-    """Open the bus, start the scheduler + immobilizer, then drop into a shell."""
+        *, interactive: bool = True,
+        party_channel: str | None = None, charge_channel: str | None = None,
+        party_interface: str | None = None, charge_interface: str | None = None) -> None:
+    """Open the bus(es), start the scheduler + immobilizer, then drop into a shell.
+
+    Single-ECU benches pass only ``channel`` (one bus). A multi-bus caller may also pass
+    ``party_channel``/``charge_channel``; a secondary bus is opened only if some enabled
+    frame targets it. Listeners (RX cache, immobilizer) run on the primary (vehicle) bus.
+    """
     db_path = spec.db_path
     db = CanDatabase(db_path) if db_path else default_db()
     bus = can.Bus(interface=interface, channel=channel)
+    buses = {"vehicle": bus}
+    used = {f.bus for f in spec.frames if f.enabled}
+    if "party" in used and party_channel:
+        buses["party"] = can.Bus(interface=party_interface or interface, channel=party_channel)
+    if "charge" in used and charge_channel:
+        buses["charge"] = can.Bus(interface=charge_interface or interface, channel=charge_channel)
     notifier = can.Notifier(bus, [])
-    state = BenchState(bus, db)
+    state = BenchState(bus, db, buses=buses)
 
+    # Let the ECU module seed defaults and bind control verbs to the live state.
     if spec.on_init is not None:
         extra_controls = spec.on_init(state)
         if extra_controls:
@@ -324,6 +432,7 @@ def run(spec: BenchSpec, channel: str, interface: str = "socketcan",
     finally:
         sched.stop()
         notifier.stop()
-        bus.shutdown()
+        for b in set(buses.values()):  # distinct buses (secondary buses may alias vehicle)
+            b.shutdown()
         if immo is not None:
             print(f"  Immobilizer challenges answered: {immo.challenges}")
